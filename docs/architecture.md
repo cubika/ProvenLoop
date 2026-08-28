@@ -160,6 +160,11 @@ interface AgentAdapter {
 }
 ```
 
+The F0 compatibility baseline supports Copilot CLI `1.0.82-0` only. Other
+versions remain unverified until their capability probe passes. Production
+plugin installation uses a marketplace because direct path installs are
+deprecated and cannot be disabled through the normal lifecycle commands.
+
 ### 3.2 Hooks and persistent queue
 
 Hooks perform only bounded work:
@@ -176,7 +181,12 @@ Hooks do not:
 - scan prior sessions;
 - build Work Episodes;
 - update Knowledge Cards;
-- block on network access.
+- call external network services.
+
+The Hook transport is not yet frozen. F0 found that command Hooks were too
+slow, while localhost HTTP Hooks were fail-open but still reached the handler
+hundreds of milliseconds after the event timestamp. Broad implementation
+remains blocked until the complete Hook path meets the latency requirement.
 
 Queue requirements:
 
@@ -200,10 +210,10 @@ local ProvenLoop host containing the MCP server, worker, domain modules, and
 CLI control surface. Components are code boundaries, not independently
 deployed local services.
 
-The Windows implementation uses a process lease or OS-released named mutex,
-not an unbounded stale lock file. The platform boundary owns data-root
-resolution, startup registration, process hosting, and interprocess locking;
-the domain and evaluation code do not depend on Windows APIs.
+The Windows implementation uses a named pipe as an OS-owned process lease, not
+an unbounded stale lock file. The platform boundary owns data-root resolution,
+startup registration, process hosting, and interprocess locking; the domain
+and evaluation code do not depend on Windows APIs.
 
 Internal background Copilot calls are marked:
 
@@ -969,8 +979,8 @@ Recommended MVP:
 
 - Windows 10/11 as the only required implementation and acceptance platform;
 - TypeScript;
-- Node.js 22+;
-- SQLite;
+- Node.js `22.18.0` as the first tested runtime;
+- the bundled `node:sqlite` driver behind the storage interface;
 - FTS5/BM25 initially;
 - MCP over stdio;
 - Zod or equivalent schema validation;
@@ -982,6 +992,10 @@ leases, file replacement, data paths, sleep/resume behavior, and crash cleanup
 are platform concerns. The MVP implements Windows providers for these
 boundaries; macOS and Linux providers are future work and are not release
 requirements.
+
+The Windows data root is `%LOCALAPPDATA%\ProvenLoop`. The database, queue,
+logs, artifacts, and evaluation output use separate child directories. Domain
+data is never stored in the Copilot plugin installation directory.
 
 Why TypeScript for the MVP:
 

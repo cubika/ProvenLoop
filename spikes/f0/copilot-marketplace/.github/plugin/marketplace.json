@@ -1,0 +1,18 @@
+{
+  "name": "provenloop-f0",
+  "owner": {
+    "name": "ProvenLoop"
+  },
+  "metadata": {
+    "description": "Local marketplace fixture for ProvenLoop feasibility tests.",
+    "version": "0.0.1"
+  },
+  "plugins": [
+    {
+      "name": "provenloop-f0-probe",
+      "description": "Copilot hook and MCP probe for ProvenLoop F0.",
+      "version": "0.0.1",
+      "source": "./plugins/provenloop-f0-probe"
+    }
+  ]
+}

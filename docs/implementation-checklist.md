@@ -53,37 +53,38 @@ frozen.
 
 ### 3.1 Copilot integration spike
 
-- [ ] Record the first supported Copilot CLI version range.
-- [ ] Verify available lifecycle hooks and their payload/version behavior.
-- [ ] Verify local MCP registration, startup, shutdown, and stdio behavior.
+- [x] Record the first supported Copilot CLI version range.
+- [x] Verify available lifecycle hooks and their payload/version behavior.
+- [x] Verify local MCP registration, startup, shutdown, and stdio behavior.
 - [ ] Verify plugin install, upgrade, disable, uninstall, and idempotent
-  reinstallation.
-- [ ] Verify internal ProvenLoop work can be marked with
+  reinstallation. Local marketplace lifecycle passes; remote upgrade remains
+  blocked by F0-003.
+- [x] Verify internal ProvenLoop work can be marked with
   `PROVENLOOP_INTERNAL=1` and excluded from capture.
-- [ ] Verify supported background inference can reuse the existing Copilot
+- [x] Verify supported background inference can reuse the existing Copilot
   sign-in without copying credentials, an additional API key, or per-call
   authorization.
-- [ ] Document degradation when Copilot is signed out, rate-limited, or
+- [x] Document degradation when Copilot is signed out, rate-limited, or
   incompatible.
-- [ ] Prove hook and MCP failure do not block foreground Copilot use.
+- [x] Prove hook and MCP failure do not block foreground Copilot use.
 
 ### 3.2 Local runtime spike
 
-- [ ] Select and verify the SQLite driver on Node.js 22 for Windows packaging,
+- [x] Select and verify the SQLite driver on Node.js 22 for Windows packaging,
   WAL, transactions, migrations, and FTS5.
-- [ ] Verify atomic queue writes and replacement behavior on Windows.
-- [ ] Verify the process lease or named-mutex approach releases correctly after
+- [x] Verify atomic queue writes and replacement behavior on Windows.
+- [x] Verify the process lease or named-mutex approach releases correctly after
   crashes.
-- [ ] Define the Windows data-root, log, artifact, queue, and evaluation paths.
-- [ ] Measure cold start, idle memory, queue throughput, and hook overhead.
+- [x] Define the Windows data-root, log, artifact, queue, and evaluation paths.
+- [x] Measure cold start, idle memory, queue throughput, and hook overhead.
 
 ### 3.3 Exit criteria
 
-- [ ] Capture the decisions in architecture decision records or the relevant
+- [x] Capture the decisions in architecture decision records or the relevant
   architecture sections.
-- [ ] Convert every unresolved feasibility risk into a blocking issue with an
+- [x] Convert every unresolved feasibility risk into a blocking issue with an
   owner and a testable exit condition.
-- [ ] Do not begin broad implementation while authentication reuse, hook
+- [x] Do not begin broad implementation while authentication reuse, hook
   non-blocking behavior, or SQLite packaging remains unproven.
 
 ## 4. Batch 1: repository and contract foundation
@@ -514,4 +515,3 @@ The slice is complete when:
 - [ ] a worker crash can recover the item;
 - [ ] a completion claim without invocation evidence fails with exit code `1`;
 - [ ] the same results are reproducible from a clean checkout.
-
