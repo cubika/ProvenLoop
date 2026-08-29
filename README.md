@@ -155,6 +155,7 @@ Regenerate the Markdown view from a run's stable JSON report:
 ## Status
 
 The local TypeScript/Node.js MVP is under implementation. Shared contracts and
-the evaluation spine are complete; the current Batch 3 slice adds deterministic
-capture envelopes, write-time redaction, and the Windows durable queue before
-the Copilot Extension is wired to that boundary.
+the evaluation spine are complete. Batch 3 now includes deterministic capture
+envelopes, write-time redaction, the Windows durable queue, supported Copilot
+event mapping, bounded buffering, asynchronous persistence, and explicit
+capture-gap reporting.

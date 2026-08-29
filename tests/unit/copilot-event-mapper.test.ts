@@ -1,0 +1,675 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  BoundedCaptureBuffer,
+  captureGapEvent,
+  CopilotEventMapper,
+} from "@provenloop/copilot-adapter";
+
+const timestamp = "2026-08-29T00:00:00.000Z";
+
+const createMapper = (): CopilotEventMapper =>
+  new CopilotEventMapper({
+    adapterVersion: "1.0.82-0",
+    copyLimits: {
+      maxStringChars: 64,
+    },
+    sessionId: "session-1",
+    workspace: {
+      branch: "feat/batch3-extension-capture",
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+      repoId: "repo-1",
+      worktree: "worktree-1",
+    },
+  });
+
+const event = (
+  type: string,
+  data: Readonly<Record<string, unknown>>,
+) => ({
+  data,
+  id: `event-${type}`,
+  parentId: null,
+  timestamp,
+  type,
+});
+
+describe("Copilot event mapping", () => {
+  it.each([
+    [
+      "user.message",
+      {
+        content: "Implement the queue.",
+      },
+      "prompt.submitted",
+    ],
+    [
+      "assistant.message",
+      {
+        content: "Implemented.",
+        messageId: "message-1",
+      },
+      "agent.message",
+    ],
+    [
+      "assistant.turn_end",
+      {
+        turnId: "turn-1",
+      },
+      "agent.turn_completed",
+    ],
+    [
+      "session.idle",
+      {
+        aborted: false,
+      },
+      "session.idle",
+    ],
+    [
+      "session.error",
+      {
+        errorType: "rate_limit",
+        message: "Retry later.",
+      },
+      "session.error",
+    ],
+    [
+      "session.shutdown",
+      {
+        codeChanges: {
+          filesModified: [
+            "src/index.ts",
+          ],
+          linesAdded: 10,
+          linesRemoved: 2,
+        },
+        shutdownType: "routine",
+      },
+      "session.ended",
+    ],
+    [
+      "subagent.started",
+      {
+        agentDisplayName: "Reviewer",
+        agentName: "reviewer",
+        toolCallId: "subagent-call-1",
+      },
+      "subagent.started",
+    ],
+    [
+      "subagent.completed",
+      {
+        agentDisplayName: "Reviewer",
+        agentName: "reviewer",
+        toolCallId: "subagent-call-1",
+      },
+      "subagent.completed",
+    ],
+    [
+      "subagent.failed",
+      {
+        agentDisplayName: "Reviewer",
+        agentName: "reviewer",
+        error: "Agent failed.",
+        toolCallId: "subagent-call-1",
+      },
+      "subagent.failed",
+    ],
+  ])("maps %s to %s", (sourceType, data, canonicalType) => {
+    const result = createMapper().map(event(sourceType, data));
+
+    expect(result.status).toBe("mapped");
+    if (result.status === "mapped") {
+      expect(result.value).toMatchObject({
+        adapter: "copilot-cli",
+        adapterVersion: "1.0.82-0",
+        branch: "feat/batch3-extension-capture",
+        eventType: canonicalType,
+        repoId: "repo-1",
+        sessionId: "session-1",
+        sourceEventId: `event-${sourceType}`,
+      });
+    }
+  });
+
+  it("correlates tool completion with its start event", () => {
+    const mapper = createMapper();
+    const started = mapper.map(
+      event("tool.execution_start", {
+        arguments: {
+          command: "npm test",
+        },
+        toolCallId: "tool-call-1",
+        toolName: "powershell",
+        model: "gpt-5.6-sol",
+      }),
+    );
+    const completed = mapper.map(
+      event("tool.execution_complete", {
+        error: {
+          message: "Tests failed.",
+        },
+        success: false,
+        toolCallId: "tool-call-1",
+        model: "gpt-5.6-sol",
+      }),
+    );
+
+    expect(started).toMatchObject({
+      status: "mapped",
+      value: {
+        completionStatus: "running",
+        content: {
+          toolArguments: {
+            kind: "object",
+            status: "omitted_in_callback",
+          },
+        },
+        eventType: "tool.started",
+        operationId: "tool-call-1",
+        resolvedModel: "gpt-5.6-sol",
+        toolName: "powershell",
+      },
+    });
+    expect(completed).toMatchObject({
+      status: "mapped",
+      value: {
+        completionStatus: "failed",
+        eventType: "tool.failed",
+        operationId: "tool-call-1",
+        resolvedModel: "gpt-5.6-sol",
+        toolName: "powershell",
+      },
+    });
+  });
+
+  it("preserves assistant model attribution", () => {
+    const result = createMapper().map(
+      event("assistant.message", {
+        content: "done",
+        messageId: "message-1",
+        model: "gpt-5.6-sol",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        resolvedModel: "gpt-5.6-sol",
+      },
+    });
+  });
+
+  it.each([
+    "user.message",
+    "assistant.message",
+  ])("accepts empty content for %s", (eventType) => {
+    const result = createMapper().map(
+      event(
+        eventType,
+        eventType === "user.message"
+          ? {
+              content: "",
+            }
+          : {
+              content: "",
+              messageId: "message-1",
+              toolRequests: [
+                {
+                  name: "powershell",
+                  toolCallId: "tool-call-1",
+                },
+              ],
+            },
+      ),
+    );
+
+    expect(result.status).toBe("mapped");
+    if (result.status === "mapped") {
+      expect(result.value.content).toBeUndefined();
+    }
+  });
+
+  it("marks structured tool result fields as omitted", () => {
+    const result = createMapper().map(
+      event("tool.execution_complete", {
+        result: {
+          content: "ok",
+          contents: [
+            {
+              type: "text",
+            },
+          ],
+          structuredContent: {
+            secret: "not inspected in callback",
+          },
+        },
+        success: true,
+        toolCallId: "tool-call-1",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        content: {
+          toolResult: {
+            content: "ok",
+            contentBlocks: {
+              itemCount: 1,
+              status: "omitted_in_callback",
+            },
+            structuredContent: {
+              kind: "object",
+              status: "omitted_in_callback",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("records cancelled subagents without fabricating success", () => {
+    const result = createMapper().map(
+      event("subagent.completed", {
+        agentDisplayName: "Reviewer",
+        agentName: "reviewer",
+        cancelled: true,
+        toolCallId: "subagent-call-1",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        completionStatus: "cancelled",
+      },
+    });
+  });
+
+  it.each([
+    [
+      {
+        content: "human",
+      },
+      "user",
+      undefined,
+    ],
+    [
+      {
+        content: "autopilot",
+        isAutopilotContinuation: true,
+      },
+      "system",
+      "copilot-autopilot-continuation",
+    ],
+    [
+      {
+        content: "agent prompt",
+        source: "agent-reviewer",
+      },
+      "model",
+      "agent-reviewer",
+    ],
+    [
+      {
+        content: "skill injection",
+        source: "skill-pdf",
+      },
+      "system",
+      "skill-pdf",
+    ],
+  ])(
+    "classifies user.message provenance",
+    (data, trust, actorId) => {
+      const result = createMapper().map(event("user.message", data));
+
+      expect(result).toMatchObject({
+        status: "mapped",
+        value: {
+          trust,
+          ...(actorId === undefined ? {} : { actorId }),
+        },
+      });
+    },
+  );
+
+  it("retains unknown persisted events through an unsupported path", () => {
+    const result = createMapper().map(
+      event("future.persisted_event", {
+        sensitiveContent: "not copied",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "unsupported",
+      value: {
+        eventType: "future.persisted_event",
+        sourceEventId: "event-future.persisted_event",
+      },
+    });
+    if (result.status === "unsupported") {
+      expect(result.value.content).toBeUndefined();
+    }
+  });
+
+  it("updates the workspace snapshot from context change events", () => {
+    const mapper = createMapper();
+    const contextChanged = mapper.map(
+      event("session.context_changed", {
+        branch: "feature/new-context",
+        cwd: "C:\\repo\\worktree",
+        gitRoot: "C:\\repo",
+        headCommit: "abcdef1234567890abcdef1234567890abcdef12",
+        repository: "owner/repository",
+      }),
+    );
+    const next = mapper.map(
+      event("user.message", {
+        content: "continue",
+      }),
+    );
+
+    expect(contextChanged).toMatchObject({
+      status: "unsupported",
+      value: {
+        branch: "feature/new-context",
+        commitSha: "abcdef1234567890abcdef1234567890abcdef12",
+        repoId: "owner/repository",
+        worktree: "C:\\repo",
+      },
+    });
+    expect(next).toMatchObject({
+      status: "mapped",
+      value: {
+        branch: "feature/new-context",
+        commitSha: "abcdef1234567890abcdef1234567890abcdef12",
+        repoId: "owner/repository",
+        worktree: "C:\\repo",
+      },
+    });
+  });
+
+  it("defers preliminary pending Git context updates", () => {
+    const mapper = createMapper();
+    const pending = mapper.map(
+      event("session.context_changed", {
+        branch: "feature/not-settled",
+        cwd: "C:\\repo\\other",
+        pendingGitContext: true,
+      }),
+    );
+    const next = mapper.map(
+      event("user.message", {
+        content: "continue",
+      }),
+    );
+
+    expect(pending.status).toBe("unsupported");
+    expect(next).toMatchObject({
+      status: "mapped",
+      value: {
+        branch: "feat/batch3-extension-capture",
+        worktree: "worktree-1",
+      },
+    });
+  });
+
+  it("ignores ephemeral streaming content", () => {
+    const result = createMapper().map({
+      ...event("assistant.message_delta", {
+        deltaContent: "partial",
+      }),
+      ephemeral: true,
+    });
+
+    expect(result).toEqual({
+      status: "ignored",
+      eventType: "assistant.message_delta",
+      reason: "ephemeral",
+      sourceEventId: "event-assistant.message_delta",
+    });
+  });
+
+  it("reports missing required fields as malformed", () => {
+    const result = createMapper().map(
+      event("tool.execution_start", {
+        toolName: "powershell",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "malformed",
+      issues: [
+        "toolCallId must be a non-empty string.",
+      ],
+    });
+  });
+
+  it("rejects non-ISO timestamps before queueing", () => {
+    const result = createMapper().map({
+      data: {
+        content: "hello",
+      },
+      id: "event-1",
+      parentId: null,
+      timestamp: "August 29, 2026",
+      type: "user.message",
+    });
+
+    expect(result).toMatchObject({
+      status: "malformed",
+      issues: [
+        "timestamp must be an ISO-8601 string.",
+      ],
+    });
+  });
+
+  it("requires the complete SDK event envelope", () => {
+    const result = createMapper().map({
+      id: "event-1",
+      timestamp,
+      type: "future.persisted_event",
+    });
+
+    expect(result).toMatchObject({
+      status: "malformed",
+      issues: [
+        "parentId is required.",
+        "data must be an object.",
+      ],
+    });
+  });
+
+  it("bounds copied content before it enters the buffer", () => {
+    const result = createMapper().map(
+      event("user.message", {
+        content: "x".repeat(1_000),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        content: {
+          message: "x".repeat(64),
+        },
+      },
+    });
+  });
+
+  it("does not enumerate arbitrary objects in the callback", () => {
+    const mapper = new CopilotEventMapper({
+      adapterVersion: "1.0.82-0",
+      copyLimits: {
+        maxStringChars: 64,
+      },
+      sessionId: "session-1",
+    });
+    const argumentsWithDangerousTail = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("Argument keys must not be enumerated.");
+        },
+      },
+    );
+
+    expect(() =>
+      mapper.map(
+        event("tool.execution_start", {
+          arguments: argumentsWithDangerousTail,
+          toolCallId: "tool-call-1",
+          toolName: "powershell",
+        }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("bounded capture buffer", () => {
+  const captureEvent = (sourceEventId: string, message: string) => ({
+    adapter: "copilot-cli",
+    adapterVersion: "1.0.82-0",
+    content: {
+      message,
+    },
+    eventType: "prompt.submitted",
+    sessionId: "session-1",
+    sourceEventId,
+    timestamp,
+    trust: "user" as const,
+  });
+
+  it("degrades content when only metadata fits", () => {
+    const buffer = new BoundedCaptureBuffer({
+      maxGapBytes: 8_192,
+      maxGapContexts: 4,
+      maxBytes: 500,
+      maxItems: 10,
+    });
+
+    expect(
+      buffer.offer(captureEvent("event-1", "x".repeat(1_000))),
+    ).toEqual({
+      status: "degraded",
+    });
+    expect(buffer.peek()).toMatchObject({
+      contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      sourceEventId: "event-1",
+    });
+    expect(buffer.peek()?.content).toBeUndefined();
+    expect(buffer.pendingGap).toMatchObject({
+      contentOmittedCount: 1,
+      droppedEventCount: 0,
+      firstSourceEventId: "event-1",
+    });
+  });
+
+  it("records a gap when the item limit drops an event", () => {
+    const buffer = new BoundedCaptureBuffer({
+      maxGapBytes: 8_192,
+      maxGapContexts: 4,
+      maxBytes: 10_000,
+      maxItems: 1,
+    });
+
+    expect(buffer.offer(captureEvent("event-1", "first"))).toEqual({
+      status: "accepted",
+    });
+    expect(buffer.offer(captureEvent("event-2", "second"))).toEqual({
+      status: "dropped",
+    });
+    expect(buffer.pendingGap).toMatchObject({
+      contentOmittedCount: 1,
+      droppedEventCount: 1,
+      firstSourceEventId: "event-2",
+      lastSourceEventId: "event-2",
+      reasons: [
+        "buffer_item_limit",
+      ],
+    });
+  });
+
+  it("converts a gap into a canonical capture event", () => {
+    const buffer = new BoundedCaptureBuffer({
+      maxGapBytes: 8_192,
+      maxGapContexts: 4,
+      maxBytes: 10_000,
+      maxItems: 1,
+    });
+    buffer.offer(captureEvent("event-1", "first"));
+    buffer.offer(captureEvent("event-2", "second"));
+    const gap = buffer.takeGap();
+
+    expect(gap).toBeDefined();
+    if (gap === undefined) {
+      throw new Error("Expected a capture gap.");
+    }
+    expect(captureGapEvent(gap)).toMatchObject({
+      eventType: "capture_gap",
+      sessionId: "session-1",
+      sourceEventId: expect.stringMatching(/^capture-gap-/u),
+    });
+  });
+
+  it("splits gaps when repository context changes", () => {
+    const buffer = new BoundedCaptureBuffer({
+      maxGapBytes: 8_192,
+      maxGapContexts: 4,
+      maxBytes: 10_000,
+      maxItems: 1,
+    });
+    buffer.offer(captureEvent("event-1", "first"));
+    buffer.offer({
+      ...captureEvent("event-2", "second"),
+      branch: "feature/a",
+      repoId: "repo-a",
+    });
+    buffer.offer({
+      ...captureEvent("event-3", "third"),
+      branch: "feature/b",
+      repoId: "repo-b",
+    });
+
+    expect(buffer.takeGap()).toMatchObject({
+      branch: "feature/a",
+      firstSourceEventId: "event-2",
+      lastSourceEventId: "event-2",
+      repoId: "repo-a",
+    });
+    expect(buffer.takeGap()).toMatchObject({
+      branch: "feature/b",
+      firstSourceEventId: "event-3",
+      lastSourceEventId: "event-3",
+      repoId: "repo-b",
+    });
+  });
+
+  it("bounds gap contexts and marks mixed attribution", () => {
+    const buffer = new BoundedCaptureBuffer({
+      maxGapBytes: 4_096,
+      maxGapContexts: 1,
+      maxBytes: 10_000,
+      maxItems: 1,
+    });
+    buffer.offer(captureEvent("event-1", "first"));
+    for (let index = 2; index <= 100; index += 1) {
+      buffer.offer({
+        ...captureEvent(`event-${index}`, "dropped"),
+        branch: `feature/${index}`,
+        repoId: `repo-${index}`,
+      });
+    }
+
+    expect(buffer.byteCount).toBeLessThanOrEqual(14_096);
+    expect(buffer.takeGap()).toMatchObject({
+      contentOmittedCount: 99,
+      contextMixed: true,
+      droppedEventCount: 99,
+      firstSourceEventId: "event-2",
+      lastSourceEventId: "event-100",
+    });
+    expect(buffer.takeGap()).toBeUndefined();
+  });
+});

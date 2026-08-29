@@ -19,6 +19,7 @@ export type CaptureEventInput = Omit<
   "eventId" | "redactedArguments" | "resultDigest" | "schemaVersion"
 > & {
   readonly content?: CaptureContentInput;
+  readonly contentDigest?: string;
   readonly internalSession?: boolean;
   readonly sessionId: string;
   readonly sourceEventId: string;
@@ -180,6 +181,12 @@ export const createCaptureEnvelope = (
     redaction: {
       ...redacted.redaction,
       appliedRules,
+      ...(redacted.redaction.contentDigest === undefined &&
+      input.contentDigest !== undefined
+        ? {
+            contentDigest: input.contentDigest,
+          }
+        : {}),
       redactedPaths,
     },
     sourceEventId: safeSourceEventId ?? normalizedSourceEventId,

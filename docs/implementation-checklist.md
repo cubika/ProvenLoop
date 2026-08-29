@@ -235,12 +235,12 @@ frozen.
 
 ### 6.4 Extension capture
 
-- [ ] Join the active Copilot Session and subscribe to required events.
-- [ ] Copy allowed fields into a bounded in-memory buffer.
-- [ ] Redact and enqueue through an asynchronous writer.
-- [ ] Emit explicit `capture_gap` records on overflow or interrupted delivery.
-- [ ] Return control without waiting for worker availability or persistence.
-- [ ] Surface capture degradation through status and logs without failing
+- [x] Join the active Copilot Session and subscribe to required events.
+- [x] Copy allowed fields into a bounded in-memory buffer.
+- [x] Redact and enqueue through an asynchronous writer.
+- [x] Emit explicit `capture_gap` records on overflow or interrupted delivery.
+- [x] Return control without waiting for worker availability or persistence.
+- [x] Surface capture degradation through status and logs without failing
   Copilot.
 - [ ] Reconcile supported Session files after gaps and restarts.
 - [ ] Benchmark capture-added latency.
@@ -251,7 +251,7 @@ frozen.
 - [ ] Capture-added latency P95 is at most 10 ms.
 - [x] Seeded secrets persisted by capture are zero.
 - [ ] Duplicate events create no duplicate canonical facts.
-- [ ] Unknown and malformed events are observable and never silently accepted.
+- [x] Unknown and malformed events are observable and never silently accepted.
 
 ## 7. Batch 4: canonical storage and shared worker
 

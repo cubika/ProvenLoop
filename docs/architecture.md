@@ -218,6 +218,28 @@ cannot expose a partially written item. Queue item identity remains separate
 from event identity because at-least-once delivery may enqueue the same source
 event more than once.
 
+The Extension runtime maps supported SDK events synchronously into bounded
+copies, then submits them to a count-and-byte-limited FIFO. User and assistant
+text is copied up to an explicit character limit. Arbitrary structured tool
+arguments are not enumerated in the callback; they receive an explicit
+`omitted_in_callback` marker, while known result, error, metric, and code-change
+scalars are copied directly. Queue I/O starts on a later event-loop turn.
+
+When pressure prevents a full event from fitting, the buffer first retains
+metadata plus a content digest; if even metadata cannot fit, it drops the event
+and aggregates the missing range. The writer persists that range as a
+`capture_gap` after normal queue writes resume. Gap bookkeeping has independent
+byte and context-count limits. If those limits are reached across workspace
+changes, the remaining range is marked `contextMixed` rather than attributed
+to the first repository. All buffer and gap limits are explicit runtime
+configuration, not hidden constants.
+
+The runtime accepts `joinSession` and workspace-refresh providers at its
+boundary. This keeps the bundled Copilot SDK and asynchronous Git inspection
+outside event callbacks. A `session.context_changed` event updates the snapshot
+immediately, while completed tools schedule a non-blocking refresh.
+`session.shutdown` and `SIGTERM` both trigger the same deadline-bounded drain.
+
 ### 3.3 Shared worker
 
 The worker starts on demand when queue work exists. A lock prevents duplicate

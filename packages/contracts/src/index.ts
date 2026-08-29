@@ -26,6 +26,7 @@ export {
 } from "./capture-queue.js";
 export {
   CURRENT_SCHEMA_VERSION,
+  isoTimestampSchema,
   scopeSchema,
   type Scope,
 } from "./common.js";
