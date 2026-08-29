@@ -154,5 +154,7 @@ Regenerate the Markdown view from a run's stable JSON report:
 
 ## Status
 
-The project is in product-design and architecture-definition stage. The first
-implementation target is a local TypeScript/Node.js MVP for GitHub Copilot CLI.
+The local TypeScript/Node.js MVP is under implementation. Shared contracts and
+the evaluation spine are complete; the current Batch 3 slice adds deterministic
+capture envelopes, write-time redaction, and the Windows durable queue before
+the Copilot Extension is wired to that boundary.

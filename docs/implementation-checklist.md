@@ -206,32 +206,32 @@ frozen.
 
 ### 6.1 Event envelope and identity
 
-- [ ] Generate stable event IDs and deduplication keys.
-- [ ] Record adapter name/version, timestamp, trust label, session, repository,
+- [x] Generate stable event IDs and deduplication keys.
+- [x] Record adapter name/version, timestamp, trust label, session, repository,
   branch, worktree, commit, tool, operation, actor, and participant identities
   when available.
-- [ ] Keep requested provider/model separate from resolved provider/model.
+- [x] Keep requested provider/model separate from resolved provider/model.
 - [ ] Keep process declaration separate from verified completion evidence.
 - [ ] Never inject raw events directly into model context.
 
 ### 6.2 Redaction
 
-- [ ] Redact known credential formats before queue persistence.
-- [ ] Add entropy-based detection for unknown token formats.
-- [ ] Minimize stored tool arguments and result bodies.
-- [ ] Preserve a safe error and digest when content is removed.
+- [x] Redact known credential formats before queue persistence.
+- [x] Add entropy-based detection for unknown token formats.
+- [x] Minimize stored tool arguments and result bodies.
+- [x] Preserve a safe error and digest when content is removed.
 - [ ] Add a second redaction pass to the future retrieval boundary.
-- [ ] Test false positives as well as seeded-secret recall.
+- [x] Test false positives as well as seeded-secret recall.
 
 ### 6.3 Persistent queue
 
-- [ ] Implement atomic append or atomic file replacement.
-- [ ] Implement `pending`, `claimed`, `acknowledged`, `retry`, and `dead-letter`
+- [x] Implement atomic append or atomic file replacement.
+- [x] Implement `pending`, `claimed`, `acknowledged`, `retry`, and `dead-letter`
   states.
-- [ ] Add bounded retry with explicit last error and next-attempt time.
-- [ ] Recover claimed items after process failure.
-- [ ] Retain successful items only for the configured diagnostic period.
-- [ ] Prevent recursive events marked `PROVENLOOP_INTERNAL=1`.
+- [x] Add bounded retry with explicit last error and next-attempt time.
+- [x] Recover claimed items after process failure.
+- [x] Retain successful items only for the configured diagnostic period.
+- [x] Prevent recursive events marked `PROVENLOOP_INTERNAL=1`.
 
 ### 6.4 Extension capture
 
@@ -249,7 +249,7 @@ frozen.
 
 - [ ] Supported-event recognition precision is at least 95%.
 - [ ] Capture-added latency P95 is at most 10 ms.
-- [ ] Seeded secrets persisted by capture are zero.
+- [x] Seeded secrets persisted by capture are zero.
 - [ ] Duplicate events create no duplicate canonical facts.
 - [ ] Unknown and malformed events are observable and never silently accepted.
 

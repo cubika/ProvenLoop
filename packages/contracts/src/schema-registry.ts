@@ -4,6 +4,8 @@ import { CURRENT_SCHEMA_VERSION } from "./common.js";
 
 export const SCHEMA_NAMES = [
   "rawEvent",
+  "captureEnvelope",
+  "captureQueueItem",
   "workEpisode",
   "branchContext",
   "correctionKey",
@@ -33,6 +35,8 @@ const noMigrations: readonly SchemaMigration[] = [];
 
 export const CURRENT_SCHEMA_VERSIONS = {
   branchContext: CURRENT_SCHEMA_VERSION,
+  captureEnvelope: CURRENT_SCHEMA_VERSION,
+  captureQueueItem: CURRENT_SCHEMA_VERSION,
   contextUseRecord: CURRENT_SCHEMA_VERSION,
   correctionKey: CURRENT_SCHEMA_VERSION,
   correctionOpportunity: CURRENT_SCHEMA_VERSION,
@@ -50,6 +54,8 @@ export const CURRENT_SCHEMA_VERSIONS = {
 
 export const SCHEMA_MIGRATIONS = {
   branchContext: noMigrations,
+  captureEnvelope: noMigrations,
+  captureQueueItem: noMigrations,
   contextUseRecord: noMigrations,
   correctionKey: noMigrations,
   correctionOpportunity: noMigrations,

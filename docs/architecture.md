@@ -209,6 +209,15 @@ Queue requirements:
 - bounded retention after successful processing;
 - dead-letter state with explicit errors.
 
+The Batch 3 persistence boundary uses a versioned `CaptureEnvelope` containing
+the stable source identity, deterministic deduplication key, redacted
+`RawEvent`, bounded content, and the applied redaction rule version. Queue state
+is stored in a versioned `CaptureQueueItem`. Each item uses one JSON file whose
+content is flushed and atomically replaced for state transitions, so a crash
+cannot expose a partially written item. Queue item identity remains separate
+from event identity because at-least-once delivery may enqueue the same source
+event more than once.
+
 ### 3.3 Shared worker
 
 The worker starts on demand when queue work exists. A lock prevents duplicate

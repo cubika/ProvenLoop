@@ -7,6 +7,24 @@ export {
   type BranchContext,
 } from "./branch-context.js";
 export {
+  captureContentSchema,
+  captureEnvelopeSchema,
+  captureRedactionSchema,
+  CAPTURE_REDACTION_RULE_VERSION,
+  jsonValueSchema,
+  type CaptureContent,
+  type CaptureEnvelope,
+  type CaptureRedaction,
+  type JsonValue,
+} from "./capture.js";
+export {
+  captureQueueItemSchema,
+  captureQueueStateSchema,
+  CAPTURE_QUEUE_STATES,
+  type CaptureQueueItem,
+  type CaptureQueueState,
+} from "./capture-queue.js";
+export {
   CURRENT_SCHEMA_VERSION,
   scopeSchema,
   type Scope,
