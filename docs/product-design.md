@@ -738,7 +738,7 @@ provenloop install
 
 首发安装 GitHub Copilot CLI 集成：
 
-- Lifecycle Hooks。
+- Copilot CLI Extension 事件流。
 - 本地 MCP Server。
 - 后台处理 Worker。
 - 本地数据和证据存储。
@@ -783,8 +783,8 @@ provenloop_context(prompt, cwd)
 - Active Knowledge。
 - Approved Playbook。
 
-完成任务后，Hooks 只负责脱敏和入队；后台 Worker 异步更新 Episode、Outcome 和
-Knowledge 状态。
+任务进行时，Extension callback 只复制有界字段并交给异步 writer。writer
+完成脱敏和原子入队；后台 Worker 再更新 Episode、Outcome 和 Knowledge 状态。
 
 ### 9.4 用户控制
 
@@ -906,7 +906,7 @@ ProvenLoop
 
 即使底层使用 Memorix，用户只管理 ProvenLoop：
 
-- 不重复安装两套 Hook。
+- 不重复安装两套采集集成。
 - 不重复注入 Context。
 - 不出现两个相互冲突的 Memory 生命周期。
 - 不要求用户理解底层 Backend。
@@ -1139,7 +1139,7 @@ D：Candidate Playbook
 | Unsupported Causality | 缺少证据却表述为因果结论的 Insight | 不高于 2% |
 | Evidence Coverage | Insight 要求字段和来源完整率 | 100% |
 | Retrieval Latency | 本地检索 P95 | 不高于 150 ms |
-| Hook Latency | Hook 新增 P95 | 不高于 10 ms |
+| Capture Added Latency | 采集新增 P95 | 不高于 10 ms |
 | Context Budget | 通常 1-3 项 | 硬上限约 1,200 tokens |
 
 ### 12.9 置信度校准
@@ -1244,7 +1244,7 @@ ProvenLoop 永久收缩为 Branch Memory 或纠正记录工具。前一阶段验
 
 交付：
 
-- Hook、MCP、Session 数据和启动方式 Spike。
+- Extension 事件、MCP、Session 数据和启动方式 Spike。
 - 后台推理复用当前 Copilot 登录态的支持路径、递归隔离、失败降级和内部安全熔断验证。
 - Observe-only 原型。
 - Fail-closed、Disable 和 Doctor 路径。
@@ -1253,7 +1253,7 @@ ProvenLoop 永久收缩为 Branch Memory 或纠正记录工具。前一阶段验
 验收：
 
 - 明确首发支持的 Copilot CLI 启动方式和版本边界。
-- Hook 或 MCP 失败不阻塞 Agent。
+- Extension 或 MCP 失败不阻塞 Agent。
 - 安装时完成一次接入；日常后台调用不要求逐次授权或额外模型 API Key。
 - 后台调用失败、受限或积压时不影响前台 Copilot，且不会递归学习或无限重试。
 - 用户能够查看状态，并关闭单项能力或全部 ProvenLoop 活动。
@@ -1278,7 +1278,7 @@ ProvenLoop 永久收缩为 Branch Memory 或纠正记录工具。前一阶段验
 
 - 关键事件识别 Precision 不低于 95%。
 - Episode 关联 Precision 不低于 95%，Recall 不低于 90%。
-- Hook P95 新增延迟不高于 10 ms。
+- Capture P95 新增延迟不高于 10 ms。
 - Seeded Secret 保留和跨 Repo 泄漏为 0。
 - 缺少实际执行证据的关键完成声明不能通过验收或进入学习。
 
@@ -1463,16 +1463,17 @@ Playbook 默认不自动启用。
 - Candidate 使成功率明显下降。
 - 新环境不再满足 Trigger。
 
-### 14.3 Hook 行为
+### 14.3 采集行为
 
-Hook 只做：
+Extension callback 只做：
 
-- 验证事件。
-- 脱敏。
-- 持久入队。
-- 立即返回。
+- 读取事件元数据。
+- 跳过内部 Session。
+- 复制有界字段到内存缓冲区。
+- 立即返回控制权。
 
-Hook 不同步调用模型，不分析完整历史，不影响 Agent 正常完成任务。
+异步 writer 负责脱敏和持久入队。callback 不执行同步文件 I/O，不调用模型，
+不分析完整历史，也不等待 Worker。
 
 ### 14.4 删除语义
 

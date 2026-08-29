@@ -413,8 +413,8 @@ content_hash: sha256:...
 - 支持事件的识别 Precision 不低于 95%；
 - 重复事件不会产生重复事实；
 - 未知版本显式进入错误或兼容路径；
-- Hook 故障不阻塞 Copilot；
-- Hook 新增延迟 P95 不高于 10 ms；
+- Extension 故障不阻塞 Copilot；
+- Capture 新增延迟 P95 不高于 10 ms；
 - Seeded Secret 持久化为 0；
 - 队列中断后可恢复，失败事件可定位。
 
@@ -593,7 +593,7 @@ Candidate 只有在独立 Held-out 上相对当前可用方案产生增益，才
 | Secret 持久化或输出 | 0 |
 | 跨 Repository 泄漏 | 0 |
 | Retrieval Latency P95 | 不高于 150 ms |
-| Hook Latency P95 | 不高于 10 ms |
+| Capture Added Latency P95 | 不高于 10 ms |
 | Evidence Coverage | 100% |
 | 删除传播失败 | 0 |
 | Unsupported Completion Claim | 0 |
@@ -895,7 +895,7 @@ M1 + M2 是第一个可正式验证的产品。建议准备以下最小验收包
 4. 用户改变偏好后，旧 Knowledge 被修订而不是继续生效。
 5. 已显式关联的 direct Later Revert 使旧 Knowledge 停止注入。
 6. Forget 后原始数据和派生数据均不可检索。
-7. Backend、Worker 或 Hook 故障时 Copilot 仍可使用。
+7. Backend、Worker 或 Extension 故障时 Copilot 仍可使用。
 8. Explain 能展示来源、适用范围、反证和当前状态。
 9. 声称“已执行测试/评审/共识”时，Ledger 中存在对应成功执行证据。
 10. 检测到外部代表可用但未调用，或代表模型不满足协议要求时，不能声称跨模型共识。
@@ -950,7 +950,7 @@ Go / Conditional Go / No-Go
 - Severe Harm:
 - Unsupported Completion Claim:
 - Secret/Scope violations:
-- Hook P95:
+- Capture Added Latency P95:
 - Retrieval P95:
 
 ## Subsystem results

@@ -1,13 +1,15 @@
 # ProvenLoop implementation blockers
 
-## F0-001: Copilot Hook latency
+## F0-001: Copilot event capture latency
 
 **Owner:** Copilot adapter work package
 **State:** Blocking
 
 Copilot CLI `1.0.82-0` delivered tested command and HTTP Hooks hundreds of
-milliseconds after their event timestamps. The current result does not meet
-the 10 ms P95 requirement.
+milliseconds after their event timestamps. The proposed replacement is a
+plugin Extension using Session event notifications, but it has not passed the
+latency and failure tests in
+[copilot-event-capture-design.md](copilot-event-capture-design.md).
 
 Exit conditions:
 
@@ -17,6 +19,12 @@ Exit conditions:
 - achieve a P95 of 10 ms or less;
 - retain the payloads needed for event identity, tool completion, session
   identity, and explicit errors.
+- prove callback backlog, Extension crash, and queue failure do not slow or
+  stop foreground Copilot.
+- prove the experimental opt-in persists for ordinary `copilot` launches and
+  is reversed by disable or uninstall.
+- recover a Session when the Extension is terminated before it can persist a
+  `capture_gap`.
 
 ## F0-002: Provider degradation matrix
 

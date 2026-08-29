@@ -1,7 +1,7 @@
 # ProvenLoop Technical Architecture
 
 **Status:** Proposed architecture  
-**Updated:** 2026-08-28
+**Updated:** 2026-08-29
 
 This document describes both the executable near-term architecture and the
 long-term logical architecture. They use the same event, evidence, domain, and
@@ -39,13 +39,14 @@ flowchart TB
     end
 
     subgraph Plugin["ProvenLoop Copilot Plugin"]
-        Hooks[Lifecycle hooks]
+        Extension[Session event extension]
         MCP[Local MCP server]
         Instruction[Minimal runtime instruction]
     end
 
     subgraph Core["ProvenLoop Core"]
         Queue[Persistent event queue]
+        Reconciler[Session event reconciler]
         Worker[On-demand worker]
         Parser[Adapter and event parser]
         Episode[Work Episode builder]
@@ -59,6 +60,7 @@ flowchart TB
 
     subgraph Storage["Local storage"]
         EventDB[(Canonical domain SQLite)]
+        SessionState[Copilot session files]
         Knowledge[(Rebuildable knowledge index)]
         Artifacts[Approved Markdown and Playbook artifacts]
         EvalData[(Evaluation datasets)]
@@ -72,10 +74,12 @@ flowchart TB
     Retriever --> Registry
     Retriever --> Prompt
 
-    Prompt --> Hooks
-    Tools --> Hooks
-    Result --> Hooks
-    Hooks --> Queue
+    Prompt --> Extension
+    Tools --> Extension
+    Result --> Extension
+    Extension --> Queue
+    SessionState --> Reconciler
+    Reconciler --> Queue
     Queue --> Worker
     Worker --> Parser
     Parser --> EventDB
@@ -98,11 +102,12 @@ The diagram is the target logical architecture, not the first implementation
 backlog. The executable M0-M2 slice is:
 
 ```text
-Hooks -> Queue -> Worker -> Parser -> canonical SQLite
-                               |
-                               +-> basic Work Episode
-                               +-> Correction Key and admission policy
-                               +-> Branch Context / Knowledge projection
+Extension -> async writer -> Queue -> Worker -> Parser -> canonical SQLite
+Session files -> bounded Reconciler ----^
+                                            |
+                                            +-> basic Work Episode
+                                            +-> Correction Key and admission policy
+                                            +-> Branch Context / Knowledge projection
 
 MCP -> Retriever -> canonical state + FTS projection -> bounded Context
 
@@ -114,7 +119,7 @@ Requirement Manifest -> Replay Spec -> Runner
 
 | Milestone | Newly active capability | Shared contract retained |
 |---|---|---|
-| M0 | Copilot adapter, hooks, queue, parser, canonical events, basic Episode builder, evaluation spine | Event identity, evidence references, deletion, Gate result |
+| M0 | Copilot adapter, Extension events, queue, parser, canonical events, basic Episode builder, evaluation spine | Event identity, evidence references, deletion, Gate result |
 | M1 | Branch Context, scoped retrieval, FTS projection, Explain and Feedback | Repository/branch identity, token budget, usage records |
 | M2 | Correction Key, evidence-backed Knowledge, deterministic admission and dispute handling | Evidence tier, scope, trigger, provenance, product metrics |
 | M3 | Automated delayed Outcome linking and observation-window qualification | Existing Episode and evidence relations |
@@ -134,8 +139,8 @@ and delayed association of Review, CI, Fix, Bug, and Revert evidence.
 Responsibilities:
 
 - install, enable, disable, upgrade, and uninstall plugin assets;
-- register hooks and MCP;
-- map Copilot lifecycle events into the canonical event schema;
+- register the capture Extension and MCP;
+- map Copilot Session events into the canonical event schema;
 - identify current session and workspace;
 - report which lifecycle, tool, Git, and external outcome signals are actually
   available in the installed Copilot version;
@@ -155,7 +160,7 @@ interface AgentAdapter {
   capabilities(): Promise<AdapterCapabilityMatrix>;
   normalizeEvent(input: unknown): NormalizedEventResult;
   resolveSession(context: RuntimeContext): Promise<SessionIdentity>;
-  registerHooks(): Promise<void>;
+  registerCaptureExtension(): Promise<void>;
   registerContextTools(): Promise<void>;
 }
 ```
@@ -165,28 +170,33 @@ versions remain unverified until their capability probe passes. Production
 plugin installation uses a marketplace because direct path installs are
 deprecated and cannot be disabled through the normal lifecycle commands.
 
-### 3.2 Hooks and persistent queue
+### 3.2 Event capture and persistent queue
 
-Hooks perform only bounded work:
+The primary capture path is the Copilot CLI Extension event stream. Extension
+callbacks perform only bounded memory work:
 
-1. validate event envelope;
-2. redact likely secrets and sensitive payloads;
-3. attach timestamp and adapter metadata;
-4. write atomically to the persistent queue;
-5. return immediately.
+1. read event identity and adapter metadata;
+2. reject internal ProvenLoop sessions;
+3. copy allowed fields into a bounded memory buffer;
+4. schedule the asynchronous writer;
+5. return control immediately.
 
-Hooks do not:
+Callbacks do not:
 
 - call an LLM;
 - scan prior sessions;
 - build Work Episodes;
 - update Knowledge Cards;
-- call external network services.
+- perform synchronous file, network, Git, or database I/O.
 
-The Hook transport is not yet frozen. F0 found that command Hooks were too
-slow, while localhost HTTP Hooks were fail-open but still reached the handler
-hundreds of milliseconds after the event timestamp. Broad implementation
-remains blocked until the complete Hook path meets the latency requirement.
+The writer performs redaction and one-file-per-event atomic queue writes outside
+the callback. A bounded Reconciler reads supported versions of Copilot Session
+files after gaps or restarts. Metadata-only OpenTelemetry may provide another
+reconciliation signal after its overhead and failure behavior pass F0 tests.
+
+Command and HTTP lifecycle Hooks are not used for normal capture. F0 found both
+paths too slow. The complete design and acceptance gate are defined in
+[Copilot event capture design](copilot-event-capture-design.md).
 
 Queue requirements:
 
@@ -205,10 +215,10 @@ The worker starts on demand when queue work exists. A lock prevents duplicate
 workers. It processes events in batches and yields to interactive workloads.
 Queue items remain durable while a consumer is paused or unavailable.
 
-The initial deployment is a modular monolith: a thin hook shim and one shared
-local ProvenLoop host containing the MCP server, worker, domain modules, and
-CLI control surface. Components are code boundaries, not independently
-deployed local services.
+The initial deployment is a modular monolith with a small capture Extension and
+one shared local ProvenLoop host containing the MCP server, worker, domain
+modules, and CLI control surface. Components are code boundaries, not
+independently deployed local services.
 
 The Windows implementation uses a named pipe as an OS-owned process lease, not
 an unbounded stale lock file. The platform boundary owns data-root resolution,
@@ -221,7 +231,7 @@ Internal background Copilot calls are marked:
 PROVENLOOP_INTERNAL=1
 ```
 
-The adapter ignores resulting hooks to prevent recursive learning.
+The capture Extension ignores those Session IDs to prevent recursive learning.
 
 Model-assisted consumers use a narrow inference boundary:
 
@@ -1009,7 +1019,7 @@ measurements justify it. A Go rewrite is not an MVP requirement.
 
 ## 9. Reliability and failure behavior
 
-- Hook failure never prevents Copilot from running.
+- Extension, writer, or Reconciler failure never prevents Copilot from running.
 - Queue write failure is surfaced through health status and logs.
 - Parser errors retain the raw envelope and explicit error.
 - Analyzer failure does not create an empty or success-shaped memory.
@@ -1081,7 +1091,7 @@ Scaling mechanisms:
 
 Track:
 
-- hook and queue latency;
+- capture delivery, added latency, and queue latency;
 - worker backlog and failures;
 - Episode precision, recall, wrong merge, and wrong split;
 - Outcome link strength and censored observation windows;
@@ -1108,9 +1118,9 @@ The MVP needs CLI diagnostics, not a full dashboard.
 1. ProvenLoop is a learning layer, not an agent runtime.
 2. One architecture spans M0-M6; later milestones activate compatible
    capabilities rather than replacing the core.
-3. The initial deployment is a modular monolith with a thin hook shim and one
-   shared local host, not a set of local microservices.
-4. Hooks persist; workers analyze.
+3. The initial deployment is a modular monolith with a small capture Extension
+   and one shared local host, not a set of local microservices.
+4. Extension callbacks copy; asynchronous writers persist; workers analyze.
 5. Work Episode is the aggregation boundary.
 6. Outcomes and feedback are append-only evidence during normal operation;
    explicit user deletion uses a separate hard-delete workflow.

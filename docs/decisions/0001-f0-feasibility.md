@@ -60,6 +60,11 @@ HTTP Hook failures were fail-open in the probe. Foreground Copilot completed
 normally with the Hook server stopped. This satisfies failure isolation, but
 the dispatch delay blocks adoption of this transport.
 
+The replacement candidate is a plugin-contributed Copilot CLI Extension using
+Session event notifications. It remains a proposal until the F0 latency,
+coverage, backpressure, and crash experiments pass. See
+[Copilot event capture design](../copilot-event-capture-design.md).
+
 ### Local persistence
 
 The selected F0 SQLite driver is the Node `node:sqlite` module bundled with
@@ -96,7 +101,7 @@ store domain data inside the plugin directory.
 ## Consequences
 
 The contracts, storage boundary, queue format, plugin marketplace packaging,
-and stdio MCP work may proceed once the Hook latency blocker is resolved.
+and stdio MCP work may proceed once the event capture latency blocker is resolved.
 Broad workspace implementation remains paused under the dependency rule.
 
 Open feasibility work is tracked in

@@ -12,11 +12,12 @@ completion.
 
 ## 1. Delivery rules
 
-- [ ] Keep the MVP a TypeScript/Node.js modular monolith: a thin Copilot hook
-  shim and one shared local host.
+- [ ] Keep the MVP a TypeScript/Node.js modular monolith: a small Copilot
+  capture Extension and one shared local host.
 - [ ] Treat SQLite domain state as canonical; FTS, rendered context, and agent
   assets are rebuildable projections.
-- [ ] Keep hooks bounded: validate, redact, enqueue atomically, and return.
+- [ ] Keep Extension callbacks bounded: copy allowed fields, enqueue to memory,
+  and return without synchronous I/O.
 - [ ] Fail closed for retrieval and learning; failure must never block normal
   Copilot use or fabricate successful state.
 - [ ] Require stable IDs, provenance, scope, evidence state, and deletion state
@@ -60,13 +61,23 @@ frozen.
   reinstallation. Local marketplace lifecycle passes; remote upgrade remains
   blocked by F0-003.
 - [x] Verify internal ProvenLoop work can be marked with
-  `PROVENLOOP_INTERNAL=1` and excluded from capture.
+  `PROVENLOOP_INTERNAL=1`.
 - [x] Verify supported background inference can reuse the existing Copilot
   sign-in without copying credentials, an additional API key, or per-call
   authorization.
 - [x] Document degradation when Copilot is signed out, rate-limited, or
   incompatible.
 - [x] Prove hook and MCP failure do not block foreground Copilot use.
+- [ ] Verify a plugin Extension can join the active Session and subscribe to
+  required `session.on(...)` events.
+- [ ] Verify Extension callbacks are notification-only and do not wait for
+  persistence or downstream processing.
+- [ ] Verify the Extension excludes registered internal Session IDs before
+  copying content.
+- [ ] Verify Extension opt-in persists for ordinary `copilot` launches and is
+  reversed by disable or uninstall.
+- [ ] Measure at least 500 Extension events and pass the F0-001 latency,
+  backpressure, crash, coverage, and privacy gates.
 
 ### 3.2 Local runtime spike
 
@@ -76,7 +87,8 @@ frozen.
 - [x] Verify the process lease or named-mutex approach releases correctly after
   crashes.
 - [x] Define the Windows data-root, log, artifact, queue, and evaluation paths.
-- [x] Measure cold start, idle memory, queue throughput, and hook overhead.
+- [x] Measure cold start, idle memory, queue throughput, and baseline capture
+  overhead.
 
 ### 3.3 Exit criteria
 
@@ -84,7 +96,7 @@ frozen.
   architecture sections.
 - [x] Convert every unresolved feasibility risk into a blocking issue with an
   owner and a testable exit condition.
-- [x] Do not begin broad implementation while authentication reuse, hook
+- [x] Do not begin broad implementation while authentication reuse, capture
   non-blocking behavior, or SQLite packaging remains unproven.
 
 ## 4. Batch 1: repository and contract foundation
@@ -210,20 +222,22 @@ frozen.
 - [ ] Retain successful items only for the configured diagnostic period.
 - [ ] Prevent recursive events marked `PROVENLOOP_INTERNAL=1`.
 
-### 6.4 Hook shim
+### 6.4 Extension capture
 
-- [ ] Validate the envelope.
-- [ ] Redact.
-- [ ] Enqueue.
-- [ ] Return immediately regardless of worker availability.
-- [ ] Surface queue-write degradation through status and logs without failing
+- [ ] Join the active Copilot Session and subscribe to required events.
+- [ ] Copy allowed fields into a bounded in-memory buffer.
+- [ ] Redact and enqueue through an asynchronous writer.
+- [ ] Emit explicit `capture_gap` records on overflow or interrupted delivery.
+- [ ] Return control without waiting for worker availability or persistence.
+- [ ] Surface capture degradation through status and logs without failing
   Copilot.
-- [ ] Benchmark hook-added latency.
+- [ ] Reconcile supported Session files after gaps and restarts.
+- [ ] Benchmark capture-added latency.
 
 ### 6.5 Definition of done
 
 - [ ] Supported-event recognition precision is at least 95%.
-- [ ] Hook-added latency P95 is at most 10 ms.
+- [ ] Capture-added latency P95 is at most 10 ms.
 - [ ] Seeded secrets persisted by capture are zero.
 - [ ] Duplicate events create no duplicate canonical facts.
 - [ ] Unknown and malformed events are observable and never silently accepted.
@@ -262,7 +276,7 @@ frozen.
 
 ### 7.4 Definition of done
 
-- [ ] A fixture travels end to end from hook envelope to redacted queue item,
+- [ ] A fixture travels end to end from Extension envelope to redacted queue item,
   worker processing, canonical SQLite row, Ledger evidence, and gate result.
 - [ ] Worker crashes do not lose acknowledged or pending work.
 - [ ] Failed transactions do not create success-shaped domain state.
@@ -273,7 +287,7 @@ frozen.
 ### 8.1 Adapter
 
 - [ ] Implement the `AgentAdapter` contract.
-- [ ] Register supported hooks and local MCP configuration.
+- [ ] Register the supported Extension and local MCP configuration.
 - [ ] Resolve session, repository, branch, worktree, and commit identity.
 - [ ] Publish an actual capability matrix for the installed Copilot version.
 - [ ] Detect internal ProvenLoop sessions and suppress recursive capture.
@@ -297,7 +311,7 @@ frozen.
 - [ ] SQLite health and migration version.
 - [ ] Queue health, backlog, retry, and dead-letter count.
 - [ ] Worker lease and recent heartbeat.
-- [ ] Copilot version, sign-in availability, hook registration, and MCP
+- [ ] Copilot version, sign-in availability, Extension registration, and MCP
   registration.
 - [ ] Capability state and last explicit error for each consumer.
 - [ ] Redaction and end-to-end synthetic-event self-test.
@@ -352,7 +366,7 @@ frozen.
   pass.
 - [ ] Unsupported Completion Claim count is zero.
 - [ ] Seeded secret persistence and cross-repository leakage are zero.
-- [ ] Hook latency P95 is at most 10 ms.
+- [ ] Capture-added latency P95 is at most 10 ms.
 - [ ] Parser and episode-builder quality thresholds pass.
 - [ ] `provenloop doctor` reports actionable failures.
 - [ ] `report.json`, `report.md`, Evidence Ledger, dataset versions, and code
@@ -494,7 +508,7 @@ The first coding slice should prove one complete path before adding more event
 types:
 
 ```text
-fixture hook event
+fixture Extension event
   -> envelope validation
   -> write-time redaction
   -> atomic durable queue

@@ -47,10 +47,10 @@ versioned artifact promoted only after repeated evidence and evaluation.
 
 ## Initial integration
 
-The first supported agent is GitHub Copilot CLI. ProvenLoop is installed as a
-Copilot plugin containing:
+The first supported agent is GitHub Copilot CLI. The proposed plugin shape,
+pending the F0 Extension gate, contains:
 
-- lifecycle hooks that persist events without blocking the CLI;
+- a session event extension that feeds an asynchronous local queue;
 - a local MCP server for scoped context retrieval and feedback;
 - a background worker that builds episodes and links outcomes;
 - a small runtime instruction that asks Copilot to retrieve relevant context.
@@ -67,6 +67,7 @@ ProvenLoop/
     product-design.md
     product-validation.md
     architecture.md
+    copilot-event-capture-design.md
     roadmap.md
     implementation-checklist.md
     research/
@@ -79,6 +80,7 @@ ProvenLoop/
 - [Product design](docs/product-design.md)
 - [Product validation and quality evaluation](docs/product-validation.md)
 - [Technical architecture](docs/architecture.md)
+- [Copilot event capture design](docs/copilot-event-capture-design.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Executable implementation checklist](docs/implementation-checklist.md)
 - [Competitive and Copilot investigation](docs/research/competitive-analysis.md)

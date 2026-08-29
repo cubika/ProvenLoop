@@ -1,7 +1,7 @@
 # ProvenLoop Implementation Roadmap
 
 **Status:** Proposed execution plan  
-**Updated:** 2026-08-28
+**Updated:** 2026-08-29
 
 ## 1. Delivery strategy
 
@@ -16,7 +16,7 @@ Deliver:
 
 - TypeScript monorepo and CLI skeleton;
 - Copilot plugin packaging;
-- lifecycle hook ingestion;
+- Copilot Extension session-event ingestion;
 - canonical event schema and validation;
 - write-time secret redaction;
 - persistent queue and single shared worker;
@@ -32,7 +32,7 @@ Deliver:
 Acceptance:
 
 - Copilot remains usable when ProvenLoop is stopped or broken;
-- hook overhead is negligible and bounded;
+- capture-added latency is negligible and bounded;
 - duplicate events are idempotent;
 - malformed events are visible and never silently accepted;
 - common secrets are not persisted;
@@ -216,7 +216,7 @@ Demonstration-only extension:
 ### Package A: Plugin and ingestion
 
 - plugin manifest;
-- hooks;
+- Session event Extension;
 - event envelope;
 - redaction;
 - queue;
