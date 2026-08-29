@@ -1,0 +1,10 @@
+node_modules/
+packages/*/dist/
+coverage/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+!.env.example
+.provenloop/
+evaluation-output/

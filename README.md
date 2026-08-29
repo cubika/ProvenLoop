@@ -63,6 +63,22 @@ command or an additional model API key for ordinary use.
 ```text
 ProvenLoop/
   README.md
+  package.json
+  packages/
+    contracts/
+    domain/
+    platform-windows/
+    storage-sqlite/
+    evaluation/
+    copilot-adapter/
+    host/
+    cli/
+    testkit/
+  tests/
+    unit/
+    integration/
+  spikes/
+    f0/
   docs/
     product-design.md
     product-validation.md
@@ -73,6 +89,19 @@ ProvenLoop/
     research/
       competitive-analysis.md
       self-improving-agents.md
+```
+
+## Development
+
+The workspace requires Node.js 22.18 and npm 11.
+
+```powershell
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run test:integration
+npm run build
 ```
 
 ## Canonical documents

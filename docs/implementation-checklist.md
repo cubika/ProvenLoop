@@ -114,10 +114,10 @@ frozen.
 
 ### 4.1 Workspace
 
-- [ ] Initialize Git and add ignore rules for dependencies, builds, local
+- [x] Initialize Git and add ignore rules for dependencies, builds, local
   ProvenLoop data, logs, and evaluation output.
-- [ ] Create a Node.js 22 TypeScript workspace with strict type checking.
-- [ ] Establish packages or modules for:
+- [x] Create a Node.js 22 TypeScript workspace with strict type checking.
+- [x] Establish packages or modules for:
   - `contracts`
   - `domain`
   - `platform-windows`
@@ -127,10 +127,10 @@ frozen.
   - `host`
   - `cli`
   - `testkit`
-- [ ] Add standard scripts: `build`, `typecheck`, `lint`, `test`, and
+- [x] Add standard scripts: `build`, `typecheck`, `lint`, `test`, and
   `test:integration`.
-- [ ] Add CI that runs clean install, type checking, tests, and build.
-- [ ] Establish versioning for schemas, migrations, fixtures, and reports.
+- [x] Add CI that runs clean install, type checking, tests, and build.
+- [x] Establish versioning for schemas, migrations, fixtures, and reports.
 
 ### 4.2 Shared schemas
 

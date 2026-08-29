@@ -1,0 +1,32 @@
+{
+  "name": "provenloop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local learning infrastructure for coding agents.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0 <23",
+    "npm": ">=11 <12"
+  },
+  "packageManager": "npm@11.6.2",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "node scripts/clean.mjs",
+    "lint": "eslint .",
+    "test": "vitest run --config vitest.config.ts",
+    "test:integration": "npm run build --silent && vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc -b --noEmit --pretty false && tsc -p tsconfig.tools.json --pretty false"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.1",
+    "eslint": "10.9.0",
+    "globals": "17.11.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

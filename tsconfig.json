@@ -1,0 +1,32 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/domain"
+    },
+    {
+      "path": "packages/platform-windows"
+    },
+    {
+      "path": "packages/storage-sqlite"
+    },
+    {
+      "path": "packages/evaluation"
+    },
+    {
+      "path": "packages/copilot-adapter"
+    },
+    {
+      "path": "packages/host"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/testkit"
+    }
+  ]
+}
