@@ -484,10 +484,17 @@ The Playbook registry is an M5 capability. Its contract guarantees:
 
 ## 4. Domain model
 
+Every Batch 1 persisted contract implemented in sections 4.1-4.6 and
+4.9-4.12 includes `schemaVersion: 1`. The current version is registered by
+schema name. Unsupported versions are rejected through an explicit
+compatibility result until a versioned migration is added. Later Insight and
+Playbook schemas receive the same treatment when their milestones begin.
+
 ### 4.1 RawEvent
 
 ```ts
 interface RawEvent {
+  schemaVersion: 1;
   eventId: string;
   parentEventId?: string;
   adapter: string;
@@ -527,6 +534,7 @@ deletion workflow in section 5.
 
 ```ts
 interface WorkEpisode {
+  schemaVersion: 1;
   episodeId: string;
   goal: string;
   repoId?: string;
@@ -554,6 +562,7 @@ interface WorkEpisode {
 
 ```ts
 interface BranchContext {
+  schemaVersion: 1;
   branchContextId: string;
   repoId: string;
   branch: string;
@@ -578,6 +587,7 @@ Work Episode.
 
 ```ts
 interface CorrectionKey {
+  schemaVersion: 1;
   correctionKeyId: string;
   scope: "personal" | "workflow" | "repository" | "branch";
   scopeId?: string;
@@ -599,6 +609,7 @@ after observing whether the future task succeeded.
 
 ```ts
 interface OutcomeEvidenceLink {
+  schemaVersion: 1;
   linkId: string;
   episodeId: string;
   evidenceId: string;
@@ -630,6 +641,7 @@ type EvidenceTier =
 
 ```ts
 interface KnowledgeCandidate {
+  schemaVersion: 1;
   knowledgeId: string;
   topicKey: string;
   kind: "episodic" | "semantic" | "procedural";
@@ -721,6 +733,7 @@ Playbook identity, evidence, approval, or active version.
 
 ```ts
 interface FeedbackEvent {
+  schemaVersion: 1;
   feedbackId: string;
   targetType: "knowledge" | "playbook" | "episode" | "process_claim";
   targetId: string;
@@ -759,6 +772,7 @@ Feedback is append-only. Current state is rebuilt from events.
 
 ```ts
 interface ProcessClaim {
+  schemaVersion: 1;
   claimId: string;
   episodeId: string;
   kind: "tested" | "reviewed" | "protocol_completed" | "consensus" | "other";
@@ -783,6 +797,7 @@ it can be used by acceptance or learning.
 
 ```ts
 interface ContextUseRecord {
+  schemaVersion: 1;
   requestId: string;
   episodeId?: string;
   sessionId: string;
@@ -796,6 +811,7 @@ interface ContextUseRecord {
 }
 
 interface CorrectionOpportunity {
+  schemaVersion: 1;
   opportunityId: string;
   correctionKeyId: string;
   episodeId: string;
@@ -819,8 +835,11 @@ architecture fixes the following cross-version contracts:
 
 ```ts
 interface RequirementManifest {
+  schemaVersion: 1;
   requirementId: string;
   milestone: string;
+  statement: string;
+  scope: "personal" | "workflow" | "repository" | "branch";
   replaySpecIds: string[];
   verifierIds: string[];
   requiredEvidence: string[];
@@ -828,21 +847,28 @@ interface RequirementManifest {
 }
 
 interface ReplaySpec {
+  schemaVersion: 1;
   specId: string;
   requirementId: string;
-  inputRef: string;
+  inputRef?: string;
+  inputEvents?: string[];
   frozenEnvironment: string;
   expectedGate: "pass" | "fail" | "inconclusive";
   expectedEvidence: string[];
 }
 
 interface EvidenceLedgerEntry {
+  schemaVersion: 1;
+  ledgerEntryId: string;
   runId: string;
   eventId?: string;
   episodeId?: string;
   claimId?: string;
+  actorId?: string;
   participantId?: string;
   invocationId?: string;
+  requestedProvider?: string;
+  requestedModel?: string;
   resolvedProvider?: string;
   resolvedModel?: string;
   status: string;
@@ -852,12 +878,17 @@ interface EvidenceLedgerEntry {
 }
 
 interface GateResult {
+  schemaVersion: 1;
   gateId: string;
   status: "pass" | "fail" | "inconclusive" | "infrastructure_error";
   evidenceIds: string[];
   message: string;
 }
 ```
+
+`ReplaySpec` requires exactly one of `inputRef` or `inputEvents`. The first
+version supports both documented input forms without accepting an ambiguous
+specification.
 
 ## 5. Storage architecture
 

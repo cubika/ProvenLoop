@@ -134,28 +134,28 @@ frozen.
 
 ### 4.2 Shared schemas
 
-- [ ] Implement runtime-validated schemas for `RawEvent`.
-- [ ] Implement schemas for `WorkEpisode`, `BranchContext`, `CorrectionKey`,
+- [x] Implement runtime-validated schemas for `RawEvent`.
+- [x] Implement schemas for `WorkEpisode`, `BranchContext`, `CorrectionKey`,
   `OutcomeEvidenceLink`, `KnowledgeCandidate`, and `FeedbackEvent`.
-- [ ] Implement schemas for `ProcessClaim`, `ContextUseRecord`, and
+- [x] Implement schemas for `ProcessClaim`, `ContextUseRecord`, and
   `CorrectionOpportunity`.
-- [ ] Implement `RequirementManifest`, `ReplaySpec`, `EvidenceLedgerEntry`, and
+- [x] Implement `RequirementManifest`, `ReplaySpec`, `EvidenceLedgerEntry`, and
   `GateResult`.
-- [ ] Freeze evaluation exit codes:
+- [x] Freeze evaluation exit codes:
   - `0`: required gates passed
   - `1`: product or safety gate failed
   - `2`: invalid manifest, spec, or input
   - `3`: infrastructure error
-- [ ] Add schema compatibility tests and invalid-input fixtures.
+- [x] Add schema compatibility tests and invalid-input fixtures.
 
 ### 4.3 Definition of done
 
-- [ ] Public package boundaries contain no Windows-specific types except the
+- [x] Public package boundaries contain no Windows-specific types except the
   platform package.
-- [ ] Every persisted schema has an explicit version and migration strategy.
-- [ ] Unknown enum values and source versions follow an explicit compatibility
+- [x] Every persisted schema has an explicit version and migration strategy.
+- [x] Unknown enum values and source versions follow an explicit compatibility
   or error path.
-- [ ] The entire empty workspace builds and tests successfully from a clean
+- [x] The entire empty workspace builds and tests successfully from a clean
   checkout.
 
 ## 5. Batch 2: evaluation spine first
