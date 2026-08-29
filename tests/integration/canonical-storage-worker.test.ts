@@ -13,7 +13,10 @@ import {
   captureQueueItemSchema,
 } from "@provenloop/contracts";
 import { createCaptureDeduplicationKey } from "@provenloop/domain";
-import { CaptureWorker } from "@provenloop/host";
+import {
+  CaptureWorker,
+  CaptureWorkerCircuitBreaker,
+} from "@provenloop/host";
 import {
   WindowsCaptureQueue,
   WindowsNamedPipeLeaseProvider,
@@ -207,6 +210,337 @@ describe("canonical SQLite storage", () => {
     database.close();
   });
 
+  it("rolls back a migration that violates schema postconditions", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const initial = new CanonicalSqliteStore(databasePath);
+    initial.close();
+
+    expect(() =>
+      new CanonicalSqliteStore(databasePath, {
+        migrations: [
+          ...DEFAULT_SQLITE_MIGRATIONS,
+          {
+            version: 2,
+            sql: `
+              ALTER TABLE raw_events
+              ADD COLUMN unexpected TEXT;
+            `,
+          },
+        ],
+      }),
+    ).toThrow("unexpected column count");
+
+    const database = new DatabaseSync(databasePath);
+    const version = database
+      .prepare("PRAGMA user_version;")
+      .get() as Readonly<Record<string, unknown>>;
+    const columns = database
+      .prepare("PRAGMA table_info(raw_events);")
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    expect(Number(version.user_version)).toBe(1);
+    expect(
+      columns.some((column) => column.name === "unexpected"),
+    ).toBe(false);
+    database.close();
+  });
+
+  it("rejects generated columns hidden from table_info", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const initial = new CanonicalSqliteStore(databasePath);
+    initial.close();
+
+    expect(() =>
+      new CanonicalSqliteStore(databasePath, {
+        migrations: [
+          ...DEFAULT_SQLITE_MIGRATIONS,
+          {
+            version: 2,
+            sql: `
+              ALTER TABLE raw_events
+              ADD COLUMN generated_guard TEXT
+              GENERATED ALWAYS AS (
+                CASE
+                  WHEN event_type = 'prompt.submitted'
+                  THEN NULL
+                  ELSE 'ok'
+                END
+              ) VIRTUAL NOT NULL;
+            `,
+          },
+        ],
+      }),
+    ).toThrow("unexpected column count");
+
+    const database = new DatabaseSync(databasePath);
+    const version = database
+      .prepare("PRAGMA user_version;")
+      .get() as Readonly<Record<string, unknown>>;
+    expect(Number(version.user_version)).toBe(1);
+    database.close();
+  });
+
+  it("upgrades an existing database transactionally", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const initial = new CanonicalSqliteStore(databasePath);
+    initial.close();
+
+    const upgraded = new CanonicalSqliteStore(databasePath, {
+      migrations: [
+        ...DEFAULT_SQLITE_MIGRATIONS,
+        {
+          version: 2,
+          sql: `
+            CREATE TABLE recovery_probe (
+              value TEXT NOT NULL
+            ) STRICT;
+          `,
+        },
+      ],
+    });
+    expect(upgraded.health().userVersion).toBe(2);
+    upgraded.close();
+
+    const database = new DatabaseSync(databasePath);
+    const probe = database
+      .prepare(
+        `SELECT count(*) AS count
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'recovery_probe'`,
+      )
+      .get() as Readonly<Record<string, unknown>>;
+    expect(Number(probe.count)).toBe(1);
+    database.close();
+  });
+
+  it("backs up and restores a verified canonical database", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const backupPath = join(root, "backups", "capture.db");
+    const queue = await createQueue(join(root, "queue"));
+    const first = await queue.enqueue(captureInput("event-1"), {
+      environment: {},
+    });
+    const second = await queue.enqueue(captureInput("event-2"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(databasePath);
+    store.ingestQueueItem(first);
+    expect(await store.backupTo(backupPath)).toBeGreaterThan(0);
+    store.ingestQueueItem(second);
+    store.close();
+
+    expect(
+      await CanonicalSqliteStore.restoreFromBackup(
+        backupPath,
+        databasePath,
+      ),
+    ).toMatchObject({
+      quickCheck: "ok",
+      userVersion: 1,
+    });
+    const restored = new CanonicalSqliteStore(databasePath);
+    expect(
+      await restored.deduplicationKeys(
+        "copilot-cli",
+        "1.0.82-0",
+        "session-1",
+      ),
+    ).toEqual(
+      new Set([
+        createCaptureDeduplicationKey(captureInput("event-1")),
+      ]),
+    );
+    restored.close();
+  });
+
+  it("preserves the existing database when backup validation fails", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const invalidBackupPath = join(root, "invalid-backup.db");
+    const queue = await createQueue(join(root, "queue"));
+    const queued = await queue.enqueue(captureInput("event-1"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(databasePath);
+    store.ingestQueueItem(queued);
+    store.close();
+    const invalidBackup = new DatabaseSync(invalidBackupPath);
+    invalidBackup.exec("PRAGMA user_version = 99;");
+    invalidBackup.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        invalidBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("not the current canonical version");
+
+    const preserved = new CanonicalSqliteStore(databasePath);
+    expect(
+      preserved.rawEvent(
+        createCaptureDeduplicationKey(captureInput("event-1")),
+      ),
+    ).toBeDefined();
+    preserved.close();
+  });
+
+  it("rejects a physically valid but non-canonical backup", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const invalidBackupPath = join(root, "invalid-schema.db");
+    const queue = await createQueue(join(root, "queue"));
+    const queued = await queue.enqueue(captureInput("event-1"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(databasePath);
+    store.ingestQueueItem(queued);
+    store.close();
+    const invalidBackup = new DatabaseSync(invalidBackupPath);
+    invalidBackup.exec(`
+      PRAGMA user_version = 1;
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO schema_migrations(version, applied_at)
+      VALUES (1, '2026-08-29T00:00:00.000Z');
+    `);
+    invalidBackup.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        invalidBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("canonical table");
+
+    const preserved = new CanonicalSqliteStore(databasePath);
+    expect(
+      preserved.rawEvent(
+        createCaptureDeduplicationKey(captureInput("event-1")),
+      ),
+    ).toBeDefined();
+    preserved.close();
+  });
+
+  it("rejects an unrelated version-zero SQLite backup", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const unrelatedBackupPath = join(root, "unrelated.db");
+    const store = new CanonicalSqliteStore(databasePath);
+    store.close();
+    const unrelated = new DatabaseSync(unrelatedBackupPath);
+    unrelated.exec("CREATE TABLE unrelated(value TEXT);");
+    unrelated.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        unrelatedBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("not the current canonical version");
+    const preserved = new CanonicalSqliteStore(databasePath);
+    expect(preserved.health()).toMatchObject({
+      quickCheck: "ok",
+      userVersion: 1,
+    });
+    preserved.close();
+  });
+
+  it("rejects a backup with a weakened partial identity index", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const weakenedBackupPath = join(root, "weakened.db");
+    const target = new CanonicalSqliteStore(databasePath);
+    target.close();
+    const weakened = new CanonicalSqliteStore(weakenedBackupPath);
+    weakened.close();
+    const database = new DatabaseSync(weakenedBackupPath);
+    database.exec(`
+      DROP INDEX raw_events_source_identity;
+      CREATE UNIQUE INDEX raw_events_source_identity
+        ON raw_events(
+          adapter,
+          adapter_version,
+          session_id,
+          event_type,
+          source_event_id
+        )
+        WHERE event_type <> 'ignored';
+    `);
+    database.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        weakenedBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("does not match the declared schema");
+    const preserved = new CanonicalSqliteStore(databasePath);
+    preserved.close();
+  });
+
+  it("rejects a backup with an undeclared data-changing trigger", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const triggeredBackupPath = join(root, "triggered.db");
+    const target = new CanonicalSqliteStore(databasePath);
+    target.close();
+    const triggered = new CanonicalSqliteStore(
+      triggeredBackupPath,
+    );
+    triggered.close();
+    const database = new DatabaseSync(triggeredBackupPath);
+    database.exec(`
+      CREATE TRIGGER delete_captured_event
+      AFTER INSERT ON raw_events
+      BEGIN
+        DELETE FROM raw_events
+        WHERE deduplication_key = NEW.deduplication_key;
+      END;
+    `);
+    database.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        triggeredBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("undeclared objects");
+    const preserved = new CanonicalSqliteStore(databasePath);
+    preserved.close();
+  });
+
+  it("rejects a backup containing undeclared tables", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const hiddenBackupPath = join(root, "hidden-table.db");
+    const target = new CanonicalSqliteStore(databasePath);
+    target.close();
+    const hidden = new CanonicalSqliteStore(hiddenBackupPath);
+    hidden.close();
+    const database = new DatabaseSync(hiddenBackupPath);
+    database.exec(`
+      CREATE TABLE hidden_data (
+        value TEXT
+      );
+    `);
+    database.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        hiddenBackupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("undeclared objects");
+    const preserved = new CanonicalSqliteStore(databasePath);
+    preserved.close();
+  });
+
   it("keeps rejected parser errors idempotent across replay", async () => {
     const root = await createTemporaryDirectory();
     const queue = await createQueue(join(root, "queue"));
@@ -273,19 +607,9 @@ describe("canonical SQLite storage", () => {
       },
     );
     const store = new CanonicalSqliteStore(databasePath, {
-      migrations: [
-        ...DEFAULT_SQLITE_MIGRATIONS,
-        {
-          version: 2,
-          sql: `
-            CREATE TRIGGER reject_raw_event
-            BEFORE INSERT ON raw_events
-            BEGIN
-              SELECT RAISE(ABORT, 'simulated ingestion failure');
-            END;
-          `,
-        },
-      ],
+      faultInjector: () => {
+        throw new Error("simulated ingestion failure");
+      },
     });
     const deduplicationKey = createCaptureDeduplicationKey(
       captureInput("event-triggered-failure"),
@@ -480,6 +804,111 @@ describe("shared capture worker", () => {
         "session-1",
       ),
     ).toHaveLength(0);
+    store.close();
+  });
+
+  it("stops dequeue when the resource circuit opens", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = await createQueue(join(root, "queue"));
+    await queue.enqueueIfSourceAbsent(captureInput("event-1"), {
+      environment: {},
+    });
+    await queue.enqueueIfSourceAbsent(captureInput("event-2"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(
+      join(root, "provenloop.db"),
+    );
+    const breaker = new CaptureWorkerCircuitBreaker({
+      maxConsecutiveProviderErrors: 3,
+      maxCpuPercent: 80,
+      maxMemoryBytes: 1_000_000,
+      maxQueueDepth: 100,
+      minFreeDiskBytes: 1_000,
+    });
+    let admissionCalls = 0;
+    const worker = new CaptureWorker({
+      admission: () => {
+        admissionCalls += 1;
+        return breaker.evaluate({
+          consecutiveProviderErrors: 0,
+          cpuPercent: admissionCalls >= 3 ? 90 : 10,
+          freeDiskBytes: 10_000,
+          memoryBytes: 100,
+          queueDepth: 2,
+        });
+      },
+      batchSize: 10,
+      lease: new WindowsNamedPipeLeaseProvider(
+        `worker-${randomUUID()}`,
+      ),
+      queue,
+      store,
+      workerId: "worker-1",
+    });
+
+    expect(await worker.runOnce()).toMatchObject({
+      status: "completed",
+      acknowledged: 1,
+      circuitOpenReasons: [
+        "cpu",
+      ],
+      stored: 1,
+    });
+    expect(await queue.list("pending")).toHaveLength(1);
+    store.close();
+  });
+
+  it("drains one item per run under queue-only pressure", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = await createQueue(join(root, "queue"));
+    await queue.enqueueIfSourceAbsent(captureInput("event-1"), {
+      environment: {},
+    });
+    await queue.enqueueIfSourceAbsent(captureInput("event-2"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(
+      join(root, "provenloop.db"),
+    );
+    const breaker = new CaptureWorkerCircuitBreaker({
+      maxConsecutiveProviderErrors: 3,
+      maxCpuPercent: 80,
+      maxMemoryBytes: 1_000_000,
+      maxQueueDepth: 2,
+      minFreeDiskBytes: 1_000,
+    });
+    const worker = new CaptureWorker({
+      admission: () =>
+        breaker.evaluate({
+          consecutiveProviderErrors: 0,
+          cpuPercent: 10,
+          freeDiskBytes: 10_000,
+          memoryBytes: 100,
+          queueDepth: 2,
+        }),
+      batchSize: 10,
+      lease: new WindowsNamedPipeLeaseProvider(
+        `worker-${randomUUID()}`,
+      ),
+      queue,
+      store,
+      workerId: "worker-1",
+    });
+
+    expect(await worker.runOnce()).toMatchObject({
+      status: "completed",
+      acknowledged: 1,
+      circuitOpenReasons: [
+        "queue",
+      ],
+    });
+    expect(await queue.list("pending")).toHaveLength(1);
+    expect(await worker.runOnce()).toMatchObject({
+      status: "completed",
+      acknowledged: 1,
+    });
+    expect(await queue.list("pending")).toHaveLength(0);
     store.close();
   });
 

@@ -162,4 +162,5 @@ capture-gap reporting. Recovery now streams supported Copilot Session files,
 rejects unknown versions explicitly, and replays only source events absent from
 both the queue and canonical watermark. Batch 4 adds the transactional
 canonical SQLite store and a leased, bounded worker that commits before queue
-acknowledgement.
+acknowledgement. The worker now has resource-pressure admission, SQLite
+upgrade/backup/restore validation, and an end-to-end canonical Ledger Gate.

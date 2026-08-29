@@ -2,6 +2,7 @@ export {
   CanonicalSqliteStore,
   DEFAULT_SQLITE_MIGRATIONS,
   InvalidMigrationPlanError,
+  InvalidCanonicalSchemaError,
   UnsupportedDatabaseVersionError,
   type CanonicalIngestResult,
   type CanonicalParserErrorRecord,

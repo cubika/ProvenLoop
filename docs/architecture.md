@@ -283,6 +283,26 @@ acknowledges without creating another canonical fact. Queue-transition failures
 after commit use a separate retry path that cannot consume the event-processing
 attempt budget.
 
+Before every lease and dequeue, the worker can evaluate CPU, memory, free disk,
+provider-error streak, and queue-depth pressure. An open circuit returns the
+explicit reasons and leaves pending work untouched. The check repeats within a
+batch so newly interactive or resource-constrained conditions stop additional
+low-priority work.
+Queue-only pressure is treated specially: each worker run may drain one item
+before pausing again, so the pressure signal cannot permanently block the only
+consumer capable of reducing that backlog.
+
+SQLite backups use the built-in online backup protocol. Restore first proves
+that the source has the current canonical migration ledger, STRICT runtime
+tables, exact columns and primary keys, and exact non-partial unique indexes.
+Only then is it copied into the target through SQLite's transactional backup
+path and reopened for a final health check.
+
+The M0 capture Gate binds the complete canonical `CaptureEnvelope` to an
+Evidence Ledger entry by run, Ledger ID, event ID, timestamp, SHA-256 digest,
+and deterministic event identity. Changing content or redaction metadata
+invalidates the Gate, not only changes to the inner `RawEvent`.
+
 The initial deployment is a modular monolith with a small capture Extension and
 one shared local ProvenLoop host containing the MCP server, worker, domain
 modules, and CLI control surface. Components are code boundaries, not

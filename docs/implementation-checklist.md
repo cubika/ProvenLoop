@@ -264,7 +264,7 @@ frozen.
   and evaluation runs.
 - [x] Store source IDs and content digests on all derived records.
 - [x] Keep projection schemas outside domain lifecycle authority.
-- [ ] Test migration upgrade, failed migration recovery, and database restore.
+- [x] Test migration upgrade, failed migration recovery, and database restore.
 
 ### 7.2 Worker
 
@@ -273,7 +273,7 @@ frozen.
 - [x] Parse adapter events into canonical events.
 - [x] Commit one processing unit transactionally.
 - [x] Acknowledge only after the canonical transaction succeeds.
-- [ ] Yield to interactive MCP requests and open a circuit breaker under CPU,
+- [x] Yield to interactive MCP requests and open a circuit breaker under CPU,
   memory, disk, provider-error, or queue-pressure conditions.
 - [x] Preserve durable backlog while a consumer or model provider is disabled.
 
@@ -287,7 +287,7 @@ frozen.
 
 ### 7.4 Definition of done
 
-- [ ] A fixture travels end to end from Extension envelope to redacted queue item,
+- [x] A fixture travels end to end from Extension envelope to redacted queue item,
   worker processing, canonical SQLite row, Ledger evidence, and gate result.
 - [x] Worker crashes do not lose acknowledged or pending work.
 - [x] Failed transactions do not create success-shaped domain state.

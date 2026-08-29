@@ -7,3 +7,12 @@ export {
   type CaptureWorkerRunResult,
   type CaptureWorkerStore,
 } from "./capture-worker.js";
+export {
+  CAPTURE_WORKER_PRESSURE_REASONS,
+  CaptureWorkerCircuitBreaker,
+  InvalidWorkerPressureThresholdError,
+  type CaptureWorkerAdmission,
+  type CaptureWorkerPressureReason,
+  type CaptureWorkerPressureSnapshot,
+  type CaptureWorkerPressureThresholds,
+} from "./worker-circuit-breaker.js";

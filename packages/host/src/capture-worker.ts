@@ -11,6 +11,11 @@ import type {
   CanonicalIngestResult,
 } from "@provenloop/storage-sqlite";
 
+import type {
+  CaptureWorkerAdmission,
+  CaptureWorkerPressureReason,
+} from "./worker-circuit-breaker.js";
+
 export interface CaptureWorkerQueue {
   acknowledge(
     claim: CaptureQueueClaim,
@@ -38,6 +43,9 @@ export interface CaptureWorkerStore {
 }
 
 export interface CaptureWorkerOptions {
+  readonly admission?: () =>
+    | CaptureWorkerAdmission
+    | Promise<CaptureWorkerAdmission>;
   readonly batchSize: number;
   readonly enabled?: () => boolean;
   readonly lease: ProcessLeaseProvider;
@@ -49,13 +57,19 @@ export interface CaptureWorkerOptions {
 
 export type CaptureWorkerRunResult =
   | {
-      readonly status: "disabled" | "lease_unavailable";
+      readonly reasons?: readonly CaptureWorkerPressureReason[];
+      readonly status:
+        | "circuit_open"
+        | "disabled"
+        | "lease_unavailable";
     }
   | {
       readonly acknowledged: number;
       readonly deadLettered: number;
       readonly duplicates: number;
       readonly failed: number;
+      readonly circuitOpenReasons:
+        readonly CaptureWorkerPressureReason[];
       readonly recoveredClaims: number;
       readonly retried: number;
       readonly status: "completed";
@@ -85,8 +99,18 @@ const claimFromItem = (
   queueItemId: item.queueItemId,
 });
 
+const queuePressureOnly = (
+  admission: CaptureWorkerAdmission,
+): boolean =>
+  !admission.allowed &&
+  admission.reasons.length === 1 &&
+  admission.reasons[0] === "queue";
+
 export class CaptureWorker {
   readonly #batchSize: number;
+  readonly #admission: () =>
+    | CaptureWorkerAdmission
+    | Promise<CaptureWorkerAdmission>;
   readonly #enabled: () => boolean;
   readonly #lease: ProcessLeaseProvider;
   readonly #queue: CaptureWorkerQueue;
@@ -105,6 +129,12 @@ export class CaptureWorker {
       throw new InvalidCaptureWorkerConfigurationError("workerId");
     }
     this.#batchSize = options.batchSize;
+    this.#admission =
+      options.admission ??
+      (() => ({
+        allowed: true,
+        reasons: [],
+      }));
     this.#enabled = options.enabled ?? (() => true);
     this.#lease = options.lease;
     this.#queue = options.queue;
@@ -118,6 +148,13 @@ export class CaptureWorker {
     if (!this.#enabled()) {
       return {
         status: "disabled",
+      };
+    }
+    const admission = await this.#admission();
+    if (!admission.allowed && !queuePressureOnly(admission)) {
+      return {
+        status: "circuit_open",
+        reasons: admission.reasons,
       };
     }
     const lease = await this.#lease.tryAcquire();
@@ -134,17 +171,33 @@ export class CaptureWorker {
   ): Promise<CaptureWorkerRunResult> {
     let acknowledged = 0;
     let deadLettered = 0;
+    let circuitOpenReasons:
+      readonly CaptureWorkerPressureReason[] = [];
     let duplicates = 0;
     let failed = 0;
     let retried = 0;
     let stored = 0;
     let unsupported = 0;
+    let queuePressureDrainUsed = false;
     try {
       const recoveredClaims =
         (await this.#queue.recoverExpiredClaims()).length;
       for (let index = 0; index < this.#batchSize; index += 1) {
         if (!this.#enabled()) {
           break;
+        }
+        const admission = await this.#admission();
+        if (!admission.allowed) {
+          if (
+            queuePressureOnly(admission) &&
+            !queuePressureDrainUsed
+          ) {
+            queuePressureDrainUsed = true;
+            circuitOpenReasons = admission.reasons;
+          } else {
+            circuitOpenReasons = admission.reasons;
+            break;
+          }
         }
         const item = await this.#queue.claimNext(this.#workerId);
         if (item === undefined) {
@@ -221,6 +274,7 @@ export class CaptureWorker {
       return {
         status: "completed",
         acknowledged,
+        circuitOpenReasons,
         deadLettered,
         duplicates,
         failed,

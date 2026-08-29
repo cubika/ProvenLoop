@@ -1,4 +1,13 @@
-import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import {
+  mkdir,
+  unlink,
+} from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  backup,
+  DatabaseSync,
+} from "node:sqlite";
 
 import {
   captureQueueItemSchema,
@@ -19,6 +28,9 @@ export interface SqliteMigration {
 
 export interface CanonicalSqliteStoreOptions {
   readonly busyTimeoutMs?: number;
+  readonly faultInjector?: (
+    stage: "after_raw_event_insert",
+  ) => void;
   readonly migrations?: readonly SqliteMigration[];
   readonly now?: () => Date;
 }
@@ -217,6 +229,14 @@ export class InvalidMigrationPlanError extends Error {
   }
 }
 
+export class InvalidCanonicalSchemaError extends Error {
+  public override readonly name = "InvalidCanonicalSchemaError";
+
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+  }
+}
+
 const asNumber = (value: unknown): number => {
   if (typeof value === "number") {
     return value;
@@ -234,8 +254,219 @@ const firstColumn = (
   row: Readonly<Record<string, unknown>>,
 ): unknown => Object.values(row)[0];
 
+const sqliteIdentifier = (value: string): string =>
+  `"${value.replaceAll("\"", "\"\"")}"`;
+
+const normalizeSchemaSql = (value: unknown): string =>
+  String(value).replaceAll(/\s+/gu, " ").trim();
+
+const createExpectedCanonicalObjectSql = (
+  migrations: readonly SqliteMigration[],
+): ReadonlyMap<
+  string,
+  string
+> => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    for (const migration of migrations) {
+      database.exec(migration.sql);
+    }
+    const rows = database
+      .prepare(
+        `SELECT name, sql, type
+           FROM sqlite_master
+          WHERE sql IS NOT NULL
+            AND name NOT LIKE 'sqlite_%'`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return new Map(
+      rows.map((row) => [
+        `${String(row.type)}:${String(row.name)}`,
+        normalizeSchemaSql(row.sql),
+      ]),
+    );
+  } finally {
+    database.close();
+  }
+};
+
+interface ExpectedSqliteColumn {
+  readonly name: string;
+  readonly notNull: boolean;
+  readonly primaryKey: boolean;
+  readonly type: "INTEGER" | "TEXT";
+}
+
+const RUNTIME_SCHEMA_COLUMNS = {
+  parser_errors: [
+    ["parser_error_id", "INTEGER", false, true],
+    ["queue_item_id", "TEXT", true, false],
+    ["deduplication_key", "TEXT", false, false],
+    ["error_kind", "TEXT", true, false],
+    ["message", "TEXT", true, false],
+    ["safe_envelope_json", "TEXT", false, false],
+    ["created_at", "TEXT", true, false],
+  ],
+  queue_processing: [
+    ["queue_item_id", "TEXT", true, true],
+    ["deduplication_key", "TEXT", false, false],
+    ["status", "TEXT", true, false],
+    ["attempt_count", "INTEGER", true, false],
+    ["failure_count", "INTEGER", true, false],
+    ["last_error", "TEXT", false, false],
+    ["processed_at", "TEXT", true, false],
+  ],
+  raw_events: [
+    ["deduplication_key", "TEXT", true, true],
+    ["event_id", "TEXT", true, false],
+    ["source_event_id", "TEXT", true, false],
+    ["schema_version", "INTEGER", true, false],
+    ["adapter", "TEXT", true, false],
+    ["adapter_version", "TEXT", true, false],
+    ["event_type", "TEXT", true, false],
+    ["session_id", "TEXT", false, false],
+    ["repo_id", "TEXT", false, false],
+    ["branch", "TEXT", false, false],
+    ["worktree", "TEXT", false, false],
+    ["commit_sha", "TEXT", false, false],
+    ["event_timestamp", "TEXT", true, false],
+    ["trust", "TEXT", true, false],
+    ["content_digest", "TEXT", false, false],
+    ["result_digest", "TEXT", false, false],
+    ["redaction_rule_version", "INTEGER", true, false],
+    ["parse_status", "TEXT", true, false],
+    ["safe_envelope_json", "TEXT", true, false],
+    ["storage_redaction_applied", "INTEGER", true, false],
+    ["first_seen_at", "TEXT", true, false],
+    ["last_seen_at", "TEXT", true, false],
+    ["delivery_count", "INTEGER", true, false],
+  ],
+  schema_migrations: [
+    ["version", "INTEGER", false, true],
+    ["applied_at", "TEXT", true, false],
+  ],
+} as const satisfies Readonly<
+  Record<
+    string,
+    readonly [
+      string,
+      ExpectedSqliteColumn["type"],
+      boolean,
+      boolean,
+    ][]
+  >
+>;
+
+interface ExpectedSqliteIndex {
+  readonly columns: readonly string[];
+  readonly name?: string;
+  readonly origin: "c" | "pk" | "u";
+}
+
+const RUNTIME_SCHEMA_INDEXES = {
+  deletion_operations: [
+    {
+      columns: [
+        "deletion_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  evaluation_runs: [
+    {
+      columns: [
+        "run_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  evidence_links: [
+    {
+      columns: [
+        "link_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  feedback_events: [
+    {
+      columns: [
+        "feedback_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  identities: [
+    {
+      columns: [
+        "identity_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  metrics: [],
+  parser_errors: [
+    {
+      columns: [
+        "queue_item_id",
+        "error_kind",
+      ],
+      origin: "u",
+    },
+  ],
+  process_claims: [
+    {
+      columns: [
+        "claim_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  queue_processing: [
+    {
+      columns: [
+        "queue_item_id",
+      ],
+      origin: "pk",
+    },
+  ],
+  raw_events: [
+    {
+      columns: [
+        "adapter",
+        "adapter_version",
+        "session_id",
+        "event_type",
+        "source_event_id",
+      ],
+      name: "raw_events_source_identity",
+      origin: "c",
+    },
+    {
+      columns: [
+        "deduplication_key",
+      ],
+      origin: "pk",
+    },
+  ],
+  schema_migrations: [],
+  work_episodes: [
+    {
+      columns: [
+        "episode_id",
+      ],
+      origin: "pk",
+    },
+  ],
+} as const satisfies Readonly<
+  Record<string, readonly ExpectedSqliteIndex[]>
+>;
+
 export class CanonicalSqliteStore {
   readonly #database: DatabaseSync;
+  readonly #faultInjector:
+    | ((stage: "after_raw_event_insert") => void)
+    | undefined;
   readonly #now: () => Date;
 
   public constructor(
@@ -249,6 +480,7 @@ export class CanonicalSqliteStore {
     const migrations =
       options.migrations ?? DEFAULT_SQLITE_MIGRATIONS;
     this.#validateMigrations(migrations);
+    this.#faultInjector = options.faultInjector;
     this.#now = options.now ?? (() => new Date());
     this.#database = new DatabaseSync(path);
     try {
@@ -264,6 +496,87 @@ export class CanonicalSqliteStore {
 
   public close(): void {
     this.#database.close();
+  }
+
+  public async backupTo(path: string): Promise<number> {
+    await mkdir(dirname(path), {
+      recursive: true,
+    });
+    return backup(this.#database, path);
+  }
+
+  public static async restoreFromBackup(
+    backupPath: string,
+    targetPath: string,
+    options: CanonicalSqliteStoreOptions = {},
+  ): Promise<CanonicalStoreHealth> {
+    await mkdir(dirname(targetPath), {
+      recursive: true,
+    });
+    const restoreId = randomUUID();
+    const temporaryPath = `${targetPath}.restore-${restoreId}.tmp`;
+    try {
+      let source: DatabaseSync | undefined;
+      try {
+        source = new DatabaseSync(backupPath, {
+          readOnly: true,
+        });
+        CanonicalSqliteStore.#assertRestorableBackup(
+          source,
+          options.migrations ?? DEFAULT_SQLITE_MIGRATIONS,
+        );
+        await backup(source, temporaryPath);
+      } finally {
+        source?.close();
+      }
+
+      let health: CanonicalStoreHealth;
+      let restored: CanonicalSqliteStore | undefined;
+      try {
+        restored = new CanonicalSqliteStore(
+          temporaryPath,
+          options,
+        );
+        health = restored.health();
+      } finally {
+        restored?.close();
+      }
+      if (health.quickCheck !== "ok") {
+        throw new Error(
+          `Restored SQLite quick_check failed: ${health.quickCheck}.`,
+        );
+      }
+      let validatedSource: DatabaseSync | undefined;
+      try {
+        validatedSource = new DatabaseSync(temporaryPath, {
+          readOnly: true,
+        });
+        await backup(validatedSource, targetPath);
+      } finally {
+        validatedSource?.close();
+      }
+
+      let installedStore: CanonicalSqliteStore | undefined;
+      try {
+        installedStore = new CanonicalSqliteStore(
+          targetPath,
+          options,
+        );
+        health = installedStore.health();
+      } finally {
+        installedStore?.close();
+      }
+      if (health.quickCheck !== "ok") {
+        throw new Error(
+          `Installed SQLite quick_check failed: ${health.quickCheck}.`,
+        );
+      }
+      return health;
+    } finally {
+      await CanonicalSqliteStore.#removeDatabaseFiles(
+        temporaryPath,
+      );
+    }
   }
 
   public health(): CanonicalStoreHealth {
@@ -455,6 +768,7 @@ export class CanonicalSqliteStore {
           now,
           now,
         );
+      this.#faultInjector?.("after_raw_event_insert");
       if (unsupportedReason !== undefined) {
         this.#insertParserError(
           item.queueItemId,
@@ -721,6 +1035,11 @@ export class CanonicalSqliteStore {
           `PRAGMA user_version = ${migration.version};`,
         );
       }
+      CanonicalSqliteStore.#assertCanonicalSchema(
+        this.#database,
+        latestVersion,
+        migrations,
+      );
       this.#database.exec("COMMIT;");
     } catch (error) {
       this.#database.exec("ROLLBACK;");
@@ -739,5 +1058,315 @@ export class CanonicalSqliteStore {
     ) {
       throw new InvalidMigrationPlanError();
     }
+  }
+
+  static #assertCanonicalSchema(
+    database: DatabaseSync,
+    expectedVersion: number,
+    migrations: readonly SqliteMigration[],
+  ): void {
+    try {
+      const migrationRows = database
+        .prepare(
+          `SELECT version
+             FROM schema_migrations
+            ORDER BY version`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const migrationVersions = migrationRows.map((row) =>
+        asNumber(row.version),
+      );
+      const expectedMigrations = Array.from(
+        {
+          length: expectedVersion,
+        },
+        (_value, index) => index + 1,
+      );
+      if (
+        JSON.stringify(migrationVersions) !==
+        JSON.stringify(expectedMigrations)
+      ) {
+        throw new InvalidCanonicalSchemaError(
+          "SQLite migration ledger is incomplete.",
+        );
+      }
+
+      const requiredTables = [
+        "deletion_operations",
+        "evaluation_runs",
+        "evidence_links",
+        "feedback_events",
+        "identities",
+        "metrics",
+        "parser_errors",
+        "process_claims",
+        "queue_processing",
+        "raw_events",
+        "schema_migrations",
+        "work_episodes",
+      ];
+      const tableRows = database
+        .prepare(
+          `SELECT name
+             FROM sqlite_master
+            WHERE type = 'table'`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const tables = new Set(
+        tableRows.map((row) => String(row.name)),
+      );
+      const missingTable = requiredTables.find(
+        (table) => !tables.has(table),
+      );
+      if (missingTable !== undefined) {
+        throw new InvalidCanonicalSchemaError(
+          `SQLite canonical table ${missingTable} is missing.`,
+        );
+      }
+      const tableList = database
+        .prepare("PRAGMA table_list;")
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const strictTables = new Set(
+        tableList
+          .filter((row) => asNumber(row.strict) === 1)
+          .map((row) => String(row.name)),
+      );
+      const nonStrictTable = requiredTables.find(
+        (table) => !strictTables.has(table),
+      );
+      if (nonStrictTable !== undefined) {
+        throw new InvalidCanonicalSchemaError(
+          `SQLite canonical table ${nonStrictTable} is not STRICT.`,
+        );
+      }
+      for (const table of requiredTables) {
+        const foreignKeys = database
+          .prepare(
+            `PRAGMA foreign_key_list(${sqliteIdentifier(table)});`,
+          )
+          .all();
+        if (foreignKeys.length > 0) {
+          throw new InvalidCanonicalSchemaError(
+            `SQLite canonical table ${table} has undeclared foreign keys.`,
+          );
+        }
+      }
+      const declaredObjectRows = database
+        .prepare(
+          `SELECT name, sql, type
+             FROM sqlite_master
+            WHERE sql IS NOT NULL
+              AND name NOT LIKE 'sqlite_%'`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const declaredObjectSql = new Map(
+        declaredObjectRows.map((row) => [
+          `${String(row.type)}:${String(row.name)}`,
+          normalizeSchemaSql(row.sql),
+        ]),
+      );
+      const expectedObjectSql =
+        createExpectedCanonicalObjectSql(migrations);
+      if (declaredObjectSql.size !== expectedObjectSql.size) {
+        throw new InvalidCanonicalSchemaError(
+          "SQLite canonical schema contains undeclared objects.",
+        );
+      }
+      for (const [key, expectedSql] of expectedObjectSql) {
+        if (declaredObjectSql.get(key) !== expectedSql) {
+          throw new InvalidCanonicalSchemaError(
+            `SQLite canonical object ${key} does not match the declared schema.`,
+          );
+        }
+      }
+      const behaviorObjects = database
+        .prepare(
+          `SELECT name, type
+             FROM sqlite_master
+            WHERE type IN ('trigger', 'view')`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      if (behaviorObjects.length > 0) {
+        const object = behaviorObjects[0];
+        throw new InvalidCanonicalSchemaError(
+          `SQLite canonical schema contains undeclared ${String(object?.type)} ${String(object?.name)}.`,
+        );
+      }
+
+      for (const [table, expectedColumns] of Object.entries(
+        RUNTIME_SCHEMA_COLUMNS,
+      )) {
+        CanonicalSqliteStore.#assertTableColumns(
+          database,
+          table,
+          expectedColumns,
+        );
+      }
+      for (const [table, expectedIndexes] of Object.entries(
+        RUNTIME_SCHEMA_INDEXES,
+      )) {
+        CanonicalSqliteStore.#assertIndexAllowlist(
+          database,
+          table,
+          expectedIndexes,
+        );
+      }
+    } catch (error) {
+      if (error instanceof InvalidCanonicalSchemaError) {
+        throw error;
+      }
+      throw new InvalidCanonicalSchemaError(
+        "SQLite canonical schema validation failed.",
+        {
+          cause: error,
+        },
+      );
+    }
+  }
+
+  static #assertTableColumns(
+    database: DatabaseSync,
+    table: string,
+    expectedColumns: readonly [
+      string,
+      ExpectedSqliteColumn["type"],
+      boolean,
+      boolean,
+    ][],
+  ): void {
+    const rows = database
+      .prepare(`PRAGMA table_xinfo(${sqliteIdentifier(table)});`)
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    if (rows.length !== expectedColumns.length) {
+      throw new InvalidCanonicalSchemaError(
+        `SQLite table ${table} has an unexpected column count.`,
+      );
+    }
+    expectedColumns.forEach(
+      ([name, type, notNull, primaryKey], index) => {
+        const row = rows[index];
+        if (
+          row === undefined ||
+          String(row.name) !== name ||
+          String(row.type).toUpperCase() !== type ||
+          Boolean(asNumber(row.notnull)) !== notNull ||
+          Boolean(asNumber(row.pk)) !== primaryKey ||
+          asNumber(row.hidden) !== 0
+        ) {
+          throw new InvalidCanonicalSchemaError(
+            `SQLite table ${table} column ${name} is incompatible.`,
+          );
+        }
+      },
+    );
+  }
+
+  static #assertIndexAllowlist(
+    database: DatabaseSync,
+    table: string,
+    expectedIndexes: readonly ExpectedSqliteIndex[],
+  ): void {
+    const indexes = database
+      .prepare(`PRAGMA index_list(${sqliteIdentifier(table)});`)
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    if (indexes.length !== expectedIndexes.length) {
+      throw new InvalidCanonicalSchemaError(
+        `SQLite table ${table} has undeclared indexes.`,
+      );
+    }
+    const unmatched = [
+      ...expectedIndexes,
+    ];
+    for (const index of indexes) {
+      const name = String(index.name);
+      if (
+        asNumber(index.unique) !== 1 ||
+        asNumber(index.partial) !== 0
+      ) {
+        throw new InvalidCanonicalSchemaError(
+          `SQLite table ${table} index ${name} is incompatible.`,
+        );
+      }
+      const columns = database
+        .prepare(`PRAGMA index_xinfo(${sqliteIdentifier(name)});`)
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const keyColumns = columns.filter(
+        (column) => asNumber(column.key) === 1,
+      );
+      const actualColumns = keyColumns.map((column) =>
+        String(column.name),
+      );
+      const matchIndex = unmatched.findIndex(
+        (expected) =>
+          expected.origin === String(index.origin) &&
+          (
+            expected.name === undefined ||
+            expected.name === name
+          ) &&
+          JSON.stringify(expected.columns) ===
+            JSON.stringify(actualColumns) &&
+        keyColumns.every(
+          (column) =>
+            asNumber(column.desc) === 0 &&
+            String(column.coll).toUpperCase() === "BINARY",
+        ),
+      );
+      if (matchIndex === -1) {
+        throw new InvalidCanonicalSchemaError(
+          `SQLite table ${table} index ${name} is undeclared.`,
+        );
+      }
+      unmatched.splice(matchIndex, 1);
+    }
+    if (unmatched.length > 0) {
+      throw new InvalidCanonicalSchemaError(
+        `SQLite table ${table} is missing declared indexes.`,
+      );
+    }
+  }
+
+  static #assertRestorableBackup(
+    database: DatabaseSync,
+    migrations: readonly SqliteMigration[],
+  ): void {
+    const latestVersion = migrations.at(-1)?.version ?? 0;
+    const versionRow = database
+      .prepare("PRAGMA user_version;")
+      .get() as Readonly<Record<string, unknown>>;
+    const version = asNumber(versionRow.user_version);
+    if (version !== latestVersion || version === 0) {
+      throw new InvalidCanonicalSchemaError(
+        `SQLite backup version ${version} is not the current canonical version ${latestVersion}.`,
+      );
+    }
+    CanonicalSqliteStore.#assertCanonicalSchema(
+      database,
+      version,
+      migrations,
+    );
+  }
+
+  static #ignoreMissing(error: unknown): void {
+    if (
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return;
+    }
+    throw error;
+  }
+
+  static async #removeDatabaseFiles(path: string): Promise<void> {
+    await Promise.all(
+      [
+        path,
+        `${path}-shm`,
+        `${path}-wal`,
+      ].map((file) =>
+        unlink(file).catch(CanonicalSqliteStore.#ignoreMissing),
+      ),
+    );
   }
 }

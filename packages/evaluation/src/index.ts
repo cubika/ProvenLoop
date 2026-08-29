@@ -1,4 +1,8 @@
 export {
+  createCanonicalCaptureLedgerEntry,
+  evaluateCanonicalCaptureGate,
+} from "./capture-gate.js";
+export {
   evaluationFixtureSchema,
   type EvaluationFixture,
 } from "./fixture.js";
