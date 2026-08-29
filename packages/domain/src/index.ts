@@ -4,9 +4,11 @@ export {
   InternalCaptureEventError,
   InvalidCaptureIdentityError,
   isProvenLoopInternalEnvironment,
+  redactCaptureEnvelopeForPersistence,
   type CaptureEventInput,
   type CaptureIdentityInput,
   type CreateCaptureEnvelopeOptions,
+  type RedactedCaptureEnvelopeResult,
 } from "./capture.js";
 export {
   sha256,

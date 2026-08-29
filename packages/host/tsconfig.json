@@ -7,5 +7,16 @@
   },
   "include": [
     "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../contracts"
+    },
+    {
+      "path": "../platform-windows"
+    },
+    {
+      "path": "../storage-sqlite"
+    }
   ]
 }

@@ -327,7 +327,19 @@ const sanitizeValue = (
   for (const [key, child] of entries
     .sort(([left], [right]) => left.localeCompare(right))
     .slice(0, limits.maxObjectEntries)) {
-    const childPath = `${path}.${key}`;
+    const keyContainsSecret = containsPotentialSecret(key);
+    let storedKey = keyContainsSecret ? "[REDACTED_KEY]" : key;
+    if (keyContainsSecret) {
+      let suffix = 2;
+      while (Object.hasOwn(sanitized, storedKey)) {
+        storedKey = `[REDACTED_KEY_${suffix}]`;
+        suffix += 1;
+      }
+    }
+    const childPath = `${path}.${storedKey}`;
+    if (keyContainsSecret) {
+      recordRedaction(state, childPath, "secret-key");
+    }
     if (isEnvironmentContainer(key)) {
       state.appliedRules.add("environment-omission");
       state.droppedPaths.add(childPath);
@@ -335,7 +347,7 @@ const sanitizeValue = (
     }
     if (isSensitiveKey(key)) {
       recordRedaction(state, childPath, "sensitive-key");
-      sanitized[key] = REDACTED;
+      sanitized[storedKey] = REDACTED;
       continue;
     }
     const sanitizedChild = sanitizeValue(
@@ -348,7 +360,7 @@ const sanitizeValue = (
       isStructuredIdentifierKey(key),
     );
     if (sanitizedChild !== undefined) {
-      sanitized[key] = sanitizedChild;
+      sanitized[storedKey] = sanitizedChild;
     }
   }
   return sanitized;

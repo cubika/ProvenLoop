@@ -160,4 +160,6 @@ envelopes, write-time redaction, the Windows durable queue, supported Copilot
 event mapping, bounded buffering, asynchronous persistence, and explicit
 capture-gap reporting. Recovery now streams supported Copilot Session files,
 rejects unknown versions explicitly, and replays only source events absent from
-both the queue and canonical watermark.
+both the queue and canonical watermark. Batch 4 adds the transactional
+canonical SQLite store and a leased, bounded worker that commits before queue
+acknowledgement.

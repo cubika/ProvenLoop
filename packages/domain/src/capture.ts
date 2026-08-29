@@ -8,8 +8,9 @@ import {
 
 import { sha256 } from "./digest.js";
 import {
-  redactCaptureMetadata,
   redactCaptureContent,
+  redactCaptureMetadata,
+  redactPotentialSecrets,
   type CaptureContentInput,
   type CaptureRedactionLimits,
 } from "./redaction.js";
@@ -37,6 +38,30 @@ export interface CaptureIdentityInput {
   readonly sessionId: string;
   readonly sourceEventId: string;
 }
+
+export interface RedactedCaptureEnvelopeResult {
+  readonly envelope: CaptureEnvelope;
+  readonly redactionApplied: boolean;
+}
+
+const definedField = <TKey extends string, TValue>(
+  key: TKey,
+  value: TValue | undefined,
+): Partial<Record<TKey, TValue>> =>
+  value === undefined
+    ? {}
+    : {
+        [key]: value,
+      } as Record<TKey, TValue>;
+
+const sanitizeRedactionMetadata = (
+  values: readonly string[],
+): string[] =>
+  [
+    ...new Set(
+      values.map((value) => redactPotentialSecrets(value)),
+    ),
+  ].sort();
 
 export class InternalCaptureEventError extends Error {
   public override readonly name = "InternalCaptureEventError";
@@ -213,6 +238,125 @@ export const createCaptureEnvelope = (
     },
     sourceEventId: safeSourceEventId ?? normalizedSourceEventId,
   });
+};
+
+export const redactCaptureEnvelopeForPersistence = (
+  input: CaptureEnvelope,
+): RedactedCaptureEnvelopeResult => {
+  const parsed = captureEnvelopeSchema.parse(input);
+  const event = parsed.event;
+  const contentInput: CaptureContentInput = {
+    ...(parsed.content?.message === undefined
+      ? {}
+      : {
+          message: parsed.content.message,
+        }),
+    ...(parsed.content?.safeError === undefined
+      ? {}
+      : {
+          error: parsed.content.safeError,
+        }),
+    ...(event.redactedArguments === undefined
+      ? {}
+      : {
+          toolArguments: event.redactedArguments,
+        }),
+    ...(parsed.content?.toolResult === undefined
+      ? {}
+      : {
+          toolResult: parsed.content.toolResult,
+        }),
+  };
+  const rebuilt = createCaptureEnvelope(
+    {
+      adapter: event.adapter,
+      adapterVersion: event.adapterVersion,
+      ...definedField("actorId", event.actorId),
+      ...definedField("branch", event.branch),
+      ...definedField("claimId", event.claimId),
+      ...definedField("commitSha", event.commitSha),
+      ...definedField(
+        "completionStatus",
+        event.completionStatus,
+      ),
+      ...(Object.keys(contentInput).length === 0
+        ? {}
+        : {
+            content: contentInput,
+          }),
+      ...definedField(
+        "contentDigest",
+        parsed.redaction.contentDigest,
+      ),
+      eventType: event.eventType,
+      ...definedField("exitCode", event.exitCode),
+      ...definedField("operationId", event.operationId),
+      ...definedField("parentEventId", event.parentEventId),
+      ...definedField("participantId", event.participantId),
+      ...definedField("protocol", event.protocol),
+      ...definedField("protocolVersion", event.protocolVersion),
+      ...definedField("repoId", event.repoId),
+      ...definedField("requestedModel", event.requestedModel),
+      ...definedField(
+        "requestedProvider",
+        event.requestedProvider,
+      ),
+      ...definedField("resolvedModel", event.resolvedModel),
+      ...definedField(
+        "resolvedProvider",
+        event.resolvedProvider,
+      ),
+      sessionId: event.sessionId ?? "",
+      sourceEventId: parsed.sourceEventId,
+      timestamp: event.timestamp,
+      ...definedField("toolName", event.toolName),
+      trust: event.trust,
+      ...definedField("worktree", event.worktree),
+    },
+    {
+      capturedAt: parsed.capturedAt,
+    },
+  );
+  const envelope = captureEnvelopeSchema.parse({
+    ...rebuilt,
+    event: {
+      ...rebuilt.event,
+      ...(event.resultDigest === undefined
+        ? {}
+        : {
+            resultDigest: event.resultDigest,
+          }),
+    },
+    redaction: {
+      ...rebuilt.redaction,
+      appliedRules: sanitizeRedactionMetadata([
+          ...parsed.redaction.appliedRules,
+          ...rebuilt.redaction.appliedRules,
+      ]),
+      ...(parsed.redaction.contentDigest === undefined
+        ? {}
+        : {
+            contentDigest: parsed.redaction.contentDigest,
+          }),
+      droppedPaths: sanitizeRedactionMetadata([
+          ...parsed.redaction.droppedPaths,
+          ...rebuilt.redaction.droppedPaths,
+      ]),
+      redactedPaths: sanitizeRedactionMetadata([
+          ...parsed.redaction.redactedPaths,
+          ...rebuilt.redaction.redactedPaths,
+      ]),
+      truncatedPaths: sanitizeRedactionMetadata([
+          ...parsed.redaction.truncatedPaths,
+          ...rebuilt.redaction.truncatedPaths,
+      ]),
+    },
+  });
+  return {
+    envelope,
+    redactionApplied:
+      JSON.stringify(envelope) !== JSON.stringify(parsed),
+  };
 };
 
 export const isProvenLoopInternalEnvironment = (

@@ -368,6 +368,27 @@ export class WindowsCaptureQueue {
     });
   }
 
+  public retryAfterCommit(
+    claim: CaptureQueueClaim,
+    error: unknown,
+  ): Promise<CaptureQueueItem> {
+    return this.#runExclusive(async () => {
+      this.#assertInitialized();
+      const item = await this.#read(claim.queueItemId);
+      this.#assertActiveClaim(
+        item,
+        claim,
+        "retry after commit",
+      );
+      return this.#retryClaimed(
+        item,
+        error,
+        undefined,
+        false,
+      );
+    });
+  }
+
   public deadLetter(
     claim: CaptureQueueClaim,
     error: unknown,
@@ -402,6 +423,8 @@ export class WindowsCaptureQueue {
           await this.#retryClaimed(
             item,
             "Claim lease expired before acknowledgement.",
+            undefined,
+            false,
           ),
         );
       }
@@ -436,9 +459,20 @@ export class WindowsCaptureQueue {
     item: Extract<CaptureQueueItem, { readonly state: "claimed" }>,
     error: unknown,
     nextAttemptAt?: string,
+    enforceAttemptLimit = true,
   ): Promise<CaptureQueueItem> {
-    if (item.attemptCount >= this.#maxAttempts) {
-      const deadLetter = this.#deadLetterItem(item, error);
+    const failureCount = enforceAttemptLimit
+      ? item.failureCount + 1
+      : item.failureCount;
+    if (
+      enforceAttemptLimit &&
+      failureCount >= this.#maxAttempts
+    ) {
+      const deadLetter = this.#deadLetterItem(
+        item,
+        error,
+        failureCount,
+      );
       await this.#write(deadLetter);
       return deadLetter;
     }
@@ -446,11 +480,12 @@ export class WindowsCaptureQueue {
     const timestamp = now.toISOString();
     const retryItem = captureQueueItemSchema.parse({
       ...this.#baseItem(item, timestamp),
+      failureCount,
       lastError: sanitizeDiagnostic(error),
       nextAttemptAt:
         nextAttemptAt ??
         new Date(
-          now.getTime() + this.#retryDelay(item.attemptCount),
+          now.getTime() + this.#retryDelay(failureCount),
         ).toISOString(),
       state: "retry",
     });
@@ -461,9 +496,11 @@ export class WindowsCaptureQueue {
   #deadLetterItem(
     item: CaptureQueueItem,
     error: unknown,
+    failureCount = item.failureCount,
   ): CaptureQueueItem {
     return captureQueueItemSchema.parse({
       ...this.#baseItem(item, this.#now().toISOString()),
+      failureCount,
       lastError: sanitizeDiagnostic(error),
       state: "dead-letter",
     });
@@ -507,6 +544,7 @@ export class WindowsCaptureQueue {
     readonly attemptCount: number;
     readonly createdAt: string;
     readonly envelope: CaptureQueueItem["envelope"];
+    readonly failureCount: number;
     readonly queueItemId: string;
     readonly schemaVersion: 1;
     readonly updatedAt: string;
@@ -516,6 +554,7 @@ export class WindowsCaptureQueue {
       attemptCount: item.attemptCount,
       createdAt: item.createdAt,
       envelope: item.envelope,
+      failureCount: item.failureCount,
       queueItemId: item.queueItemId,
       updatedAt,
     };
@@ -555,6 +594,7 @@ export class WindowsCaptureQueue {
       attemptCount: 0,
       createdAt: now,
       envelope,
+      failureCount: 0,
       queueItemId,
       state: "pending",
       updatedAt: now,

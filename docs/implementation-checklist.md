@@ -257,41 +257,41 @@ frozen.
 
 ### 7.1 Database
 
-- [ ] Create versioned, transactional migrations.
-- [ ] Enable and test WAL and busy-timeout behavior.
-- [ ] Create canonical tables for raw events, parser errors, identities, queue
+- [x] Create versioned, transactional migrations.
+- [x] Enable and test WAL and busy-timeout behavior.
+- [x] Create canonical tables for raw events, parser errors, identities, queue
   state, episodes, evidence links, process claims, feedback, deletions, metrics,
   and evaluation runs.
-- [ ] Store source IDs and content digests on all derived records.
-- [ ] Keep projection schemas outside domain lifecycle authority.
+- [x] Store source IDs and content digests on all derived records.
+- [x] Keep projection schemas outside domain lifecycle authority.
 - [ ] Test migration upgrade, failed migration recovery, and database restore.
 
 ### 7.2 Worker
 
-- [ ] Acquire a Windows process lease or named mutex.
-- [ ] Claim queue items in bounded batches.
-- [ ] Parse adapter events into canonical events.
-- [ ] Commit one processing unit transactionally.
-- [ ] Acknowledge only after the canonical transaction succeeds.
+- [x] Acquire a Windows process lease or named mutex.
+- [x] Claim queue items in bounded batches.
+- [x] Parse adapter events into canonical events.
+- [x] Commit one processing unit transactionally.
+- [x] Acknowledge only after the canonical transaction succeeds.
 - [ ] Yield to interactive MCP requests and open a circuit breaker under CPU,
   memory, disk, provider-error, or queue-pressure conditions.
-- [ ] Preserve durable backlog while a consumer or model provider is disabled.
+- [x] Preserve durable backlog while a consumer or model provider is disabled.
 
 ### 7.3 Parser
 
-- [ ] Normalize every supported Copilot event type.
-- [ ] Record unsupported events through an explicit compatibility path.
-- [ ] Preserve the safe raw envelope and parser error on failure.
-- [ ] Distinguish a declared capability from an observed successful event.
-- [ ] Add fixture-based parser tests for every supported source version.
+- [x] Normalize every supported Copilot event type.
+- [x] Record unsupported events through an explicit compatibility path.
+- [x] Preserve the safe raw envelope and parser error on failure.
+- [x] Distinguish a declared capability from an observed successful event.
+- [x] Add fixture-based parser tests for every supported source version.
 
 ### 7.4 Definition of done
 
 - [ ] A fixture travels end to end from Extension envelope to redacted queue item,
   worker processing, canonical SQLite row, Ledger evidence, and gate result.
-- [ ] Worker crashes do not lose acknowledged or pending work.
-- [ ] Failed transactions do not create success-shaped domain state.
-- [ ] Disabling a consumer stops its side effects without corrupting the queue.
+- [x] Worker crashes do not lose acknowledged or pending work.
+- [x] Failed transactions do not create success-shaped domain state.
+- [x] Disabling a consumer stops its side effects without corrupting the queue.
 
 ## 8. Batch 5: Copilot adapter and operational CLI
 

@@ -20,3 +20,9 @@ export {
   type CopilotSessionFileDescriptor,
   type DiscoverCopilotSessionFilesOptions,
 } from "./copilot-session-files.js";
+export {
+  WindowsNamedPipeLeaseProvider,
+  windowsNamedPipePath,
+  type ProcessLease,
+  type ProcessLeaseProvider,
+} from "./process-lease.js";

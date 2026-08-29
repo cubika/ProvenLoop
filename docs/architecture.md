@@ -259,6 +259,30 @@ The worker starts on demand when queue work exists. A lock prevents duplicate
 workers. It processes events in batches and yields to interactive workloads.
 Queue items remain durable while a consumer is paused or unavailable.
 
+The first canonical store uses Node 22's built-in SQLite behind the
+`storage-sqlite` package. Startup enables WAL, foreign keys, and a bounded busy
+timeout, then applies contiguous migrations while holding `BEGIN IMMEDIATE`.
+The initial migration creates canonical raw-event, parser-error, identity,
+queue-processing, Episode, evidence, process-claim, feedback, deletion,
+metric, and evaluation-run tables. Search projections remain outside these
+domain tables.
+
+Each worker processing unit is ordered as:
+
+```text
+queue claim
+  -> second persistence redaction
+  -> adapter/event classification
+  -> one SQLite transaction
+  -> queue acknowledge or explicit dead-letter
+```
+
+The raw-event deduplication key is unique in SQLite. If the process stops after
+commit but before acknowledgement, replay increments delivery count and then
+acknowledges without creating another canonical fact. Queue-transition failures
+after commit use a separate retry path that cannot consume the event-processing
+attempt budget.
+
 The initial deployment is a modular monolith with a small capture Extension and
 one shared local ProvenLoop host containing the MCP server, worker, domain
 modules, and CLI control surface. Components are code boundaries, not

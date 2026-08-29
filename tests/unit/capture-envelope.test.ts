@@ -290,6 +290,7 @@ describe("capture redaction", () => {
         attemptCount: 0,
         createdAt: timestamp,
         envelope,
+        failureCount: 0,
         queueItemId: "queue-1",
         state: "pending",
         updatedAt: timestamp,

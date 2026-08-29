@@ -53,6 +53,37 @@ const createInput = () => ({
 });
 
 describe("Windows durable capture queue", () => {
+  it("loads legacy queue v1 items without failureCount", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = new WindowsCaptureQueue(root, {
+      idGenerator: () => "legacy-queue-item",
+    });
+    await queue.initialize();
+    await queue.enqueue(createInput());
+    const path = join(root, "legacy-queue-item.json");
+    const legacy = JSON.parse(
+      await readFile(path, "utf8"),
+    ) as Record<string, unknown>;
+    delete legacy.failureCount;
+    await writeFile(path, JSON.stringify(legacy), "utf8");
+
+    const restarted = new WindowsCaptureQueue(root);
+    await restarted.initialize();
+    expect(await restarted.list()).toEqual([
+      expect.objectContaining({
+        failureCount: 0,
+        queueItemId: "legacy-queue-item",
+      }),
+    ]);
+    await restarted.claimNext("worker-1");
+    expect(
+      JSON.parse(await readFile(path, "utf8")),
+    ).toMatchObject({
+      failureCount: 0,
+      state: "claimed",
+    });
+  });
+
   it("atomically enqueues one queue item per source identity", async () => {
     const root = await createTemporaryDirectory();
     const firstQueue = new WindowsCaptureQueue(root, {
@@ -205,6 +236,7 @@ describe("Windows durable capture queue", () => {
       acknowledgedRetentionMs: 1_000,
       claimLeaseMs: 1_000,
       idGenerator: () => "queue-item-1",
+      maxAttempts: 1,
       now: () => now,
       retryBaseDelayMs: 500,
     };
@@ -273,6 +305,41 @@ describe("Windows durable capture queue", () => {
     expect((await queue.acknowledge(activeClaim)).state).toBe(
       "acknowledged",
     );
+  });
+
+  it("does not count expired claims as ingestion failures", async () => {
+    const root = await createTemporaryDirectory();
+    let now = new Date("2026-08-29T00:00:00.000Z");
+    const queue = new WindowsCaptureQueue(root, {
+      claimLeaseMs: 1,
+      idGenerator: () => "queue-item-1",
+      maxAttempts: 2,
+      now: () => now,
+      retryBaseDelayMs: 1,
+    });
+    await queue.initialize();
+    await queue.enqueue(createInput());
+
+    for (let recovery = 0; recovery < 2; recovery += 1) {
+      const claim = await queue.claimNext("worker-1");
+      expect(claim?.state).toBe("claimed");
+      now = new Date(now.getTime() + 2);
+      const recovered = await queue.recoverExpiredClaims();
+      expect(recovered[0]).toMatchObject({
+        failureCount: 0,
+        state: "retry",
+      });
+      now = new Date(now.getTime() + 1);
+    }
+    const claim = await queue.claimNext("worker-1");
+    if (claim?.state !== "claimed") {
+      throw new Error("Expected a claimed queue item.");
+    }
+    const retry = await queue.retry(claim, "real ingestion failure");
+    expect(retry).toMatchObject({
+      failureCount: 1,
+      state: "retry",
+    });
   });
 
   it("surfaces malformed items without deleting in-flight temp files", async () => {

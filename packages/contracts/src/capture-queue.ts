@@ -24,6 +24,7 @@ const captureQueueItemBaseShape = {
   attemptCount: nonNegativeIntegerSchema,
   createdAt: isoTimestampSchema,
   envelope: captureEnvelopeSchema,
+  failureCount: nonNegativeIntegerSchema.default(0),
   queueItemId: identifierSchema,
   updatedAt: isoTimestampSchema,
 } as const;
