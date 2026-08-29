@@ -35,6 +35,38 @@ const event = (
 });
 
 describe("Copilot event mapping", () => {
+  it("maps a Session file header into session.started", () => {
+    const mapper = createMapper();
+    const result = mapper.map({
+      data: {
+        context: {
+          branch: "feature/from-header",
+          gitRoot: "C:\\repo",
+          headCommit: "abcdef1234567890abcdef1234567890abcdef12",
+        },
+        copilotVersion: "1.0.82-0",
+        sessionId: "session-1",
+        version: 1,
+      },
+      id: "session-start-1",
+      parentId: null,
+      timestamp,
+      type: "session.start",
+    });
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        branch: "feature/from-header",
+        commitSha: "abcdef1234567890abcdef1234567890abcdef12",
+        eventType: "session.started",
+        protocol: "copilot-session-file",
+        protocolVersion: "1",
+        worktree: "C:\\repo",
+      },
+    });
+  });
+
   it.each([
     [
       "user.message",

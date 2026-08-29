@@ -53,6 +53,35 @@ const createInput = () => ({
 });
 
 describe("Windows durable capture queue", () => {
+  it("atomically enqueues one queue item per source identity", async () => {
+    const root = await createTemporaryDirectory();
+    const firstQueue = new WindowsCaptureQueue(root, {
+      idGenerator: () => "queue-item-first",
+    });
+    const secondQueue = new WindowsCaptureQueue(root, {
+      idGenerator: () => "queue-item-second",
+    });
+    await Promise.all([
+      firstQueue.initialize(),
+      secondQueue.initialize(),
+    ]);
+
+    const results = await Promise.all([
+      firstQueue.enqueueIfSourceAbsent(createInput(), {
+        environment: {},
+      }),
+      secondQueue.enqueueIfSourceAbsent(createInput(), {
+        environment: {},
+      }),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "duplicate",
+      "enqueued",
+    ]);
+    expect(await firstQueue.list()).toHaveLength(1);
+  });
+
   it("redacts before an atomic pending-item write", async () => {
     const root = await createTemporaryDirectory();
     const knownSecret = "ghp_1234567890abcdefghijklmnopqrst";

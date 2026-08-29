@@ -7,6 +7,11 @@ export {
   type CaptureWriterStatus,
 } from "./async-writer.js";
 export {
+  COPILOT_CAPTURE_CAPABILITIES,
+  COPILOT_SUPPORTED_SOURCE_EVENT_TYPES,
+  getCopilotCaptureCapability,
+} from "./capabilities.js";
+export {
   BoundedCaptureBuffer,
   captureGapEvent,
   InvalidCaptureBufferConfigurationError,
@@ -15,6 +20,14 @@ export {
   type CaptureBufferOfferStatus,
   type CaptureGap,
 } from "./capture-buffer.js";
+export {
+  CaptureReconciler,
+  type CanonicalCaptureWatermark,
+  type CaptureReconcilerOptions,
+  type CaptureReconciliationResult,
+  type ReconcileSessionFileOptions,
+  type ReconciliationQueue,
+} from "./capture-reconciler.js";
 export {
   CopilotEventMapper,
   InvalidCopilotEventMapperConfigurationError,
@@ -36,3 +49,11 @@ export {
   type CaptureTerminationSignalSource,
   type StartCopilotExtensionCaptureOptions,
 } from "./start-extension.js";
+export {
+  InvalidSessionFileParserConfigurationError,
+  parseCopilotSessionFile,
+  type CopilotSessionFileHeader,
+  type CopilotSessionFileIssue,
+  type CopilotSessionFileParserOptions,
+  type CopilotSessionFileParseResult,
+} from "./session-file-parser.js";

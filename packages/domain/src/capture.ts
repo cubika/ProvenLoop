@@ -30,6 +30,14 @@ export interface CreateCaptureEnvelopeOptions {
   readonly redactionLimits?: Partial<CaptureRedactionLimits>;
 }
 
+export interface CaptureIdentityInput {
+  readonly adapter: string;
+  readonly adapterVersion: string;
+  readonly eventType: string;
+  readonly sessionId: string;
+  readonly sourceEventId: string;
+}
+
 export class InternalCaptureEventError extends Error {
   public override readonly name = "InternalCaptureEventError";
 
@@ -45,6 +53,17 @@ export class InvalidCaptureIdentityError extends Error {
     super(`Capture event ${field} must be non-empty.`);
   }
 }
+
+export const createCaptureDeduplicationKey = (
+  input: CaptureIdentityInput,
+): string =>
+  sha256({
+    adapter: input.adapter.trim(),
+    adapterVersion: input.adapterVersion.trim(),
+    eventType: input.eventType.trim(),
+    sessionId: input.sessionId.trim(),
+    sourceEventId: input.sourceEventId.trim(),
+  });
 
 export const createCaptureEnvelope = (
   input: CaptureEventInput,
@@ -89,7 +108,10 @@ export const createCaptureEnvelope = (
     trust: input.trust,
     worktree: input.worktree,
   });
-  const deduplicationKey = sha256({
+  if (normalizedEvent.sessionId === undefined) {
+    throw new InvalidCaptureIdentityError("sessionId");
+  }
+  const deduplicationKey = createCaptureDeduplicationKey({
     adapter: normalizedEvent.adapter,
     adapterVersion: normalizedEvent.adapterVersion,
     eventType: normalizedEvent.eventType,

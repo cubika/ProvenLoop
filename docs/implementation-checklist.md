@@ -242,7 +242,7 @@ frozen.
 - [x] Return control without waiting for worker availability or persistence.
 - [x] Surface capture degradation through status and logs without failing
   Copilot.
-- [ ] Reconcile supported Session files after gaps and restarts.
+- [x] Reconcile supported Session files after gaps and restarts.
 - [ ] Benchmark capture-added latency.
 
 ### 6.5 Definition of done

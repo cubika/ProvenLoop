@@ -10,7 +10,24 @@ import {
 } from "./capture-buffer.js";
 
 export interface CaptureQueueSink {
-  enqueue(input: CaptureEventInput): Promise<unknown>;
+  enqueue(
+    input: CaptureEventInput,
+    options?: {
+      readonly environment?: Readonly<
+        Record<string, string | undefined>
+      >;
+    },
+  ): Promise<unknown>;
+  enqueueIfSourceAbsent?(
+    input: CaptureEventInput,
+    options?: {
+      readonly environment?: Readonly<
+        Record<string, string | undefined>
+      >;
+    },
+  ): Promise<{
+    readonly status: "duplicate" | "enqueued";
+  }>;
 }
 
 export type CaptureHealthState =
@@ -196,7 +213,11 @@ export class AsyncCaptureWriter {
       while (!this.#stopped) {
         const next = this.#buffer.peek();
         if (next !== undefined) {
-          await this.#queue.enqueue(next);
+          if (this.#queue.enqueueIfSourceAbsent === undefined) {
+            await this.#queue.enqueue(next);
+          } else {
+            await this.#queue.enqueueIfSourceAbsent(next);
+          }
           this.#buffer.shift();
           this.#persistedEvents += 1;
           this.#lastError = undefined;
@@ -208,7 +229,12 @@ export class AsyncCaptureWriter {
           break;
         }
         try {
-          await this.#queue.enqueue(captureGapEvent(gap));
+          const gapEvent = captureGapEvent(gap);
+          if (this.#queue.enqueueIfSourceAbsent === undefined) {
+            await this.#queue.enqueue(gapEvent);
+          } else {
+            await this.#queue.enqueueIfSourceAbsent(gapEvent);
+          }
           this.#persistedGaps += 1;
           this.#lastError = undefined;
         } catch (error) {

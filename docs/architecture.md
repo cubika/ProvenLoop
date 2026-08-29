@@ -194,6 +194,19 @@ the callback. A bounded Reconciler reads supported versions of Copilot Session
 files after gaps or restarts. Metadata-only OpenTelemetry may provide another
 reconciliation signal after its overhead and failure behavior pass F0 tests.
 
+The Reconciler reads `events.jsonl` as a stream with an explicit per-line size
+limit. It validates the first `session.start` record before reading later
+content, then rejects unknown Copilot or Session-file versions without guessing
+compatibility. A partial final line is treated as an interrupted write, while
+malformed and oversized complete records remain observable issues.
+
+Before replay, reconciliation loads both active queue source identities and the
+required canonical capture watermark. Missing canonical state is an explicit
+failure, not an empty-success fallback. Live capture and recovery share an
+atomic source-identity index in the queue so concurrent writers cannot normally
+create duplicate queue items. Internal Session IDs stop parsing immediately
+after the header, before content-bearing records are read.
+
 Command and HTTP lifecycle Hooks are not used for normal capture. F0 found both
 paths too slow. The complete design and acceptance gate are defined in
 [Copilot event capture design](copilot-event-capture-design.md).

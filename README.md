@@ -158,4 +158,6 @@ The local TypeScript/Node.js MVP is under implementation. Shared contracts and
 the evaluation spine are complete. Batch 3 now includes deterministic capture
 envelopes, write-time redaction, the Windows durable queue, supported Copilot
 event mapping, bounded buffering, asynchronous persistence, and explicit
-capture-gap reporting.
+capture-gap reporting. Recovery now streams supported Copilot Session files,
+rejects unknown versions explicitly, and replays only source events absent from
+both the queue and canonical watermark.

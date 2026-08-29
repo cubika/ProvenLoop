@@ -1,9 +1,11 @@
 export {
+  createCaptureDeduplicationKey,
   createCaptureEnvelope,
   InternalCaptureEventError,
   InvalidCaptureIdentityError,
   isProvenLoopInternalEnvironment,
   type CaptureEventInput,
+  type CaptureIdentityInput,
   type CreateCaptureEnvelopeOptions,
 } from "./capture.js";
 export {

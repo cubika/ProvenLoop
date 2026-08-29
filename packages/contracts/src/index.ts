@@ -3,6 +3,12 @@ export {
   type ArtifactFormatKind,
 } from "./artifact-format-versions.js";
 export {
+  adapterCapabilitySchema,
+  adapterCapabilityStatusSchema,
+  captureTransportSchema,
+  type AdapterCapability,
+} from "./adapter-capability.js";
+export {
   branchContextSchema,
   type BranchContext,
 } from "./branch-context.js";

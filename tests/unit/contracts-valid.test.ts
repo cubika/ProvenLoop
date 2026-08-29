@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  adapterCapabilitySchema,
   branchContextSchema,
   contextUseRecordSchema,
   correctionKeySchema,
@@ -32,6 +33,24 @@ const validCases: readonly {
   readonly name: string;
   readonly schema: RuntimeSchema;
 }[] = [
+  {
+    name: "AdapterCapability",
+    schema: adapterCapabilitySchema,
+    input: {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      captureTransport: "extension-session-events",
+      sessionFileParser: "events-jsonl-v1",
+      sessionFileVersions: [
+        1,
+      ],
+      sourceEventTypes: [
+        "user.message",
+      ],
+      status: "supported",
+    },
+  },
   {
     name: "RawEvent",
     schema: rawEventSchema,

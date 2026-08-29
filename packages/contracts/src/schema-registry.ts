@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CURRENT_SCHEMA_VERSION } from "./common.js";
 
 export const SCHEMA_NAMES = [
+  "adapterCapability",
   "rawEvent",
   "captureEnvelope",
   "captureQueueItem",
@@ -34,6 +35,7 @@ export interface SchemaMigration {
 const noMigrations: readonly SchemaMigration[] = [];
 
 export const CURRENT_SCHEMA_VERSIONS = {
+  adapterCapability: CURRENT_SCHEMA_VERSION,
   branchContext: CURRENT_SCHEMA_VERSION,
   captureEnvelope: CURRENT_SCHEMA_VERSION,
   captureQueueItem: CURRENT_SCHEMA_VERSION,
@@ -53,6 +55,7 @@ export const CURRENT_SCHEMA_VERSIONS = {
 } as const satisfies Readonly<Record<SchemaName, number>>;
 
 export const SCHEMA_MIGRATIONS = {
+  adapterCapability: noMigrations,
   branchContext: noMigrations,
   captureEnvelope: noMigrations,
   captureQueueItem: noMigrations,

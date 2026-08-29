@@ -444,6 +444,79 @@ export class CopilotEventMapper {
     };
 
     switch (eventType) {
+      case "session.start": {
+        const sessionId = requiredString(data, "sessionId", issues);
+        const copilotVersion = requiredString(
+          data,
+          "copilotVersion",
+          issues,
+        );
+        const fileVersion = data.version;
+        if (!Number.isInteger(fileVersion)) {
+          issues.push("version must be an integer.");
+        }
+        if (
+          sessionId !== undefined &&
+          sessionId.trim() !== this.#sessionId
+        ) {
+          issues.push(
+            "session.start sessionId does not match the capture session.",
+          );
+        }
+        if (
+          copilotVersion !== undefined &&
+          copilotVersion.trim() !== this.#adapterVersion
+        ) {
+          issues.push(
+            "session.start copilotVersion does not match the adapter.",
+          );
+        }
+        const context = asRecord(data.context);
+        const branch =
+          context === undefined
+            ? undefined
+            : optionalString(context, "branch");
+        const commitSha =
+          context === undefined
+            ? undefined
+            : optionalString(context, "headCommit");
+        const repoId =
+          context === undefined
+            ? undefined
+            : optionalString(context, "repository");
+        const worktree =
+          context === undefined
+            ? undefined
+            : optionalString(context, "gitRoot") ??
+              optionalString(context, "cwd");
+        if (issues.length === 0) {
+          this.updateWorkspace({
+            ...(branch === undefined ? {} : { branch }),
+            ...(commitSha === undefined ? {} : { commitSha }),
+            ...(repoId === undefined ? {} : { repoId }),
+            ...(worktree === undefined ? {} : { worktree }),
+          });
+        }
+        return this.#mappedOrMalformed(
+          issues,
+          eventType,
+          sourceEventId,
+          {
+            ...this.#base(
+              sourceEventId,
+              "session.started",
+              timestamp,
+              "system",
+            ),
+            protocol: "copilot-session-file",
+            ...(Number.isInteger(fileVersion)
+              ? {
+                  protocolVersion: String(fileVersion),
+                }
+              : {}),
+          },
+        );
+      }
       case "user.message": {
         const content = messageContent(
           data,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   access,
+  link,
   mkdir,
   open,
   readFile,
@@ -30,6 +31,15 @@ export interface EnqueueCaptureOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly redactionLimits?: Partial<CaptureRedactionLimits>;
 }
+
+export type EnqueueCaptureIfAbsentResult =
+  | {
+      readonly status: "duplicate";
+    }
+  | {
+      readonly item: CaptureQueueItem;
+      readonly status: "enqueued";
+    };
 
 export interface CaptureQueueClaim {
   readonly attemptCount: number;
@@ -190,40 +200,85 @@ export class WindowsCaptureQueue {
       if (await this.#exists(queueItemId)) {
         throw new DuplicateQueueItemIdError(queueItemId);
       }
-      const internalSession =
-        input.internalSession === true ||
-        isProvenLoopInternalEnvironment(
-          options.environment ?? process.env,
-        );
-      const envelope = createCaptureEnvelope(
-        {
-          ...input,
-          ...(internalSession
-            ? {
-                internalSession: true,
-              }
-            : {}),
-        },
-        {
-          capturedAt: now,
-          ...(options.redactionLimits === undefined
-            ? {}
-            : {
-                redactionLimits: options.redactionLimits,
-              }),
-        },
-      );
-      const item = captureQueueItemSchema.parse({
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        attemptCount: 0,
-        createdAt: now,
-        envelope,
+      const item = this.#pendingItem(
+        input,
+        options,
         queueItemId,
-        state: "pending",
-        updatedAt: now,
-      });
+        now,
+      );
       await this.#write(item);
       return item;
+    });
+  }
+
+  public enqueueIfSourceAbsent(
+    input: CaptureEventInput,
+    options: EnqueueCaptureOptions = {},
+  ): Promise<EnqueueCaptureIfAbsentResult> {
+    return this.#runExclusive(async () => {
+      this.#assertInitialized();
+      const now = this.#now().toISOString();
+      const queueItemId = this.#nextQueueItemId();
+      if (await this.#exists(queueItemId)) {
+        throw new DuplicateQueueItemIdError(queueItemId);
+      }
+      const item = this.#pendingItem(
+        input,
+        options,
+        queueItemId,
+        now,
+      );
+      const indexPath = this.#sourceIndexPath(
+        item.envelope.deduplicationKey,
+      );
+      const indexedQueueItemId =
+        await this.#validatedSourceIndex(
+          indexPath,
+          item.envelope.deduplicationKey,
+        );
+      if (indexedQueueItemId !== undefined) {
+        return {
+          status: "duplicate",
+        };
+      }
+
+      const existing = (await this.#readAll()).find(
+        (candidate) =>
+          candidate.envelope.deduplicationKey ===
+          item.envelope.deduplicationKey,
+      );
+      if (existing !== undefined) {
+        await this.#claimSourceIndex(
+          indexPath,
+          existing.queueItemId,
+          item.envelope.deduplicationKey,
+        );
+        return {
+          status: "duplicate",
+        };
+      }
+
+      await this.#write(item);
+      try {
+        const claim = await this.#claimSourceIndex(
+          indexPath,
+          queueItemId,
+          item.envelope.deduplicationKey,
+        );
+        if (claim === "duplicate") {
+          await unlink(this.#path(queueItemId));
+          return {
+            status: "duplicate",
+          };
+        }
+      } catch (error) {
+        await unlink(this.#path(queueItemId)).catch(() => undefined);
+        throw error;
+      }
+      return {
+        status: "enqueued",
+        item,
+      };
     });
   }
 
@@ -364,11 +419,15 @@ export class WindowsCaptureQueue {
           item.state === "acknowledged" &&
           Date.parse(item.acknowledgedAt) <= cutoff,
       );
-      await Promise.all(
-        acknowledged.map((item) =>
-          unlink(this.#path(item.queueItemId)),
-        ),
-      );
+      for (const item of acknowledged) {
+        await unlink(this.#path(item.queueItemId));
+        await this.#removeSourceIndexIfOwned(
+          this.#sourceIndexPath(
+            item.envelope.deduplicationKey,
+          ),
+          item.queueItemId,
+        );
+      }
       return acknowledged.map((item) => item.queueItemId);
     });
   }
@@ -462,6 +521,46 @@ export class WindowsCaptureQueue {
     };
   }
 
+  #pendingItem(
+    input: CaptureEventInput,
+    options: EnqueueCaptureOptions,
+    queueItemId: string,
+    now: string,
+  ): CaptureQueueItem {
+    const internalSession =
+      input.internalSession === true ||
+      isProvenLoopInternalEnvironment(
+        options.environment ?? process.env,
+      );
+    const envelope = createCaptureEnvelope(
+      {
+        ...input,
+        ...(internalSession
+          ? {
+              internalSession: true,
+            }
+          : {}),
+      },
+      {
+        capturedAt: now,
+        ...(options.redactionLimits === undefined
+          ? {}
+          : {
+              redactionLimits: options.redactionLimits,
+            }),
+      },
+    );
+    return captureQueueItemSchema.parse({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      attemptCount: 0,
+      createdAt: now,
+      envelope,
+      queueItemId,
+      state: "pending",
+      updatedAt: now,
+    });
+  }
+
   async #readAll(): Promise<readonly CaptureQueueItem[]> {
     const entries = await readdir(this.#root, {
       withFileTypes: true,
@@ -527,6 +626,7 @@ export class WindowsCaptureQueue {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
     }
+
     await handle.close();
     try {
       await rename(temporaryPath, this.#path(parsed.queueItemId));
@@ -534,6 +634,135 @@ export class WindowsCaptureQueue {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
     }
+  }
+
+  async #claimSourceIndex(
+    path: string,
+    queueItemId: string,
+    deduplicationKey: string,
+  ): Promise<"duplicate" | "owned"> {
+    while (true) {
+      const existing = await this.#validatedSourceIndex(
+        path,
+        deduplicationKey,
+      );
+      if (existing !== undefined) {
+        return existing === queueItemId
+          ? "owned"
+          : "duplicate";
+      }
+      try {
+        await this.#writeSourceIndex(path, queueItemId);
+        return "owned";
+      } catch (error) {
+        if (!this.#isAlreadyExists(error)) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  async #writeSourceIndex(
+    path: string,
+    queueItemId: string,
+  ): Promise<void> {
+    const temporaryPath = join(
+      this.#root,
+      `.source-${queueItemId}-${randomUUID()}.tmp`,
+    );
+    try {
+      const handle = await open(temporaryPath, "wx");
+      try {
+        await handle.writeFile(`${queueItemId}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await link(temporaryPath, path);
+    } finally {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
+  }
+
+  async #validatedSourceIndex(
+    path: string,
+    deduplicationKey: string,
+  ): Promise<string | undefined> {
+    let queueItemId: string;
+    try {
+      queueItemId = (await readFile(path, "utf8")).trim();
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (!queueItemIdPattern.test(queueItemId)) {
+      await unlink(path);
+      return undefined;
+    }
+
+    try {
+      const item = await this.#read(queueItemId);
+      if (item.envelope.deduplicationKey === deduplicationKey) {
+        return queueItemId;
+      }
+    } catch (error) {
+      if (!(error instanceof CaptureQueueItemNotFoundError)) {
+        throw error;
+      }
+    }
+    await unlink(path).catch((error: unknown) => {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return;
+      }
+      throw error;
+    });
+    return undefined;
+  }
+
+  async #removeSourceIndexIfOwned(
+    path: string,
+    queueItemId: string,
+  ): Promise<void> {
+    let indexedQueueItemId: string;
+    try {
+      indexedQueueItemId = (await readFile(path, "utf8")).trim();
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return;
+      }
+      throw error;
+    }
+    if (indexedQueueItemId !== queueItemId) {
+      return;
+    }
+    await unlink(path).catch((error: unknown) => {
+      if (
+        error !== null &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return;
+      }
+      throw error;
+    });
   }
 
   async #exists(queueItemId: string): Promise<boolean> {
@@ -562,6 +791,22 @@ export class WindowsCaptureQueue {
   #path(queueItemId: string): string {
     this.#validateQueueItemId(queueItemId);
     return join(this.#root, `${queueItemId}.json`);
+  }
+
+  #sourceIndexPath(deduplicationKey: string): string {
+    return join(
+      this.#root,
+      `.source-${deduplicationKey}.idx`,
+    );
+  }
+
+  #isAlreadyExists(error: unknown): boolean {
+    return (
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "EEXIST"
+    );
   }
 
   #validateQueueItemId(queueItemId: string): void {
