@@ -23,6 +23,22 @@ Run the live Copilot integration checks:
 pwsh -NoProfile -File .\spikes\f0\run-copilot-integration.ps1
 ```
 
+Run the Extension event probe:
+
+```powershell
+pwsh -NoProfile -File .\spikes\f0\run-extension-probe.ps1 -Mode baseline
+pwsh -NoProfile -File .\spikes\f0\run-extension-probe.ps1 -Mode delay
+pwsh -NoProfile -File .\spikes\f0\run-extension-probe.ps1 -Mode throw
+pwsh -NoProfile -File .\spikes\f0\run-extension-probe.ps1 -Mode exit
+pwsh -NoProfile -File .\spikes\f0\run-extension-probe.ps1 -Mode baseline -Internal
+```
+
+Run the persistent experimental setting probe:
+
+```powershell
+pwsh -NoProfile -File .\spikes\f0\run-extension-opt-in-probe.ps1
+```
+
 The live integration script uses the signed-in Copilot CLI account and makes
 three small prompt requests. It does not change the user's plugin or MCP
 configuration.
@@ -54,6 +70,15 @@ The live integration probe checks:
 - foreground Copilot behavior when the Hook endpoint is offline;
 - foreground Copilot behavior when plugin Hooks fail and the plugin MCP command
   cannot start.
+
+The Extension probes check:
+
+- Session event discovery and required event coverage;
+- event ID, timestamp, delivery latency, and callback CPU time;
+- metadata-only logging without Prompt or tool content;
+- delayed callback, callback exception, and process-exit isolation;
+- internal Session exclusion before content copying;
+- persistent experimental opt-in and settings-based rollback.
 
 ## Current result
 

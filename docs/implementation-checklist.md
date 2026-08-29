@@ -68,16 +68,27 @@ frozen.
 - [x] Document degradation when Copilot is signed out, rate-limited, or
   incompatible.
 - [x] Prove hook and MCP failure do not block foreground Copilot use.
-- [ ] Verify a plugin Extension can join the active Session and subscribe to
+- [x] Select the Extension event stream as the primary capture candidate and
+  document its fallback, privacy, recovery, and Go/No-Go design.
+- [x] Verify a plugin Extension can join the active Session and subscribe to
   required `session.on(...)` events.
-- [ ] Verify Extension callbacks are notification-only and do not wait for
+- [x] Verify Extension callbacks are notification-only and do not wait for
   persistence or downstream processing.
-- [ ] Verify the Extension excludes registered internal Session IDs before
+- [x] Verify the Extension excludes registered internal Session IDs before
   copying content.
-- [ ] Verify Extension opt-in persists for ordinary `copilot` launches and is
-  reversed by disable or uninstall.
-- [ ] Measure at least 500 Extension events and pass the F0-001 latency,
-  backpressure, crash, coverage, and privacy gates.
+- [x] Verify Extension opt-in persists for ordinary `copilot` launches and a
+  settings-based rollback stops Extension loading.
+- [ ] Verify plugin disable and uninstall preserve prior user experimental
+  settings while stopping the Extension.
+- [x] Measure at least 500 Extension events on Windows 11 and verify required
+  event coverage, event IDs, delivery freshness, callback work duration,
+  failure isolation, and metadata-only persistence.
+- [x] Accept the Extension event stream as feasible and unblock Batch 1
+  workspace and shared-contract implementation.
+- [ ] Complete F0-001 with Windows 10, paired foreground A/B latency,
+  cancel/resume/subagent coverage, concurrent load and queue-failure tests,
+  Session file reconciliation, and installed-plugin lifecycle validation
+  before M0 acceptance.
 
 ### 3.2 Local runtime spike
 

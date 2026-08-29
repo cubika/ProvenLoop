@@ -67,7 +67,7 @@ SDK programmatic Hook 仍是 request/response 调用，Copilot 会等待 callbac
 
 这套方案必须满足：
 
-- 前台新增延迟 P95 不高于 10 ms；
+- paired A/B 前台新增延迟 P95 不高于 10 ms；
 - Extension、Worker 或存储故障不阻塞 Copilot；
 - 支持的事件识别准确率不低于 95%；
 - 原始内容写入磁盘前完成脱敏；
@@ -207,7 +207,7 @@ ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。用户�
 | `assistant.turn_end` | `agent.turn_completed` | turn ID | 只表示 turn 结束 |
 | `session.idle` | `session.idle` | session、timestamp | ephemeral，不作为恢复依据 |
 | `session.error` | `session.error` | safe error、error type | 原始堆栈先脱敏 |
-| `session.shutdown` | `session.ended` | session、reason、timestamp | 触发 bounded drain |
+| `session.shutdown` | `session.ended` | session、reason、timestamp | best effort，不作为唯一关闭信号 |
 | `subagent.started` | `subagent.started` | parent、agent identity | M0 可采集但暂不消费 |
 | `subagent.completed` 或 `subagent.failed` | 对应 subagent 事件 | parent、status、error | 保留过程证据 |
 
@@ -308,8 +308,10 @@ ProvenLoop 的后台推理在启动 Copilot 前生成明确 Session ID，并登�
 5. 注册 MCP 和 Extension；
 6. 不修改用户现有登录凭据。
 
-如果 Copilot 需要全局 experimental 开关才能运行 Extension，安装器必须明确
-说明并获得确认。不能要求用户以后通过包装命令启动 Copilot。
+如果 Copilot 需要全局 experimental setting 才能运行 Extension，安装器必须
+明确说明并获得确认。不能要求用户以后通过包装命令启动 Copilot。安装器只在
+原值为 `false` 或缺失时记录自己改变过该设置，disable 或 uninstall 时据此
+恢复；不能覆盖用户原本开启的设置。
 
 F0 必须证明这个 opt-in 可以持久化、只影响所需功能，并能在 disable 或
 uninstall 时回滚。做不到这一点，Extension 路线直接 No-Go。
@@ -329,8 +331,9 @@ Copilot。
 
 ### Session 关闭
 
-收到 `session.shutdown` 后，writer 尝试在一个经压测确定的短 deadline 内清空
-缓冲区。deadline 到期后记录缺口并退出。Reconciler 负责补账。
+`session.shutdown` 可能在 Extension 被终止前不可见。Extension 同时处理
+`SIGTERM`，并在 CLI 提供的退出宽限期内尝试清空缓冲区。无论哪条信号先到，
+drain 都有短 deadline。未完成的部分由 Reconciler 补账。
 
 关闭路径不能无限等待磁盘、Worker 或模型。
 
@@ -416,9 +419,8 @@ Extension 方案满足以下条件才解除 F0-001：
 
 - Windows 10 和 11 各采集至少 500 个代表性事件；
 - Prompt、工具成功、工具失败、取消、resume、shutdown 和 subagent 均有样本；
-- 事件 timestamp 到 callback 的 P95 不高于 10 ms；
 - paired A/B 测试中，前台新增延迟 P95 不高于 10 ms；
-- callback P95 CPU 时间不高于 1 ms；
+- callback work duration P95 不高于 1 ms；
 - Extension callback 故意 sleep、抛错或退出时，Copilot 仍可完成任务；
 - Worker 停止和队列积压时，Copilot 不受影响；
 - Extension 重启和 Reconciler 运行后，已落盘事件缺失为 0；
@@ -427,6 +429,11 @@ Extension 方案满足以下条件才解除 F0-001：
 - seeded secret 持久化为 0；
 - 内部 Session 内容持久化为 0；
 - 未支持版本进入 `incompatible`，不会猜测解析。
+
+事件 timestamp 到 callback 的 delivery latency 单独报告 P50、P95、最大值和
+事件类型分布。它衡量采集新鲜度，不等于用户可见延迟。F0 不为它预设 10 ms
+门槛，但必须证明不会持续积压，Session 结束后可以完成持久化或由 Reconciler
+补齐。
 
 如果 Extension 无法达到延迟或故障隔离要求，停止这条路线。下一候选是
 metadata-only OTel 作为主元数据流，配合受支持版本的 Session 文件增量恢复。
@@ -440,7 +447,7 @@ metadata-only OTel 作为主元数据流，配合受支持版本的 Session 文�
 - bundled SDK 在 CLI patch 版本间的兼容边界；
 - OTel exporter 的缓冲、丢弃和 shutdown flush 行为；
 - `events.jsonl` 在 Windows 上的追加、部分行和 resume 行为；
-- global experimental 设置是否可以一次启用并由安装器安全回滚。
+- 安装器修改 JSONC settings 时如何保留用户注释和其他字段。
 
 这些问题都有对应实验，不需要先建立额外抽象。
 
