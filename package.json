@@ -18,7 +18,7 @@
     "lint": "eslint .",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "npm run build --silent && vitest run --config vitest.integration.config.ts",
-    "typecheck": "tsc -b --noEmit --pretty false && tsc -p tsconfig.tools.json --pretty false"
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.tools.json --pretty false"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

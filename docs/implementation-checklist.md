@@ -162,44 +162,44 @@ frozen.
 
 ### 5.1 Runner
 
-- [ ] Implement `provenloop eval run --suite <suite> --out <directory>`.
-- [ ] Implement `provenloop eval report --run <run-id>`.
-- [ ] Load and validate Requirement Manifests and Replay Specs.
-- [ ] Write an append-only Evidence Ledger for each evaluation run.
-- [ ] Produce stable `report.json` and `report.md`.
-- [ ] Return the documented exit code without converting gate failures into
+- [x] Implement `provenloop eval run --suite <suite> --out <directory>`.
+- [x] Implement `provenloop eval report --run <run-id>`.
+- [x] Load and validate Requirement Manifests and Replay Specs.
+- [x] Write an append-only Evidence Ledger for each evaluation run.
+- [x] Produce stable `report.json` and `report.md`.
+- [x] Return the documented exit code without converting gate failures into
   infrastructure failures.
 
 ### 5.2 Initial deterministic verifiers
 
-- [ ] Event schema and source-version verifier.
-- [ ] Event idempotency verifier.
-- [ ] Process-claim execution consistency verifier.
-- [ ] Participant and resolved-model identity verifier.
-- [ ] Command completion and exit-code verifier.
-- [ ] Secret persistence verifier.
-- [ ] Repository-scope isolation verifier.
-- [ ] Deletion propagation verifier contract, even if its full implementation
+- [x] Event schema and source-version verifier.
+- [x] Event idempotency verifier.
+- [x] Process-claim execution consistency verifier.
+- [x] Participant and resolved-model identity verifier.
+- [x] Command completion and exit-code verifier.
+- [x] Secret persistence verifier.
+- [x] Repository-scope isolation verifier.
+- [x] Deletion propagation verifier contract, even if its full implementation
   lands with deletion support.
 
 ### 5.3 Initial replay fixtures
 
-- [ ] Valid supported event.
-- [ ] Malformed event that must remain visible and fail validation.
-- [ ] Duplicate event that must create one canonical fact.
-- [ ] Declared test completion with no invocation evidence.
-- [ ] Detected participant that was never invoked.
-- [ ] Requested model different from the resolved model.
-- [ ] Seeded credential and high-entropy secret payloads.
-- [ ] Unknown adapter version.
-- [ ] Queue interruption and recovery.
+- [x] Valid supported event.
+- [x] Malformed event that must remain visible and fail validation.
+- [x] Duplicate event that must create one canonical fact.
+- [x] Declared test completion with no invocation evidence.
+- [x] Detected participant that was never invoked.
+- [x] Requested model different from the resolved model.
+- [x] Seeded credential and high-entropy secret payloads.
+- [x] Unknown adapter version.
+- [x] Queue interruption and recovery.
 
 ### 5.4 Definition of done
 
-- [ ] Fixtures can intentionally pass, fail, or become inconclusive.
-- [ ] A false completion or false consensus claim exits with code `1`.
-- [ ] Invalid fixture/schema input exits with code `2`.
-- [ ] Reports identify requirement IDs, evidence IDs, fixture versions, and
+- [x] Fixtures can intentionally pass, fail, or become inconclusive.
+- [x] A false completion or false consensus claim exits with code `1`.
+- [x] Invalid fixture/schema input exits with code `2`.
+- [x] Reports identify requirement IDs, evidence IDs, fixture versions, and
   failure messages.
 
 ## 6. Batch 3: safe event capture

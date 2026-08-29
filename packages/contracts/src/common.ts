@@ -10,6 +10,9 @@ export const versionedSchemaShape = {
 
 export const identifierSchema = z.string().trim().min(1);
 export const nonEmptyStringSchema = z.string().trim().min(1);
+export const sha256DigestSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/u);
 export const isoTimestampSchema = z.string().datetime({
   offset: true,
 });

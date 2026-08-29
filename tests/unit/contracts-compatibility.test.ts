@@ -7,6 +7,7 @@ import {
   ARTIFACT_FORMAT_VERSIONS,
   classifyRawEvent,
   CURRENT_SCHEMA_VERSIONS,
+  evidenceLedgerEntrySchema,
   gateResultSchema,
   rawEventSchema,
   replaySpecSchema,
@@ -113,6 +114,19 @@ describe("schema version compatibility", () => {
 
     expect(result.status).toBe(fixture.expectedStatus);
     expect(result.status).toBe("invalid");
+  });
+
+  it("requires Ledger digest fields to be SHA-256 hex", () => {
+    const result = evidenceLedgerEntrySchema.safeParse({
+      schemaVersion: 1,
+      ledgerEntryId: "ledger-1",
+      runId: "run-1",
+      status: "event.observed",
+      inputDigest: "ghp_1234567890abcdefghijklmnopqrst",
+      timestamp: "2026-08-29T00:00:00.000Z",
+    });
+
+    expect(result.success).toBe(false);
   });
 });
 

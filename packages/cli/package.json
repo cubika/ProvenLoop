@@ -5,10 +5,16 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "provenloop": "./dist/bin.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@provenloop/evaluation": "0.0.0"
   }
 }

@@ -865,6 +865,7 @@ interface EvidenceLedgerEntry {
   episodeId?: string;
   claimId?: string;
   actorId?: string;
+  exitCode?: number;
   participantId?: string;
   invocationId?: string;
   requestedProvider?: string;

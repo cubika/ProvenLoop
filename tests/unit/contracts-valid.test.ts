@@ -194,7 +194,7 @@ const validCases: readonly {
         "invocation-1",
       ],
       requiredEvidence: [
-        "command exit code",
+        "command.succeeded",
       ],
       evidenceIds: [
         "evidence-1",

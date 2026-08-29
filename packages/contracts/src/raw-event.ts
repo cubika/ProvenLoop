@@ -4,6 +4,7 @@ import {
   identifierSchema,
   isoTimestampSchema,
   nonEmptyStringSchema,
+  sha256DigestSchema,
   versionedSchemaShape,
 } from "./common.js";
 import {
@@ -83,7 +84,7 @@ export const rawEventSchema = z
     requestedProvider: nonEmptyStringSchema.optional(),
     resolvedModel: nonEmptyStringSchema.optional(),
     resolvedProvider: nonEmptyStringSchema.optional(),
-    resultDigest: nonEmptyStringSchema.optional(),
+    resultDigest: sha256DigestSchema.optional(),
     sessionId: identifierSchema.optional(),
     timestamp: isoTimestampSchema,
     toolName: nonEmptyStringSchema.optional(),

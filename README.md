@@ -104,6 +104,30 @@ npm run test:integration
 npm run build
 ```
 
+Run a built-in evaluation fixture:
+
+```powershell
+npm run build
+.\node_modules\.bin\provenloop.cmd eval run `
+  --suite valid-supported-event `
+  --out .provenloop\eval
+```
+
+Negative fixtures return the product gate exit code instead of converting the
+failure into an infrastructure error:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd eval run `
+  --suite false-completion `
+  --out .provenloop\eval
+```
+
+Regenerate the Markdown view from a run's stable JSON report:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd eval report --run <run-id-or-directory>
+```
+
 ## Canonical documents
 
 - [Product design](docs/product-design.md)
