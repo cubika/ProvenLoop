@@ -673,6 +673,13 @@ evidence by itself. The versioned 24-pair dataset is available through
 `provenloop eval episodes`; its report separates precision, recall, wrong
 merges, wrong splits, candidates, and ambiguous cases.
 
+`provenloop eval m0 --out <directory>` runs the frozen deterministic suites and
+Episode dataset as one aggregate release decision. It binds each requested
+suite to its exact expected Gate profile and schema-valid Ledger evidence,
+records a clean commit or deterministic dirty-tree digest, reserves artifacts
+without overwrite, and reports unavailable field evidence as `blocked` rather
+than success.
+
 ### 4.3 BranchContext
 
 ```ts

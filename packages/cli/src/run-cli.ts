@@ -15,6 +15,7 @@ import {
   regenerateMarkdownReport,
   renderEpisodeAssociationReport,
   runEvaluation,
+  runM0ReleaseGate,
 } from "@provenloop/evaluation";
 import {
   resolveWindowsProvenLoopDataRoot,
@@ -63,6 +64,7 @@ const usage = `Usage:
   provenloop disable <capability> [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
+  provenloop eval m0 --out <directory>
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -89,6 +91,25 @@ const runEvaluationCommand = async (
   args: readonly string[],
   io: CliIo,
 ): Promise<number> => {
+  if (args[1] === "m0") {
+    const outputRoot = option(args, "--out");
+    if (!outputRoot || outputRoot.startsWith("--")) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const result = await runM0ReleaseGate({
+        outputRoot,
+      });
+      io.log(
+        `M0 release gate ${result.report.status}: ${result.runDirectory}`,
+      );
+      return result.report.exitCode;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 3;
+    }
+  }
   if (args[1] === "episodes") {
     if (hasInvalidOptionValue(args, "--dataset")) {
       io.error(usage);

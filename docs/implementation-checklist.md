@@ -375,18 +375,18 @@ frozen.
 ## 10. M0 release checklist
 
 - [ ] All Batch 1-6 definitions of done pass.
-- [ ] M0 Requirement Manifests and Replay Specs are versioned and frozen.
-- [ ] Event/process integrity, secret, scope, idempotency, and recovery suites
+- [x] M0 Requirement Manifests and Replay Specs are versioned and frozen.
+- [x] Event/process integrity, secret, scope, idempotency, and recovery suites
   pass.
 - [ ] Unsupported Completion Claim count is zero.
 - [ ] Seeded secret persistence and cross-repository leakage are zero.
 - [ ] Capture-added latency P95 is at most 10 ms.
-- [ ] Parser and episode-builder quality thresholds pass.
+- [x] Parser and episode-builder quality thresholds pass.
 - [ ] `provenloop doctor` reports actionable failures.
-- [ ] `report.json`, `report.md`, Evidence Ledger, dataset versions, and code
+- [x] `report.json`, `report.md`, Evidence Ledger, dataset versions, and code
   version are retained for the release decision.
-- [ ] Known failures and limitations are included in the report.
-- [ ] M0 remains observation-only: no automatic long-term Knowledge activation.
+- [x] Known failures and limitations are included in the report.
+- [x] M0 remains observation-only: no automatic long-term Knowledge activation.
 
 ## 11. M1: trusted continuity memory
 

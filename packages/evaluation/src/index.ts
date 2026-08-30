@@ -24,6 +24,16 @@ export {
   UnsafeLedgerIdentifierError,
 } from "./ledger.js";
 export {
+  runM0ReleaseGate,
+  verifyM0SuiteEvidence,
+  type M0ReleaseGateCheck,
+  type M0ReleaseGateStatus,
+  type M0ReleaseReport,
+  type M0SuiteResult,
+  type RunM0ReleaseGateOptions,
+  type RunM0ReleaseGateResult,
+} from "./m0-release-gate.js";
+export {
   loadEvaluationSuite,
 } from "./load-suite.js";
 export {

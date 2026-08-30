@@ -178,3 +178,9 @@ association projections in SQLite. Canonical Git parent metadata now feeds a
 repository-scoped ancestry graph, and `provenloop eval episodes` runs the
 versioned 24-pair quality dataset with distinct precision, recall, wrong-merge,
 wrong-split, candidate, and ambiguous-case metrics.
+The M0 release gate is now executable through
+`provenloop eval m0 --out <directory>`. It retains all suite reports and
+Ledgers, the Episode dataset result, code provenance, and known blockers.
+Current M0 output is intentionally `blocked` until the remaining Windows
+latency, provider-degradation, remote-upgrade, deletion, and operational
+capability evidence is completed.
