@@ -10,7 +10,16 @@
   ],
   "references": [
     {
+      "path": "../contracts"
+    },
+    {
+      "path": "../copilot-adapter"
+    },
+    {
       "path": "../evaluation"
+    },
+    {
+      "path": "../platform-windows"
     }
   ]
 }

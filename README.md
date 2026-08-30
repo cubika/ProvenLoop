@@ -164,3 +164,9 @@ both the queue and canonical watermark. Batch 4 adds the transactional
 canonical SQLite store and a leased, bounded worker that commits before queue
 acknowledgement. The worker now has resource-pressure admission, SQLite
 upgrade/backup/restore validation, and an end-to-end canonical Ledger Gate.
+Batch 5 now adds the shared `AgentAdapter` lifecycle contract and operational
+CLI commands for install, status, doctor, capability enable/disable, and
+uninstall. The Copilot adapter generates and registers a local marketplace with
+the capture Extension and MCP process, preserves JSONC user settings, resolves
+Git and Session identity, reports incompatible Copilot versions explicitly,
+and preserves local data unless uninstall is combined with `--purge`.

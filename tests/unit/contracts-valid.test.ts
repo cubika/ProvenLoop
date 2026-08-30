@@ -14,6 +14,8 @@ import {
   knowledgeCandidateSchema,
   outcomeEvidenceLinkSchema,
   processClaimSchema,
+  PROVENLOOP_CAPABILITIES,
+  provenLoopCapabilitySchema,
   rawEventSchema,
   replaySpecSchema,
   requirementManifestSchema,
@@ -337,6 +339,27 @@ describe("evaluation exit codes", () => {
       gateFailed: 1,
       invalidInput: 2,
       infrastructureError: 3,
+    });
+  });
+
+  describe("adapter lifecycle contract", () => {
+    it("freezes the operational capability names", () => {
+      expect(PROVENLOOP_CAPABILITIES).toEqual([
+        "capture",
+        "worker",
+        "retrieval",
+        "correction_learning",
+        "outcome_learning",
+        "retrospective",
+        "playbook",
+        "external_research",
+      ]);
+      expect(provenLoopCapabilitySchema.safeParse("capture").success).toBe(
+        true,
+      );
+      expect(provenLoopCapabilitySchema.safeParse("unknown").success).toBe(
+        false,
+      );
     });
   });
 });

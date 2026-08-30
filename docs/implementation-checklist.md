@@ -297,43 +297,46 @@ frozen.
 
 ### 8.1 Adapter
 
-- [ ] Implement the `AgentAdapter` contract.
-- [ ] Register the supported Extension and local MCP configuration.
-- [ ] Resolve session, repository, branch, worktree, and commit identity.
-- [ ] Publish an actual capability matrix for the installed Copilot version.
-- [ ] Detect internal ProvenLoop sessions and suppress recursive capture.
-- [ ] Tolerate unsupported Copilot versions without breaking the CLI.
+- [x] Implement the `AgentAdapter` contract.
+- [x] Register the supported Extension and local MCP configuration.
+- [x] Resolve session, repository, branch, worktree, and commit identity.
+- [x] Publish an actual capability matrix for the installed Copilot version.
+- [x] Detect internal ProvenLoop sessions and suppress recursive capture.
+- [x] Tolerate unsupported Copilot versions without breaking the CLI.
 
 ### 8.2 CLI
 
-- [ ] `provenloop install`
-- [ ] `provenloop status`
-- [ ] `provenloop doctor`
-- [ ] `provenloop enable <capability>`
-- [ ] `provenloop disable <capability>`
-- [ ] `provenloop uninstall`
-- [ ] Preserve data on uninstall unless purge is explicitly requested.
-- [ ] Make install, enable, disable, and uninstall idempotent.
+- [x] `provenloop install`
+- [x] `provenloop status`
+- [x] `provenloop doctor`
+- [x] `provenloop enable <capability>`
+- [x] `provenloop disable <capability>`
+- [x] `provenloop uninstall`
+- [x] Preserve data on uninstall unless purge is explicitly requested.
+- [x] Make install, enable, disable, and uninstall idempotent.
 
 ### 8.3 Doctor checks
 
-- [ ] Node and Windows compatibility.
-- [ ] Data-root permissions and free disk.
-- [ ] SQLite health and migration version.
-- [ ] Queue health, backlog, retry, and dead-letter count.
-- [ ] Worker lease and recent heartbeat.
+- [x] Node and Windows compatibility.
+- [x] Data-root permissions and free disk.
+- [x] SQLite health and migration version.
+- [x] Queue health, backlog, retry, and dead-letter count.
+- [x] Worker lease and recent heartbeat.
 - [ ] Copilot version, sign-in availability, Extension registration, and MCP
-  registration.
-- [ ] Capability state and last explicit error for each consumer.
-- [ ] Redaction and end-to-end synthetic-event self-test.
+  registration. Version and registration checks are implemented; Copilot CLI
+  does not expose a non-interactive credential-status command, so sign-in
+  availability remains explicit but unverified.
+- [x] Capability state and last explicit error for each consumer.
+- [x] Redaction and end-to-end synthetic-event self-test.
 
 ### 8.4 Definition of done
 
-- [ ] ProvenLoop can be stopped or broken while Copilot remains usable.
-- [ ] Installation requires no wrapper command for ordinary Copilot use.
-- [ ] Daily operation requires no additional model API key.
+- [x] ProvenLoop can be stopped or broken while Copilot remains usable.
+- [x] Installation requires no wrapper command for ordinary Copilot use.
+- [x] Daily operation requires no additional model API key.
 - [ ] Capability disable stops only the selected capture, retrieval, or worker
-  behavior.
+  behavior. Capture is operational; retrieval and worker remain unavailable
+  until their runtime consumers are wired to the shared capability state.
 
 ## 9. Batch 6: basic Work Episode builder
 

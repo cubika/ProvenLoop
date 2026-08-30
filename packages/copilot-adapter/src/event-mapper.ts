@@ -358,7 +358,20 @@ export class CopilotEventMapper {
     };
   }
 
-  public map(event: CopilotSessionEvent): CopilotEventMappingResult {
+  public map(input: unknown): CopilotEventMappingResult {
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      Array.isArray(input)
+    ) {
+      return {
+        issues: [
+          "event must be an object.",
+        ],
+        status: "malformed",
+      };
+    }
+    const event = input as Readonly<Record<string, unknown>>;
     const issues: string[] = [];
     const sourceEventId =
       typeof event.id === "string" && event.id.trim().length > 0

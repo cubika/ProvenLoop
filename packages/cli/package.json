@@ -15,6 +15,9 @@
     }
   },
   "dependencies": {
-    "@provenloop/evaluation": "0.0.0"
+    "@provenloop/contracts": "0.0.0",
+    "@provenloop/copilot-adapter": "0.0.0",
+    "@provenloop/evaluation": "0.0.0",
+    "@provenloop/platform-windows": "0.0.0"
   }
 }

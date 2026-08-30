@@ -14,6 +14,12 @@
     },
     {
       "path": "../domain"
+    },
+    {
+      "path": "../platform-windows"
+    },
+    {
+      "path": "../storage-sqlite"
     }
   ]
 }

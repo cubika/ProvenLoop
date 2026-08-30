@@ -3,10 +3,25 @@ export {
   type ArtifactFormatKind,
 } from "./artifact-format-versions.js";
 export {
+  PROVENLOOP_CAPABILITIES,
   adapterCapabilitySchema,
   adapterCapabilityStatusSchema,
   captureTransportSchema,
+  provenLoopCapabilitySchema,
+  type AdapterCapabilityAvailability,
+  type AdapterCapabilityMatrix,
+  type AdapterCapabilityState,
+  type AdapterCompatibility,
+  type AdapterHealth,
+  type AdapterHealthCheck,
+  type AdapterHealthCheckStatus,
+  type AdapterOperationResult,
+  type AdapterStatus,
+  type AgentAdapter,
   type AdapterCapability,
+  type ProvenLoopCapability,
+  type RuntimeContext,
+  type SessionIdentity,
 } from "./adapter-capability.js";
 export {
   branchContextSchema,

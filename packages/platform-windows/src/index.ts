@@ -26,3 +26,9 @@ export {
   type ProcessLease,
   type ProcessLeaseProvider,
 } from "./process-lease.js";
+export {
+  LocalAppDataUnavailableError,
+  resolveWindowsProvenLoopDataRoot,
+  resolveWindowsProvenLoopPaths,
+  type WindowsProvenLoopPaths,
+} from "./operational-paths.js";

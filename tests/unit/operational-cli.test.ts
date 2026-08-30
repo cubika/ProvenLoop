@@ -1,0 +1,288 @@
+import { PassThrough } from "node:stream";
+
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  runCli,
+  runMcpServer,
+  type CliDependencies,
+  type CliIo,
+} from "@provenloop/cli";
+import type {
+  AdapterHealth,
+  AdapterOperationResult,
+  AdapterStatus,
+  AgentAdapter,
+} from "@provenloop/contracts";
+
+const adapterStatus = (): AdapterStatus => ({
+  capabilities: {
+    adapter: "copilot-cli",
+    capabilities: [],
+    compatibility: "supported",
+    installedVersion: "1.0.82-0",
+  },
+  dataRoot: "C:\\data",
+  installed: true,
+  marketplaceRegistered: true,
+  pluginEnabled: true,
+  pluginInstalled: true,
+});
+
+const adapterHealth = (
+  status: AdapterHealth["status"],
+): AdapterHealth => ({
+  adapter: "copilot-cli",
+  checkedAt: "2026-08-30T00:00:00.000Z",
+  checks: [],
+  status,
+});
+
+const changed = (message: string): AdapterOperationResult => ({
+  message,
+  status: "changed",
+});
+
+const fakeAdapter = (
+  health: AdapterHealth["status"] = "healthy",
+): AgentAdapter => ({
+  capabilities: vi.fn(async () => adapterStatus().capabilities),
+  disable: vi.fn(async (capability) =>
+    changed(`${capability} disabled`),
+  ),
+  doctor: vi.fn(async () => adapterHealth(health)),
+  enable: vi.fn(async (capability) =>
+    changed(`${capability} enabled`),
+  ),
+  install: vi.fn(async () => changed("installed")),
+  normalizeEvent: vi.fn(() => ({
+    status: "ignored",
+  })),
+  registerCaptureExtension: vi.fn(async () => changed("registered")),
+  registerContextTools: vi.fn(async () => changed("registered")),
+  resolveSession: vi.fn(async (context) => ({
+    internalSession: false,
+    sessionId: context.sessionId,
+  })),
+  status: vi.fn(async () => adapterStatus()),
+  uninstall: vi.fn(async () => changed("uninstalled")),
+});
+
+const cli = (
+  adapter: AgentAdapter,
+): {
+  readonly dependencies: CliDependencies;
+  readonly errors: string[];
+  readonly io: CliIo;
+  readonly logs: string[];
+  readonly roots: string[];
+} => {
+  const errors: string[] = [];
+  const logs: string[] = [];
+  const roots: string[] = [];
+  return {
+    dependencies: {
+      createAdapter: (root) => {
+        roots.push(root);
+        return adapter;
+      },
+      runMcpServer: vi.fn(async () => undefined),
+    },
+    errors,
+    io: {
+      error: (message) => errors.push(message),
+      log: (message) => logs.push(message),
+    },
+    logs,
+    roots,
+  };
+};
+
+describe("operational CLI", () => {
+  it("routes install and capability commands to the adapter", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "install",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      runCli(
+        [
+          "disable",
+          "capture",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(harness.roots).toEqual([
+      "C:\\custom-data",
+      "C:\\custom-data",
+    ]);
+    expect(adapter.install).toHaveBeenCalledOnce();
+    expect(adapter.disable).toHaveBeenCalledWith("capture");
+    expect(harness.logs).toEqual([
+      "installed",
+      "capture disabled",
+    ]);
+  });
+
+  it("uses stable exit codes for invalid input and doctor failures", async () => {
+    const adapter = fakeAdapter("unhealthy");
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "enable",
+          "unknown",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    await expect(
+      runCli(
+        [
+          "doctor",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(3);
+    expect(harness.errors).toHaveLength(1);
+    expect(JSON.parse(harness.logs[0] ?? "{}")).toMatchObject({
+      status: "unhealthy",
+    });
+  });
+
+  it("passes purge explicitly to uninstall", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "uninstall",
+          "--purge",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(adapter.uninstall).toHaveBeenCalledWith({
+      purge: true,
+    });
+  });
+});
+
+describe("local MCP registration target", () => {
+  it("initializes and exposes no retrieval tools before that milestone", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let content = "";
+    output.on("data", (chunk: Buffer) => {
+      content += chunk.toString("utf8");
+    });
+    const running = runMcpServer({
+      input,
+      output,
+    });
+    input.write(
+      `${JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+        },
+      })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({
+        id: 2,
+        jsonrpc: "2.0",
+        method: "tools/list",
+      })}\n`,
+    );
+    input.end();
+    await running;
+
+    const messages = content
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      id: 1,
+      result: {
+        serverInfo: {
+          name: "provenloop",
+        },
+      },
+    });
+    expect(messages[1]).toMatchObject({
+      id: 2,
+      result: {
+        tools: [],
+      },
+    });
+  });
+
+  it("rejects non-object JSON without terminating the server", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let content = "";
+    output.on("data", (chunk: Buffer) => {
+      content += chunk.toString("utf8");
+    });
+    const running = runMcpServer({
+      input,
+      output,
+    });
+    input.write("null\n");
+    input.write(
+      `${JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "ping",
+      })}\n`,
+    );
+    input.end();
+    await running;
+
+    const messages = content
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Readonly<Record<string, unknown>>);
+    expect(messages).toEqual([
+      expect.objectContaining({
+        error: {
+          code: -32600,
+          message: "Invalid Request",
+        },
+      }),
+      expect.objectContaining({
+        id: 1,
+        result: {},
+      }),
+    ]);
+  });
+});

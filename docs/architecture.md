@@ -1,7 +1,7 @@
 # ProvenLoop Technical Architecture
 
 **Status:** Proposed architecture  
-**Updated:** 2026-08-29
+**Updated:** 2026-08-30
 
 This document describes both the executable near-term architecture and the
 long-term logical architecture. They use the same event, evidence, domain, and
@@ -152,16 +152,20 @@ contract and declare missing capabilities instead of fabricating events:
 
 ```ts
 interface AgentAdapter {
-  install(): Promise<void>;
-  enable(): Promise<void>;
-  disable(): Promise<void>;
-  uninstall(options: { purge: boolean }): Promise<void>;
+  install(): Promise<AdapterOperationResult>;
+  status(): Promise<AdapterStatus>;
+  enable(capability: ProvenLoopCapability): Promise<AdapterOperationResult>;
+  disable(capability: ProvenLoopCapability): Promise<AdapterOperationResult>;
+  uninstall(options: { purge: boolean }): Promise<AdapterOperationResult>;
   doctor(): Promise<AdapterHealth>;
   capabilities(): Promise<AdapterCapabilityMatrix>;
-  normalizeEvent(input: unknown): NormalizedEventResult;
+  normalizeEvent(
+    input: unknown,
+    context: RuntimeContext,
+  ): NormalizedEventResult;
   resolveSession(context: RuntimeContext): Promise<SessionIdentity>;
-  registerCaptureExtension(): Promise<void>;
-  registerContextTools(): Promise<void>;
+  registerCaptureExtension(): Promise<AdapterOperationResult>;
+  registerContextTools(): Promise<AdapterOperationResult>;
 }
 ```
 
@@ -169,6 +173,15 @@ The F0 compatibility baseline supports Copilot CLI `1.0.82-0` only. Other
 versions remain unverified until their capability probe passes. Production
 plugin installation uses a marketplace because direct path installs are
 deprecated and cannot be disabled through the normal lifecycle commands.
+The operational adapter generates a local marketplace containing the capture
+Extension and stdio MCP registration, then uses Copilot's normal marketplace
+and plugin lifecycle commands. Its state records the detected version,
+capability switches, last explicit errors, and whether ProvenLoop changed the
+user's Extension opt-in setting so that disable and uninstall can restore it.
+The data root carries a path-bound ownership marker before mutable state is
+written, and purge requires both that marker and valid adapter state. Internal
+Session registrations use one atomic file per Session so concurrent background
+calls cannot overwrite each other's recursion guards.
 
 ### 3.2 Event capture and persistent queue
 
@@ -347,6 +360,7 @@ Capability switches include:
 
 ```text
 capture
+worker
 retrieval
 correction_learning
 outcome_learning
