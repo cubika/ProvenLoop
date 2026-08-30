@@ -18,6 +18,9 @@ import {
   type CopilotSessionEvent,
   type CopilotSessionLike,
 } from "@provenloop/copilot-adapter";
+import type {
+  CaptureEventInput,
+} from "@provenloop/domain";
 import {
   WindowsCaptureQueue,
 } from "@provenloop/platform-windows";
@@ -526,6 +529,391 @@ describe("Copilot extension capture runtime", () => {
         eventType: "prompt.submitted",
       },
     ]);
+  });
+
+  it("emits a canonical git.commit when refreshed HEAD changes", async () => {
+    const session = new FakeSession();
+    const persisted: CaptureEventInput[] = [];
+    const parentCommit =
+      "0123456789abcdef0123456789abcdef01234567";
+    const childCommit =
+      "89abcdef0123456789abcdef0123456789abcdef";
+    const runtime = await startCopilotExtensionCapture({
+      adapterVersion: "1.0.82-0",
+      buffer: {
+        maxGapBytes: 8_192,
+        maxGapContexts: 4,
+        maxBytes: 20_000,
+        maxItems: 20,
+      },
+      copyLimits: {
+        maxStringChars: 1_024,
+      },
+      joinSession: async ({ onEvent }) => {
+        session.on(onEvent);
+        return session;
+      },
+      queue: {
+        enqueue: async (input) => {
+          persisted.push(input);
+        },
+      },
+      refreshWorkspace: async () => ({
+        branch: "feature/commit",
+        commitParents: [
+          parentCommit,
+        ],
+        commitSha: childCommit,
+        repoId: "repo-1",
+      }),
+      retryDelayMs: 1,
+      sessionId: "session-1",
+      shutdownDeadlineMs: 1_000,
+      workspace: {
+        branch: "feature/commit",
+        commitParents: [],
+        commitSha: parentCommit,
+        repoId: "repo-1",
+      },
+    });
+
+    session.emit({
+      data: {
+        branch: "feature/commit",
+        cwd: "C:\\repo",
+        gitRoot: "C:\\repo",
+        headCommit: childCommit,
+        repository: "repo-1",
+      },
+      id: "context-change-commit",
+      parentId: null,
+      timestamp,
+      type: "session.context_changed",
+    });
+    session.emit({
+      data: {
+        result: {
+          content: "committed",
+        },
+        success: true,
+        toolCallId: "tool-call-commit",
+      },
+      id: "tool-complete-commit",
+      parentId: null,
+      timestamp,
+      type: "tool.execution_complete",
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(await runtime.shutdown()).toBe(true);
+
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commitSha: childCommit,
+          content: {
+            toolArguments: {
+              parents: [
+                parentCommit,
+              ],
+            },
+          },
+          eventType: "git.commit",
+          repoId: "repo-1",
+          sessionId: "session-1",
+        }),
+      ]),
+    );
+  });
+
+  it("waits for an in-flight commit refresh before shutdown", async () => {
+    const session = new FakeSession();
+    const persisted: CaptureEventInput[] = [];
+    const parentCommit =
+      "0123456789abcdef0123456789abcdef01234567";
+    const childCommit =
+      "89abcdef0123456789abcdef0123456789abcdef";
+    let resolveRefresh:
+      ((snapshot: {
+        readonly branch: string;
+        readonly commitParents: readonly string[];
+        readonly commitSha: string;
+        readonly repoId: string;
+      }) => void) | undefined;
+    const refresh = new Promise<{
+      readonly branch: string;
+      readonly commitParents: readonly string[];
+      readonly commitSha: string;
+      readonly repoId: string;
+    }>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const runtime = await startCopilotExtensionCapture({
+      adapterVersion: "1.0.82-0",
+      buffer: {
+        maxGapBytes: 8_192,
+        maxGapContexts: 4,
+        maxBytes: 20_000,
+        maxItems: 20,
+      },
+      copyLimits: {
+        maxStringChars: 1_024,
+      },
+      joinSession: async ({ onEvent }) => {
+        session.on(onEvent);
+        return session;
+      },
+      queue: {
+        enqueue: async (input) => {
+          persisted.push(input);
+        },
+      },
+      refreshWorkspace: async () => refresh,
+      retryDelayMs: 1,
+      sessionId: "session-1",
+      shutdownDeadlineMs: 1_000,
+      workspace: {
+        branch: "feature/commit",
+        commitParents: [],
+        commitSha: parentCommit,
+        repoId: "repo-1",
+      },
+    });
+    session.emit({
+      data: {
+        result: {
+          content: "committed",
+        },
+        success: true,
+        toolCallId: "tool-call-commit",
+      },
+      id: "tool-complete-commit",
+      parentId: null,
+      timestamp,
+      type: "tool.execution_complete",
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    session.emit({
+      data: {
+        branch: "feature/commit",
+        cwd: "C:\\repo",
+        gitRoot: "C:\\repo",
+        headCommit: childCommit,
+        repository: "repo-1",
+      },
+      id: "context-after-tool",
+      parentId: "tool-complete-commit",
+      timestamp,
+      type: "session.context_changed",
+    });
+
+    const shutdown = runtime.shutdown();
+    resolveRefresh?.({
+      branch: "feature/commit",
+      commitParents: [
+        parentCommit,
+      ],
+      commitSha: childCommit,
+      repoId: "repo-1",
+    });
+    await expect(shutdown).resolves.toBe(true);
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commitSha: childCommit,
+          eventType: "git.commit",
+        }),
+      ]),
+    );
+  });
+
+  it("emits first commit metadata after a metadata-free context change", async () => {
+    const session = new FakeSession();
+    const persisted: CaptureEventInput[] = [];
+    const firstCommit =
+      "0123456789abcdef0123456789abcdef01234567";
+    const runtime = await startCopilotExtensionCapture({
+      adapterVersion: "1.0.82-0",
+      buffer: {
+        maxGapBytes: 8_192,
+        maxGapContexts: 4,
+        maxBytes: 20_000,
+        maxItems: 20,
+      },
+      copyLimits: {
+        maxStringChars: 1_024,
+      },
+      joinSession: async ({ onEvent }) => {
+        session.on(onEvent);
+        return session;
+      },
+      queue: {
+        enqueue: async (input) => {
+          persisted.push(input);
+        },
+      },
+      refreshWorkspace: async () => ({
+        branch: "feature/first-commit",
+        commitParents: [],
+        commitSha: firstCommit,
+        repoId: "repo-1",
+      }),
+      retryDelayMs: 1,
+      sessionId: "session-1",
+      shutdownDeadlineMs: 1_000,
+      workspace: {
+        branch: "feature/first-commit",
+        repoId: "repo-1",
+      },
+    });
+    session.emit({
+      data: {
+        branch: "feature/first-commit",
+        cwd: "C:\\repo",
+        gitRoot: "C:\\repo",
+        headCommit: firstCommit,
+        repository: "repo-1",
+      },
+      id: "first-commit-context",
+      parentId: null,
+      timestamp,
+      type: "session.context_changed",
+    });
+    session.emit({
+      data: {
+        result: {
+          content: "committed",
+        },
+        success: true,
+        toolCallId: "first-commit-tool",
+      },
+      id: "first-commit-tool-complete",
+      parentId: "first-commit-context",
+      timestamp,
+      type: "tool.execution_complete",
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(await runtime.shutdown()).toBe(true);
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commitSha: firstCommit,
+          eventType: "git.commit",
+        }),
+      ]),
+    );
+  });
+
+  it("drains refresh work that was pending when shutdown began", async () => {
+    const session = new FakeSession();
+    const persisted: CaptureEventInput[] = [];
+    const parentCommit =
+      "0123456789abcdef0123456789abcdef01234567";
+    const childCommit =
+      "89abcdef0123456789abcdef0123456789abcdef";
+    let refreshCalls = 0;
+    let resolveFirstRefresh:
+      ((snapshot: {
+        readonly branch: string;
+        readonly commitParents: readonly string[];
+        readonly commitSha: string;
+        readonly repoId: string;
+      }) => void) | undefined;
+    const firstRefresh = new Promise<{
+      readonly branch: string;
+      readonly commitParents: readonly string[];
+      readonly commitSha: string;
+      readonly repoId: string;
+    }>((resolve) => {
+      resolveFirstRefresh = resolve;
+    });
+    const runtime = await startCopilotExtensionCapture({
+      adapterVersion: "1.0.82-0",
+      buffer: {
+        maxGapBytes: 8_192,
+        maxGapContexts: 4,
+        maxBytes: 20_000,
+        maxItems: 20,
+      },
+      copyLimits: {
+        maxStringChars: 1_024,
+      },
+      joinSession: async ({ onEvent }) => {
+        session.on(onEvent);
+        return session;
+      },
+      queue: {
+        enqueue: async (input) => {
+          persisted.push(input);
+        },
+      },
+      refreshWorkspace: async () => {
+        refreshCalls += 1;
+        return refreshCalls === 1
+          ? firstRefresh
+          : {
+              branch: "feature/commit",
+              commitParents: [
+                parentCommit,
+              ],
+              commitSha: childCommit,
+              repoId: "repo-1",
+            };
+      },
+      retryDelayMs: 1,
+      sessionId: "session-1",
+      shutdownDeadlineMs: 1_000,
+      workspace: {
+        branch: "feature/commit",
+        commitParents: [],
+        commitSha: parentCommit,
+        repoId: "repo-1",
+      },
+    });
+    for (const suffix of [
+      "one",
+      "two",
+    ]) {
+      session.emit({
+        data: {
+          result: {
+            content: "committed",
+          },
+          success: true,
+          toolCallId: `pending-tool-${suffix}`,
+        },
+        id: `pending-tool-complete-${suffix}`,
+        parentId: null,
+        timestamp,
+        type: "tool.execution_complete",
+      });
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    const shutdown = runtime.shutdown();
+    resolveFirstRefresh?.({
+      branch: "feature/commit",
+      commitParents: [],
+      commitSha: parentCommit,
+      repoId: "repo-1",
+    });
+    await expect(shutdown).resolves.toBe(true);
+    expect(refreshCalls).toBe(2);
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commitSha: childCommit,
+          eventType: "git.commit",
+        }),
+      ]),
+    );
   });
 
   it("captures events emitted during the join and resume handshake", async () => {

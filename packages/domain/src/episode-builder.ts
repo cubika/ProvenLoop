@@ -14,10 +14,14 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import type {
+  CommitAncestryResolver,
+} from "./commit-ancestry.js";
 
 export interface WorkEpisodeBuilderOptions {
   readonly associatedThreshold?: number;
   readonly candidateThreshold?: number;
+  readonly commitAncestry?: CommitAncestryResolver;
   readonly observationWindowMs?: number;
 }
 
@@ -451,6 +455,7 @@ const pairAssociation = (
   left: SessionSummary,
   right: SessionSummary,
   correction: PairCorrection | undefined,
+  commitAncestry: CommitAncestryResolver | undefined,
   thresholds: {
     readonly associated: number;
     readonly candidate: number;
@@ -607,6 +612,41 @@ const pairAssociation = (
       ),
     );
   }
+  const ancestryRepoId =
+    left.repoId !== undefined &&
+    left.repoId === right.repoId
+      ? left.repoId
+      : undefined;
+  const ancestryRelations =
+    ancestryRepoId === undefined || commitAncestry === undefined
+      ? []
+      : [...left.commits].flatMap((leftCommit) =>
+          [...right.commits].flatMap((rightCommit) => {
+            if (
+              commitAncestry.isAncestor({
+                ancestorCommit: leftCommit,
+                descendantCommit: rightCommit,
+                repoId: ancestryRepoId,
+              })
+            ) {
+              return [
+                `${leftCommit} -> ${rightCommit}`,
+              ];
+            }
+            if (
+              commitAncestry.isAncestor({
+                ancestorCommit: rightCommit,
+                descendantCommit: leftCommit,
+                repoId: ancestryRepoId,
+              })
+            ) {
+              return [
+                `${rightCommit} -> ${leftCommit}`,
+              ];
+            }
+            return [];
+          }),
+        );
   const pullRequestOverlap = overlap(
     left.pullRequests,
     right.pullRequests,
@@ -697,6 +737,41 @@ const pairAssociation = (
         [
           left.events.at(-1)?.event.eventId ?? left.sessionId,
           right.events[0]?.event.eventId ?? right.sessionId,
+        ],
+      ),
+    );
+  }
+  const ancestryCorroborated = evidenceItems.some((item) =>
+    [
+      "changed_file",
+      "issue",
+      "pull_request",
+      "task_semantics",
+      "temporal_proximity",
+      "test_or_error",
+    ].includes(item.signal),
+  );
+  if (ancestryRelations.length > 0 && ancestryCorroborated) {
+    evidenceItems.push(
+      evidence(
+        "commit_ancestry",
+        0.55,
+        `Commit ancestry connects the Sessions: ${ancestryRelations.join(", ")}.`,
+        [
+          ...left.events
+            .filter(
+              (item) =>
+                item.event.eventType === "git.commit" &&
+                item.event.commitSha !== undefined,
+            )
+            .map((item) => item.event.eventId),
+          ...right.events
+            .filter(
+              (item) =>
+                item.event.eventType === "git.commit" &&
+                item.event.commitSha !== undefined,
+            )
+            .map((item) => item.event.eventId),
         ],
       ),
     );
@@ -1034,6 +1109,7 @@ const threshold = (
 export class WorkEpisodeBuilder {
   readonly #associatedThreshold: number;
   readonly #candidateThreshold: number;
+  readonly #commitAncestry: CommitAncestryResolver | undefined;
   readonly #observationWindowMs: number;
 
   public constructor(options: WorkEpisodeBuilderOptions = {}) {
@@ -1047,6 +1123,7 @@ export class WorkEpisodeBuilder {
       DEFAULT_CANDIDATE_THRESHOLD,
       "candidateThreshold",
     );
+    this.#commitAncestry = options.commitAncestry;
     if (this.#candidateThreshold >= this.#associatedThreshold) {
       throw new RangeError(
         "candidateThreshold must be lower than associatedThreshold.",
@@ -1123,6 +1200,7 @@ export class WorkEpisodeBuilder {
             left,
             right,
             pairCorrections.get(pairKey(leftId, rightId)),
+            this.#commitAncestry,
             {
               associated: this.#associatedThreshold,
               candidate: this.#candidateThreshold,

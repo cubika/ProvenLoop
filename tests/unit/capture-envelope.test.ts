@@ -261,6 +261,43 @@ describe("capture redaction", () => {
     expect(envelope.redaction.redactedPaths).toEqual([]);
   });
 
+  it("preserves parent commit SHAs inside structured arrays", () => {
+      const parentSha = "0123456789abcdef0123456789abcdef01234567";
+      const unrelated =
+        "9wM3QfT7xL2nV8pR4sK6dH1cB5yJ0uZa";
+      const nonShaIdentifier =
+        "client_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+      const envelope = createCaptureEnvelope(
+        {
+          ...createInput(),
+          content: {
+            toolArguments: {
+              changedFiles: [
+                unrelated,
+              ],
+              parents: [
+                parentSha,
+                nonShaIdentifier,
+              ],
+            },
+          },
+        },
+        {
+          capturedAt: timestamp,
+        },
+      );
+
+      expect(envelope.event.redactedArguments).toMatchObject({
+        changedFiles: [
+          "[REDACTED]",
+        ],
+        parents: [
+          parentSha,
+          "[REDACTED]",
+        ],
+      });
+  });
+
   it("does not treat colon-delimited evidence IDs as assignments", () => {
     const envelope = createCaptureEnvelope(
       {

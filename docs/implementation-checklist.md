@@ -343,10 +343,8 @@ frozen.
 ### 9.1 Deterministic grouping
 
 - [x] Group by repository before applying weaker signals.
-- [ ] Use branch, commit ancestry, PR/issue references, changed-file overlap,
-  tests/errors, task semantics, temporal proximity, and explicit links. Exact
-  commit/ref/overlap, semantic, temporal, and correction signals are active;
-  commit ancestry remains to be added.
+- [x] Use branch, commit ancestry, PR/issue references, changed-file overlap,
+  tests/errors, task semantics, temporal proximity, and explicit links.
 - [x] Store association evidence and confidence.
 - [x] Prefer conservative splits over harmful merges.
 - [x] Keep low-confidence associations as candidates.
@@ -362,16 +360,16 @@ frozen.
 
 ### 9.3 Evaluation
 
-- [ ] Prepare 20-50 anonymized real or realistic episodes.
-- [ ] Label same-episode and different-episode pairs.
-- [ ] Report precision, recall, wrong merge, and wrong split separately.
-- [ ] Record ambiguous cases rather than forcing a confident label.
+- [x] Prepare 20-50 anonymized real or realistic episodes.
+- [x] Label same-episode and different-episode pairs.
+- [x] Report precision, recall, wrong merge, and wrong split separately.
+- [x] Record ambiguous cases rather than forcing a confident label.
 
 ### 9.4 Definition of done
 
-- [ ] Association precision is at least 95%.
-- [ ] Association recall is at least 90%.
-- [ ] Wrong merges are visible as a distinct release metric.
+- [x] Association precision is at least 95%.
+- [x] Association recall is at least 90%.
+- [x] Wrong merges are visible as a distinct release metric.
 - [x] Every episode relation can be explained using concrete source evidence.
 
 ## 10. M0 release checklist

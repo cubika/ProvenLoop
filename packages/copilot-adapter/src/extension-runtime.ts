@@ -71,6 +71,8 @@ export class CopilotExtensionCapture {
   readonly #onDiagnostic: ((message: string) => void) | undefined;
   readonly #refreshWorkspace:
     (() => Promise<CopilotWorkspaceSnapshot>) | undefined;
+  #activeRefresh: Promise<void> | undefined;
+  #closing = false;
   #refreshWorkspacePending = false;
   #refreshingWorkspace = false;
   #runtimeErrors = 0;
@@ -187,17 +189,21 @@ export class CopilotExtensionCapture {
 
   public updateWorkspace(snapshot: CopilotWorkspaceSnapshot): void {
     this.#workspaceGeneration += 1;
-    this.#mapper.updateWorkspace(snapshot);
+    const commitEvent = this.#mapper.updateWorkspace(snapshot);
+    if (commitEvent !== undefined) {
+      this.#writer.submit(commitEvent);
+    }
   }
 
   public refreshWorkspace(): void {
+    if (this.#closing) {
+      return;
+    }
     this.#scheduleWorkspaceRefresh();
   }
 
   public shutdown(): Promise<boolean> {
-    this.#shutdownPromise ??= this.#writer.stop(
-      this.#shutdownDeadlineMs,
-    );
+    this.#shutdownPromise ??= this.#shutdownWithinDeadline();
     return this.#shutdownPromise;
   }
 
@@ -216,8 +222,9 @@ export class CopilotExtensionCapture {
     };
   }
 
-  #scheduleWorkspaceRefresh(): void {
+  #scheduleWorkspaceRefresh(allowDuringClosing = false): void {
     if (
+      (this.#closing && !allowDuringClosing) ||
       this.#refreshWorkspace === undefined
     ) {
       return;
@@ -229,11 +236,36 @@ export class CopilotExtensionCapture {
     const refreshWorkspace = this.#refreshWorkspace;
     const refreshGeneration = this.#workspaceGeneration;
     this.#refreshingWorkspace = true;
-    setImmediate(() => {
-      void refreshWorkspace()
+    const activeRefresh = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        void refreshWorkspace()
         .then((snapshot) => {
           if (this.#workspaceGeneration === refreshGeneration) {
-            this.#mapper.updateWorkspace(snapshot);
+            const commitEvent =
+              this.#mapper.updateWorkspace(snapshot);
+            if (commitEvent !== undefined) {
+              this.#writer.submit(commitEvent);
+            }
+          } else {
+            const current = this.#mapper.currentWorkspace();
+            if (
+              snapshot.commitSha !== undefined &&
+              snapshot.commitSha === current.commitSha &&
+              snapshot.commitParents !== undefined
+            ) {
+              const commitEvent = this.#mapper.updateWorkspace({
+                ...current,
+                commitParents: snapshot.commitParents,
+              });
+              if (commitEvent !== undefined) {
+                this.#writer.submit(commitEvent);
+              }
+            } else if (
+              snapshot.commitSha !== undefined &&
+              snapshot.commitSha !== current.commitSha
+            ) {
+              this.#refreshWorkspacePending = true;
+            }
           }
         })
         .catch((error: unknown) => {
@@ -244,10 +276,58 @@ export class CopilotExtensionCapture {
           this.#refreshingWorkspace = false;
           if (this.#refreshWorkspacePending) {
             this.#refreshWorkspacePending = false;
-            this.#scheduleWorkspaceRefresh();
+            this.#scheduleWorkspaceRefresh(true);
           }
+          resolve();
         });
+      });
     });
+    this.#activeRefresh = activeRefresh;
+    void activeRefresh.finally(() => {
+      if (this.#activeRefresh === activeRefresh) {
+        this.#activeRefresh = undefined;
+      }
+    });
+  }
+
+  async #shutdownWithinDeadline(): Promise<boolean> {
+    this.#closing = true;
+    const deadline = Date.now() + this.#shutdownDeadlineMs;
+    let refreshesSettled = true;
+    while (
+      this.#activeRefresh !== undefined ||
+      this.#refreshingWorkspace ||
+      this.#refreshWorkspacePending
+    ) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        refreshesSettled = false;
+        break;
+      }
+      const activeRefresh = this.#activeRefresh;
+      if (activeRefresh === undefined) {
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        continue;
+      }
+      const settled = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          resolve(false);
+        }, remaining);
+        void activeRefresh.finally(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      if (!settled) {
+        refreshesSettled = false;
+        break;
+      }
+    }
+    const remaining = Math.max(1, deadline - Date.now());
+    const writerSettled = await this.#writer.stop(remaining);
+    return refreshesSettled && writerSettled;
   }
 
   #diagnostic(value: unknown): void {

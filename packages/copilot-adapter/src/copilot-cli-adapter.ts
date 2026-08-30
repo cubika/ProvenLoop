@@ -776,7 +776,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     }
     const [
       branchResult,
-      commitResult,
+      commitParentsResult,
       commonDirectoryResult,
       remoteResult,
     ] = await Promise.all([
@@ -785,7 +785,10 @@ implements AgentAdapter<CopilotEventMappingResult> {
         "--show-current",
       ]),
       this.#runGit(repositoryRoot, [
-        "rev-parse",
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
         "HEAD",
       ]),
       this.#runGit(repositoryRoot, [
@@ -810,10 +813,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
       branchResult.exitCode === 0
         ? optionalText(branchResult.stdout)
         : undefined;
-    const commitSha =
-      commitResult.exitCode === 0
-        ? optionalText(commitResult.stdout)
-        : undefined;
+    const commitParts =
+      commitParentsResult.exitCode === 0
+        ? commitParentsResult.stdout.trim().split(/\s+/u)
+        : [];
+    const commitSha = optionalText(commitParts[0] ?? "");
+    const commitParents =
+      commitSha === undefined ? undefined : commitParts.slice(1);
     const repositoryRemote =
       remoteResult.exitCode === 0
         ? optionalText(remoteResult.stdout)
@@ -833,6 +839,11 @@ implements AgentAdapter<CopilotEventMappingResult> {
         ? {}
         : {
             commitSha,
+          }),
+      ...(commitParents === undefined
+        ? {}
+        : {
+            commitParents,
           }),
       ...(repositoryRemote === undefined
         ? {}

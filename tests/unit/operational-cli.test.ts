@@ -191,6 +191,44 @@ describe("operational CLI", () => {
       purge: true,
     });
   });
+
+  it("runs the built-in Episode association quality report", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "eval",
+          "episodes",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(harness.logs[0]).toContain(
+      "Work Episode Association Evaluation",
+    );
+  });
+
+  it("rejects a missing Episode dataset option value", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "eval",
+          "episodes",
+          "--dataset",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    expect(harness.logs).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
+  });
 });
 
 describe("local MCP registration target", () => {

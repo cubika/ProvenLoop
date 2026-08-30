@@ -3,6 +3,18 @@ export {
   evaluateCanonicalCaptureGate,
 } from "./capture-gate.js";
 export {
+  episodeAssociationDatasetSchema,
+  evaluateEpisodeAssociationDataset,
+  loadEpisodeAssociationDataset,
+  renderEpisodeAssociationReport,
+  type EpisodeAssociationCaseResult,
+  type EpisodeAssociationDataset,
+  type EpisodeAssociationEvaluationOptions,
+  type EpisodeAssociationEvaluationReport,
+  type EpisodeAssociationLabel,
+  type EpisodeAssociationMetrics,
+} from "./episode-association-evaluation.js";
+export {
   evaluationFixtureSchema,
   type EvaluationFixture,
 } from "./fixture.js";

@@ -62,6 +62,9 @@ const isSafeStructuredIdentifier = (value: string): boolean =>
     value,
   );
 
+const isSafeCommitSha = (value: string): boolean =>
+  /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(value);
+
 const isHighEntropyCandidate = (value: string): boolean =>
   bitsPerSymbol(value) >= 3.5;
 
@@ -181,6 +184,16 @@ const isStructuredIdentifierKey = (key: string): boolean =>
     "sha256",
   ].includes(normalizedKey(key));
 
+const isCommitParentKey = (key: string): boolean =>
+  [
+    "parent",
+    "parentcommit",
+    "parentcommits",
+    "parents",
+    "parentsha",
+    "parentshas",
+  ].includes(normalizedKey(key));
+
 const isEnvironmentContainer = (key: string): boolean =>
   [
     "env",
@@ -247,6 +260,7 @@ const sanitizeValue = (
   ancestors: ReadonlySet<object>,
   depth: number,
   allowStructuredIdentifier = false,
+  commitShaOnly = false,
 ): JsonValue | undefined => {
   if (value === null || typeof value === "boolean") {
     return value;
@@ -256,7 +270,11 @@ const sanitizeValue = (
       value,
       path,
       state,
-      allowStructuredIdentifier,
+      allowStructuredIdentifier &&
+        (
+          !commitShaOnly ||
+          isSafeCommitSha(value)
+        ),
     );
   }
   if (typeof value === "number") {
@@ -314,6 +332,8 @@ const sanitizeValue = (
         limits,
         nextAncestors,
         depth + 1,
+        allowStructuredIdentifier,
+        commitShaOnly,
       ) ?? null,
     );
   }
@@ -357,7 +377,8 @@ const sanitizeValue = (
       limits,
       nextAncestors,
       depth + 1,
-      isStructuredIdentifierKey(key),
+      isStructuredIdentifierKey(key) || isCommitParentKey(key),
+      isCommitParentKey(key),
     );
     if (sanitizedChild !== undefined) {
       sanitized[storedKey] = sanitizedChild;

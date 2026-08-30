@@ -265,4 +265,70 @@ describe("Work Episode projection", () => {
       store.close();
     }
   });
+
+  it("derives commit ancestry from canonical git.commit events", async () => {
+    const root = await createTemporaryDirectory();
+    let sequence = 0;
+    const queue = new WindowsCaptureQueue(join(root, "queue"), {
+      idGenerator: () => `queue-${sequence += 1}`,
+    });
+    await queue.initialize();
+    const store = new CanonicalSqliteStore(join(root, "canonical.db"));
+    const parentCommit =
+      "0123456789abcdef0123456789abcdef01234567";
+    const childCommit =
+      "89abcdef0123456789abcdef0123456789abcdef";
+    try {
+      for (const input of [
+        {
+          adapter: "copilot-cli",
+          adapterVersion: "1.0.82-0",
+          branch: "feat/ancestry",
+          commitSha: parentCommit,
+          eventType: "git.commit",
+          repoId: "repo-1",
+          sessionId: "session-1",
+          sourceEventId: "commit-event-a",
+          timestamp: "2026-08-30T00:00:00.000Z",
+          trust: "system" as const,
+        },
+        {
+          adapter: "copilot-cli",
+          adapterVersion: "1.0.82-0",
+          branch: "feat/ancestry",
+          commitSha: childCommit,
+          content: {
+            toolArguments: {
+              parents: [
+                parentCommit,
+              ],
+            },
+          },
+          eventType: "git.commit",
+          repoId: "repo-1",
+          sessionId: "session-2",
+          sourceEventId: "commit-event-b",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          trust: "system" as const,
+        },
+      ]) {
+        const item = await queue.enqueue(input);
+        expect(store.ingestQueueItem(item).status).toBe("stored");
+      }
+      const result = new WorkEpisodeProjector({
+        store,
+      }).rebuild();
+
+      expect(result.episodes).toHaveLength(1);
+      expect(result.associations[0]?.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            signal: "commit_ancestry",
+          }),
+        ]),
+      );
+    } finally {
+      store.close();
+    }
+  });
 });

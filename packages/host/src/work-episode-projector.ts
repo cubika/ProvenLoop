@@ -5,7 +5,9 @@ import type {
   WorkEpisode,
 } from "@provenloop/contracts";
 import {
+  CommitAncestryIndex,
   WorkEpisodeBuilder,
+  commitAncestryEdgesFromEnvelopes,
   type WorkEpisodeBuildResult,
 } from "@provenloop/domain";
 
@@ -36,11 +38,11 @@ extends WorkEpisodeBuildResult {
 }
 
 export class WorkEpisodeProjector {
-  readonly #builder: WorkEpisodeBuilder;
+  readonly #builder: WorkEpisodeBuilder | undefined;
   readonly #store: WorkEpisodeProjectionStore;
 
   public constructor(options: WorkEpisodeProjectorOptions) {
-    this.#builder = options.builder ?? new WorkEpisodeBuilder();
+    this.#builder = options.builder;
     this.#store = options.store;
   }
 
@@ -68,8 +70,16 @@ export class WorkEpisodeProjector {
                 Date.parse(right.timestamp) ||
               left.correctionId.localeCompare(right.correctionId),
           );
-    const result = this.#builder.build(
-      this.#store.episodeSourceEnvelopes(),
+    const envelopes = this.#store.episodeSourceEnvelopes();
+    const builder =
+      this.#builder ??
+      new WorkEpisodeBuilder({
+        commitAncestry: new CommitAncestryIndex(
+          commitAncestryEdgesFromEnvelopes(envelopes),
+        ),
+      });
+    const result = builder.build(
+      envelopes,
       effectiveCorrections,
     );
     const persisted = this.#store.replaceWorkEpisodeProjection({

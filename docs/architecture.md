@@ -667,6 +667,11 @@ task-token, temporal, and explicit-correction evidence. Confirmed Episodes use
 complete-link clustering so a weak bridge cannot merge otherwise unrelated
 work. The projector replaces Episode and association rows in one SQLite
 transaction from the ordered canonical capture envelopes.
+Commit ancestry is reconstructed from parent metadata on canonical
+`git.commit` events. Ancestry is a corroborating signal rather than sufficient
+evidence by itself. The versioned 24-pair dataset is available through
+`provenloop eval episodes`; its report separates precision, recall, wrong
+merges, wrong splits, candidates, and ambiguous cases.
 
 ### 4.3 BranchContext
 

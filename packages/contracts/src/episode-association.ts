@@ -15,6 +15,7 @@ export const episodeAssociationSignalSchema = z.enum([
   "repository",
   "branch",
   "commit",
+  "commit_ancestry",
   "pull_request",
   "issue",
   "changed_file",

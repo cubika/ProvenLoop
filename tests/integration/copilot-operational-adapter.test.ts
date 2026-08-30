@@ -182,7 +182,8 @@ class FakeCommandRunner implements CommandRunner {
         "https://example.test/ProvenLoop.git\n",
       "rev-parse --git-common-dir": ".git\n",
       "rev-parse --show-toplevel": `${this.gitRoot}\n`,
-      "rev-parse HEAD": "ac758f82454bc729604dbf533d9e3b08460385de\n",
+      "rev-list --parents -n 1 HEAD":
+        "ac758f82454bc729604dbf533d9e3b08460385de 0123456789abcdef0123456789abcdef01234567\n",
     };
     const stdout = values[operation];
     return stdout === undefined
@@ -438,6 +439,9 @@ describe("Copilot operational adapter", () => {
     ).resolves.toEqual({
       branch: "feat/batch5-operational-cli-adapter",
       commitSha: "ac758f82454bc729604dbf533d9e3b08460385de",
+      commitParents: [
+        "0123456789abcdef0123456789abcdef01234567",
+      ],
       internalSession: true,
       repositoryId: resolve(runner.gitRoot, ".git"),
       repositoryRemote: "https://example.test/ProvenLoop.git",

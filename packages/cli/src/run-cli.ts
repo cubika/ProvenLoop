@@ -9,8 +9,11 @@ import {
   CopilotCliAdapter,
 } from "@provenloop/copilot-adapter";
 import {
+  evaluateEpisodeAssociationDataset,
   EvaluationReportInputError,
+  loadEpisodeAssociationDataset,
   regenerateMarkdownReport,
+  renderEpisodeAssociationReport,
   runEvaluation,
 } from "@provenloop/evaluation";
 import {
@@ -59,6 +62,7 @@ const usage = `Usage:
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
+  provenloop eval episodes [--dataset <file>]
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -66,10 +70,11 @@ const dataRoot = (args: readonly string[]): string =>
   option(args, "--data-root") ??
   resolveWindowsProvenLoopDataRoot();
 
-const hasInvalidDataRootOption = (
+const hasInvalidOptionValue = (
   args: readonly string[],
+  name: string,
 ): boolean => {
-  const index = args.indexOf("--data-root");
+  const index = args.indexOf(name);
   return index !== -1 && (
     args[index + 1] === undefined ||
     args[index + 1]?.startsWith("--") === true
@@ -84,6 +89,23 @@ const runEvaluationCommand = async (
   args: readonly string[],
   io: CliIo,
 ): Promise<number> => {
+  if (args[1] === "episodes") {
+    if (hasInvalidOptionValue(args, "--dataset")) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const datasetPath = option(args, "--dataset");
+      const report = evaluateEpisodeAssociationDataset(
+        await loadEpisodeAssociationDataset(datasetPath),
+      );
+      io.log(renderEpisodeAssociationReport(report));
+      return report.status === "pass" ? 0 : 1;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
   if (args[1] === "run") {
     const suite = option(args, "--suite");
     const outputRoot = option(args, "--out");
@@ -158,7 +180,7 @@ export const runCli = async (
     io.error(usage);
     return 2;
   }
-  if (hasInvalidDataRootOption(args)) {
+  if (hasInvalidOptionValue(args, "--data-root")) {
     io.error(usage);
     return 2;
   }

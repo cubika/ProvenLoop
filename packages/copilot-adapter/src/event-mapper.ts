@@ -17,6 +17,7 @@ export interface CopilotSessionEvent {
 
 export interface CopilotWorkspaceSnapshot {
   readonly branch?: string;
+  readonly commitParents?: readonly string[];
   readonly commitSha?: string;
   readonly repoId?: string;
   readonly worktree?: string;
@@ -151,6 +152,17 @@ const normalizedWorkspace = (
         commitSha: snapshot.commitSha.trim(),
       }
     : {}),
+  ...(snapshot.commitParents === undefined
+    ? {}
+    : {
+        commitParents: [
+          ...new Set(
+            snapshot.commitParents
+              .map((commit) => commit.trim())
+              .filter((commit) => commit.length > 0),
+          ),
+        ].sort(),
+      }),
   ...(snapshot.repoId?.trim()
     ? {
         repoId: snapshot.repoId.trim(),
@@ -317,6 +329,7 @@ export class CopilotEventMapper {
   readonly #copyLimits: CopilotCallbackCopyLimits;
   readonly #sessionId: string;
   readonly #toolNames = new Map<string, string>();
+  #lastEmittedCommitSha: string | undefined;
   #workspace: CopilotWorkspaceSnapshot;
 
   public constructor(options: CopilotEventMapperOptions) {
@@ -339,10 +352,50 @@ export class CopilotEventMapper {
     };
     this.#sessionId = options.sessionId.trim();
     this.#workspace = normalizedWorkspace(options.workspace ?? {});
+    this.#lastEmittedCommitSha = this.#workspace.commitSha;
   }
 
-  public updateWorkspace(snapshot: CopilotWorkspaceSnapshot): void {
-    this.#workspace = normalizedWorkspace(snapshot);
+  public updateWorkspace(
+    snapshot: CopilotWorkspaceSnapshot,
+    timestamp = new Date().toISOString(),
+  ): CaptureEventInput | undefined {
+    const updated = normalizedWorkspace(snapshot);
+    this.#workspace = updated;
+    if (
+      updated.commitSha === undefined ||
+      updated.commitParents === undefined ||
+      updated.commitSha === this.#lastEmittedCommitSha
+    ) {
+      return undefined;
+    }
+    this.#lastEmittedCommitSha = updated.commitSha;
+    return {
+      ...this.#base(
+        `workspace-commit-${updated.commitSha}`,
+        "git.commit",
+        timestamp,
+        "system",
+      ),
+      commitSha: updated.commitSha,
+      content: {
+        toolArguments: {
+          parents: updated.commitParents,
+        },
+      },
+    };
+  }
+
+  public currentWorkspace(): CopilotWorkspaceSnapshot {
+    return {
+      ...this.#workspace,
+      ...(this.#workspace.commitParents === undefined
+        ? {}
+        : {
+            commitParents: [
+              ...this.#workspace.commitParents,
+            ],
+          }),
+    };
   }
 
   public sessionStarted(

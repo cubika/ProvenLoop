@@ -174,5 +174,7 @@ Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with
 complete-link clustering, and atomically rebuilds explainable Episode and
-association projections in SQLite. Commit-ancestry expansion and labeled
-quality evaluation remain open.
+association projections in SQLite. Canonical Git parent metadata now feeds a
+repository-scoped ancestry graph, and `provenloop eval episodes` runs the
+versioned 24-pair quality dataset with distinct precision, recall, wrong-merge,
+wrong-split, candidate, and ambiguous-case metrics.

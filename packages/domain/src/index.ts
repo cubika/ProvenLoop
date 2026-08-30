@@ -1,4 +1,11 @@
 export {
+  CommitAncestryIndex,
+  commitAncestryEdgesFromEnvelopes,
+  type CommitAncestryEdge,
+  type CommitAncestryQuery,
+  type CommitAncestryResolver,
+} from "./commit-ancestry.js";
+export {
   createCaptureDeduplicationKey,
   createCaptureEnvelope,
   InternalCaptureEventError,

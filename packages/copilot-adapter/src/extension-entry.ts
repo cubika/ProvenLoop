@@ -156,6 +156,11 @@ export const runInstalledCopilotExtension = async (
             : {
                 branch: refreshed.branch,
               }),
+          ...(refreshed.commitParents === undefined
+            ? {}
+            : {
+                commitParents: refreshed.commitParents,
+              }),
           ...(refreshed.commitSha === undefined
             ? {}
             : {
@@ -186,6 +191,11 @@ export const runInstalledCopilotExtension = async (
           ? {}
           : {
               commitSha: identity.commitSha,
+            }),
+        ...(identity.commitParents === undefined
+          ? {}
+          : {
+              commitParents: identity.commitParents,
             }),
         ...(identity.repositoryId === undefined
           ? {}

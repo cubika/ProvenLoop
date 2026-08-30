@@ -6,6 +6,8 @@ import {
   type EpisodeGroupingCorrection,
 } from "@provenloop/contracts";
 import {
+  CommitAncestryIndex,
+  commitAncestryEdgesFromEnvelopes,
   createCaptureEnvelope,
   WorkEpisodeBuilder,
 } from "@provenloop/domain";
@@ -695,6 +697,193 @@ describe("WorkEpisodeBuilder", () => {
     expect(result.episodes[0]?.commitIds).toEqual([
       "created-commit",
     ]);
+  });
+
+  it("uses commit ancestry only when corroborated by another signal", () => {
+    const ancestry = new CommitAncestryIndex([
+      {
+        childCommit: "commit-b",
+        parentCommit: "commit-a",
+        repoId: "repo-1",
+      },
+    ]);
+    const commitEvent = (
+      sessionId: string,
+      sourceEventId: string,
+      commitSha: string,
+      timestamp: string,
+      branch: string,
+    ): CaptureEnvelope =>
+      event(sessionId, sourceEventId, timestamp, {
+        branch,
+        commitSha,
+        eventType: "git.commit",
+        repoId: "repo-1",
+      });
+    const corroborated = new WorkEpisodeBuilder({
+      commitAncestry: ancestry,
+    }).build([
+      commitEvent(
+        "session-1",
+        "commit-event-a",
+        "commit-a",
+        "2026-08-30T00:00:00.000Z",
+        "feat/episodes",
+      ),
+      commitEvent(
+        "session-2",
+        "commit-event-b",
+        "commit-b",
+        "2026-08-31T00:00:00.000Z",
+        "feat/episodes",
+      ),
+    ]);
+    const ancestryOnly = new WorkEpisodeBuilder({
+      commitAncestry: ancestry,
+    }).build([
+      commitEvent(
+        "session-1",
+        "commit-event-a",
+        "commit-a",
+        "2026-01-01T00:00:00.000Z",
+        "feat/one",
+      ),
+      commitEvent(
+        "session-2",
+        "commit-event-b",
+        "commit-b",
+        "2026-08-30T00:00:00.000Z",
+        "feat/two",
+      ),
+    ]);
+
+    expect(corroborated.episodes).toHaveLength(1);
+    expect(corroborated.associations[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          signal: "commit_ancestry",
+        }),
+      ]),
+    );
+    expect(ancestryOnly.episodes).toHaveLength(2);
+    expect(ancestryOnly.associations[0]).toMatchObject({
+      status: "rejected",
+    });
+    expect(
+      ancestryOnly.associations[0]?.evidence.map(
+        (item) => item.signal,
+      ),
+    ).not.toContain("commit_ancestry");
+  });
+
+  it("does not merge long-lived branch Sessions on ancestry alone", () => {
+    const ancestry = new CommitAncestryIndex([
+      {
+        childCommit: "commit-b",
+        parentCommit: "commit-a",
+        repoId: "repo-1",
+      },
+    ]);
+    const result = new WorkEpisodeBuilder({
+      commitAncestry: ancestry,
+    }).build([
+      event(
+        "session-1",
+        "commit-event-a",
+        "2026-01-01T00:00:00.000Z",
+        {
+          branch: "main",
+          commitSha: "commit-a",
+          eventType: "git.commit",
+          repoId: "repo-1",
+        },
+      ),
+      event(
+        "session-2",
+        "commit-event-b",
+        "2026-08-30T00:00:00.000Z",
+        {
+          branch: "main",
+          commitSha: "commit-b",
+          eventType: "git.commit",
+          repoId: "repo-1",
+        },
+      ),
+    ]);
+
+    expect(result.episodes).toHaveLength(2);
+    expect(result.associations[0]).toMatchObject({
+      status: "candidate",
+    });
+    expect(
+      result.associations[0]?.evidence.map((item) => item.signal),
+    ).not.toContain("commit_ancestry");
+  });
+
+  it("resolves transitive commit ancestry", () => {
+    const ancestry = new CommitAncestryIndex([
+      {
+        childCommit: "commit-b",
+        parentCommit: "commit-a",
+        repoId: "repo-1",
+      },
+      {
+        childCommit: "commit-c",
+        parentCommit: "commit-b",
+        repoId: "repo-1",
+      },
+    ]);
+
+    expect(
+      ancestry.isAncestor({
+        ancestorCommit: "commit-a",
+        descendantCommit: "commit-c",
+        repoId: "repo-1",
+      }),
+    ).toBe(true);
+    expect(
+      ancestry.isAncestor({
+        ancestorCommit: "commit-c",
+        descendantCommit: "commit-a",
+        repoId: "repo-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("normalizes parent_sha keys and commit hash casing", () => {
+    const parent =
+      "ABCDEF0123456789ABCDEF0123456789ABCDEF01";
+    const child =
+      "1234567890ABCDEF1234567890ABCDEF12345678";
+    const envelope = createCaptureEnvelope({
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      commitSha: child,
+      content: {
+        toolArguments: {
+          parent_sha: parent,
+        },
+      },
+      eventType: "git.commit",
+      repoId: "repo-1",
+      sessionId: "session-1",
+      sourceEventId: "commit-event",
+      timestamp: "2026-08-30T00:00:00.000Z",
+      trust: "system",
+    });
+    const index = new CommitAncestryIndex(
+      commitAncestryEdgesFromEnvelopes([
+        envelope,
+      ]),
+    );
+
+    expect(
+      index.isAncestor({
+        ancestorCommit: parent.toLowerCase(),
+        descendantCommit: child.toLowerCase(),
+        repoId: "repo-1",
+      }),
+    ).toBe(true);
   });
 
   it("orders offset timestamps chronologically", () => {

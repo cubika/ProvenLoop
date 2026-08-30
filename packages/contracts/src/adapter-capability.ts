@@ -119,6 +119,7 @@ export interface RuntimeContext {
 
 export interface SessionIdentity {
   readonly branch?: string;
+  readonly commitParents?: readonly string[];
   readonly commitSha?: string;
   readonly internalSession: boolean;
   readonly repositoryId?: string;
