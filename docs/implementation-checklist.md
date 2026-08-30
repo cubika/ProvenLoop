@@ -342,21 +342,23 @@ frozen.
 
 ### 9.1 Deterministic grouping
 
-- [ ] Group by repository before applying weaker signals.
+- [x] Group by repository before applying weaker signals.
 - [ ] Use branch, commit ancestry, PR/issue references, changed-file overlap,
-  tests/errors, task semantics, temporal proximity, and explicit links.
-- [ ] Store association evidence and confidence.
-- [ ] Prefer conservative splits over harmful merges.
-- [ ] Keep low-confidence associations as candidates.
-- [ ] Support user correction of merge and split decisions in the domain model.
+  tests/errors, task semantics, temporal proximity, and explicit links. Exact
+  commit/ref/overlap, semantic, temporal, and correction signals are active;
+  commit ancestry remains to be added.
+- [x] Store association evidence and confidence.
+- [x] Prefer conservative splits over harmful merges.
+- [x] Keep low-confidence associations as candidates.
+- [x] Support user correction of merge and split decisions in the domain model.
 
 ### 9.2 Episode state
 
-- [ ] Record sessions, branches, commits, PRs, issues, timing, corrections, and
+- [x] Record sessions, branches, commits, PRs, issues, timing, corrections, and
   outcome evidence references.
-- [ ] Keep `outcome` separate from `outcomeQualification`.
-- [ ] Do not treat an open or censored success as a final training example.
-- [ ] Rebuild episode projections deterministically from canonical evidence.
+- [x] Keep `outcome` separate from `outcomeQualification`.
+- [x] Do not treat an open or censored success as a final training example.
+- [x] Rebuild episode projections deterministically from canonical evidence.
 
 ### 9.3 Evaluation
 
@@ -370,7 +372,7 @@ frozen.
 - [ ] Association precision is at least 95%.
 - [ ] Association recall is at least 90%.
 - [ ] Wrong merges are visible as a distinct release metric.
-- [ ] Every episode relation can be explained using concrete source evidence.
+- [x] Every episode relation can be explained using concrete source evidence.
 
 ## 10. M0 release checklist
 

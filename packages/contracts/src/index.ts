@@ -79,6 +79,19 @@ export {
   type RequirementManifest,
 } from "./evaluation.js";
 export {
+  episodeAssociationEvidenceSchema,
+  episodeAssociationSchema,
+  episodeAssociationSignalSchema,
+  episodeAssociationStatusSchema,
+  episodeGroupingCorrectionActionSchema,
+  episodeGroupingCorrectionSchema,
+  type EpisodeAssociation,
+  type EpisodeAssociationEvidence,
+  type EpisodeAssociationSignal,
+  type EpisodeAssociationStatus,
+  type EpisodeGroupingCorrection,
+} from "./episode-association.js";
+export {
   feedbackEventSchema,
   feedbackKindSchema,
   feedbackSourceSchema,

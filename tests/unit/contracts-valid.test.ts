@@ -8,6 +8,8 @@ import {
   correctionOpportunitySchema,
   CURRENT_SCHEMA_VERSION,
   EVALUATION_EXIT_CODES,
+  episodeAssociationSchema,
+  episodeGroupingCorrectionSchema,
   evidenceLedgerEntrySchema,
   feedbackEventSchema,
   gateResultSchema,
@@ -88,6 +90,53 @@ const validCases: readonly {
       outcomeEvidenceIds: [],
       correctionEventIds: [],
       associationConfidence: 0.9,
+      associationEvidenceIds: [
+        "association-evidence-1",
+      ],
+      sourceEventIds: [
+        "event-1",
+      ],
+    },
+  },
+  {
+    name: "EpisodeAssociation",
+    schema: episodeAssociationSchema,
+    input: {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      associationId: "association-1",
+      leftSessionId: "session-1",
+      rightSessionId: "session-2",
+      status: "associated",
+      confidence: 0.95,
+      createdAt: timestamp,
+      evidence: [
+        {
+          evidenceId: "association-evidence-1",
+          signal: "branch",
+          sourceEventIds: [
+            "event-1",
+            "event-2",
+          ],
+          weight: 0.75,
+          detail: "Both Sessions used branch feature/contracts.",
+        },
+      ],
+      correctionIds: [],
+    },
+  },
+  {
+    name: "EpisodeGroupingCorrection",
+    schema: episodeGroupingCorrectionSchema,
+    input: {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      correctionId: "correction-1",
+      action: "split",
+      sessionIds: [
+        "session-1",
+        "session-2",
+      ],
+      reason: "The Sessions addressed different incidents.",
+      timestamp,
     },
   },
   {

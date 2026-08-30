@@ -654,11 +654,19 @@ interface WorkEpisode {
   outcomeEvidenceIds: string[];
   correctionEventIds: string[];
   associationConfidence: number;
+  associationEvidenceIds: string[];
+  sourceEventIds: string[];
 }
 ```
 
 `outcome: "success"` is not sufficient for training or product metrics while
 `outcomeQualification` is `open` or `censored`.
+The M0 builder stores pairwise associated, candidate, and rejected Session
+relations with concrete repository, branch, commit, PR, issue, file, test/error,
+task-token, temporal, and explicit-correction evidence. Confirmed Episodes use
+complete-link clustering so a weak bridge cannot merge otherwise unrelated
+work. The projector replaces Episode and association rows in one SQLite
+transaction from the ordered canonical capture envelopes.
 
 ### 4.3 BranchContext
 

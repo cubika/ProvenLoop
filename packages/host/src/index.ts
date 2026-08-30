@@ -16,3 +16,9 @@ export {
   type CaptureWorkerPressureSnapshot,
   type CaptureWorkerPressureThresholds,
 } from "./worker-circuit-breaker.js";
+export {
+  WorkEpisodeProjector,
+  type WorkEpisodeProjectionResult,
+  type WorkEpisodeProjectionStore,
+  type WorkEpisodeProjectorOptions,
+} from "./work-episode-projector.js";

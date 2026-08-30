@@ -15,6 +15,7 @@ import {
   SCHEMA_NAMES,
   UNSUPPORTED_SCHEMA_VERSION_POLICY,
   validateVersionedSchema,
+  workEpisodeSchema,
 } from "@provenloop/contracts";
 
 interface InvalidFixture {
@@ -127,6 +128,30 @@ describe("schema version compatibility", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("loads pre-Batch-6 WorkEpisode version 1 records", () => {
+    const result = workEpisodeSchema.parse({
+      schemaVersion: 1,
+      episodeId: "episode-1",
+      goal: "Preserve version 1 compatibility.",
+      branches: [],
+      sessionIds: [
+        "session-1",
+      ],
+      commitIds: [],
+      pullRequestIds: [],
+      issueIds: [],
+      startedAt: "2026-08-29T00:00:00.000Z",
+      outcome: "unknown",
+      outcomeQualification: "open",
+      outcomeEvidenceIds: [],
+      correctionEventIds: [],
+      associationConfidence: 1,
+    });
+
+    expect(result.associationEvidenceIds).toEqual([]);
+    expect(result.sourceEventIds).toEqual([]);
   });
 });
 

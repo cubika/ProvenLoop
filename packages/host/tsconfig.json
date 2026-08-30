@@ -13,6 +13,9 @@
       "path": "../contracts"
     },
     {
+      "path": "../domain"
+    },
+    {
       "path": "../platform-windows"
     },
     {

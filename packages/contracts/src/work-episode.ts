@@ -27,6 +27,7 @@ export const workEpisodeSchema = z
   .object({
     ...versionedSchemaShape,
     associationConfidence: finiteNumberSchema.min(0).max(1),
+    associationEvidenceIds: stringListSchema.default([]),
     branches: stringListSchema,
     commitIds: stringListSchema,
     correctionEventIds: stringListSchema,
@@ -42,6 +43,7 @@ export const workEpisodeSchema = z
     pullRequestIds: stringListSchema,
     repoId: identifierSchema.optional(),
     sessionIds: stringListSchema,
+    sourceEventIds: stringListSchema.default([]),
     startedAt: isoTimestampSchema,
   })
   .strict();

@@ -11,4 +11,5 @@ export {
   type CanonicalStoreHealth,
   type QueueProcessingRecord,
   type SqliteMigration,
+  type WorkEpisodeProjectionWriteResult,
 } from "./canonical-store.js";

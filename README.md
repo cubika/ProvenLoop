@@ -170,3 +170,9 @@ uninstall. The Copilot adapter generates and registers a local marketplace with
 the capture Extension and MCP process, preserves JSONC user settings, resolves
 Git and Session identity, reports incompatible Copilot versions explicitly,
 and preserves local data unless uninstall is combined with `--purge`.
+Batch 6 has started with a deterministic Work Episode builder. It groups
+canonical Session evidence repository-first, retains low-confidence links as
+candidates, applies explicit merge/split corrections, avoids bridge merges with
+complete-link clustering, and atomically rebuilds explainable Episode and
+association projections in SQLite. Commit-ancestry expansion and labeled
+quality evaluation remain open.

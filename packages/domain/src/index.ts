@@ -15,6 +15,11 @@ export {
   stableJson,
 } from "./digest.js";
 export {
+  WorkEpisodeBuilder,
+  type WorkEpisodeBuilderOptions,
+  type WorkEpisodeBuildResult,
+} from "./episode-builder.js";
+export {
   containsKnownSecret,
   containsPotentialSecret,
   DEFAULT_CAPTURE_REDACTION_LIMITS,

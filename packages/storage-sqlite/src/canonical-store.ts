@@ -10,15 +10,23 @@ import {
 } from "node:sqlite";
 
 import {
+  captureEnvelopeSchema,
   captureQueueItemSchema,
   classifyRawEvent,
+  episodeAssociationSchema,
+  episodeGroupingCorrectionSchema,
+  workEpisodeSchema,
   type CaptureEnvelope,
   type CaptureQueueItem,
+  type EpisodeAssociation,
+  type EpisodeGroupingCorrection,
+  type WorkEpisode,
 } from "@provenloop/contracts";
 import {
   createCaptureDeduplicationKey,
   redactCaptureEnvelopeForPersistence,
   sanitizeDiagnostic,
+  sha256,
 } from "@provenloop/domain";
 
 export interface SqliteMigration {
@@ -75,6 +83,12 @@ export interface CanonicalParserErrorRecord {
 export interface QueueProcessingRecord {
   readonly queueItemId: string;
   readonly status: string;
+}
+
+export interface WorkEpisodeProjectionWriteResult {
+  readonly associations: number;
+  readonly corrections: number;
+  readonly episodes: number;
 }
 
 export const DEFAULT_SQLITE_MIGRATIONS = [
@@ -866,6 +880,183 @@ export class CanonicalSqliteStore {
               }),
           sourceEventId: String(row.source_event_id),
         };
+  }
+
+  public episodeSourceEnvelopes(): readonly CaptureEnvelope[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT safe_envelope_json
+           FROM raw_events
+          WHERE parse_status = 'supported'
+          ORDER BY event_timestamp, deduplication_key`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) =>
+      captureEnvelopeSchema.parse(
+        JSON.parse(String(row.safe_envelope_json)) as unknown,
+      ),
+    );
+  }
+
+  public replaceWorkEpisodeProjection(input: {
+    readonly associations: readonly EpisodeAssociation[];
+    readonly corrections: readonly EpisodeGroupingCorrection[];
+    readonly episodes: readonly WorkEpisode[];
+  }): WorkEpisodeProjectionWriteResult {
+    const associations = input.associations.map((association) =>
+      episodeAssociationSchema.parse(association),
+    );
+    const episodes = input.episodes.map((episode) =>
+      workEpisodeSchema.parse(episode),
+    );
+    const corrections = input.corrections.map((correction) =>
+      episodeGroupingCorrectionSchema.parse(correction),
+    );
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const existingLinks = this.#database
+        .prepare(
+          `SELECT link_id, body_json
+             FROM evidence_links`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[];
+      const removeLink = this.#database.prepare(
+        "DELETE FROM evidence_links WHERE link_id = ?",
+      );
+      for (const row of existingLinks) {
+        let body: unknown;
+        try {
+          body = JSON.parse(String(row.body_json)) as unknown;
+        } catch {
+          continue;
+        }
+        if (
+          episodeAssociationSchema.safeParse(body).success ||
+          episodeGroupingCorrectionSchema.safeParse(body).success
+        ) {
+          removeLink.run(String(row.link_id));
+        }
+      }
+      this.#database.exec("DELETE FROM work_episodes;");
+      const insertAssociation = this.#database.prepare(
+        `INSERT INTO evidence_links (
+           link_id,
+           schema_version,
+           body_json,
+           source_digest,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      );
+      const insertEpisode = this.#database.prepare(
+        `INSERT INTO work_episodes (
+           episode_id,
+           schema_version,
+           body_json,
+           source_digest,
+           created_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      for (const association of associations) {
+        insertAssociation.run(
+          association.associationId,
+          association.schemaVersion,
+          JSON.stringify(association),
+          sha256(association),
+          association.createdAt,
+        );
+      }
+      for (const correction of corrections) {
+        insertAssociation.run(
+          correction.correctionId,
+          correction.schemaVersion,
+          JSON.stringify(correction),
+          sha256(correction),
+          correction.timestamp,
+        );
+      }
+      for (const episode of episodes) {
+        insertEpisode.run(
+          episode.episodeId,
+          episode.schemaVersion,
+          JSON.stringify(episode),
+          sha256(episode),
+          episode.startedAt,
+          episode.finishedAt ?? episode.startedAt,
+        );
+      }
+      this.#database.exec("COMMIT;");
+      return {
+        associations: associations.length,
+        corrections: corrections.length,
+        episodes: episodes.length,
+      };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public episodeAssociations(): readonly EpisodeAssociation[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM evidence_links
+          ORDER BY link_id`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.flatMap((row) => {
+      let body: unknown;
+      try {
+        body = JSON.parse(String(row.body_json)) as unknown;
+      } catch {
+        return [];
+      }
+      const parsed = episodeAssociationSchema.safeParse(body);
+      return parsed.success ? [parsed.data] : [];
+    });
+  }
+
+  public episodeGroupingCorrections():
+  readonly EpisodeGroupingCorrection[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM evidence_links
+          ORDER BY created_at, link_id`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.flatMap((row) => {
+      let body: unknown;
+      try {
+        body = JSON.parse(String(row.body_json)) as unknown;
+      } catch {
+        return [];
+      }
+      const parsed = episodeGroupingCorrectionSchema.safeParse(body);
+      return parsed.success ? [parsed.data] : [];
+    });
+  }
+
+  public workEpisodes(): readonly WorkEpisode[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM work_episodes
+          ORDER BY created_at, episode_id`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows
+      .map((row) =>
+        workEpisodeSchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        ),
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(left.startedAt) - Date.parse(right.startedAt) ||
+          left.episodeId.localeCompare(right.episodeId),
+      );
   }
 
   public parserErrors(): readonly CanonicalParserErrorRecord[] {
