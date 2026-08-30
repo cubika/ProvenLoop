@@ -1128,6 +1128,7 @@ provenloop status
 provenloop doctor
 provenloop enable [capability]
 provenloop disable [capability]
+provenloop worker run [--batch-size <count>]
 provenloop forget <knowledge-or-playbook>
 provenloop delete --source <source>
 provenloop delete --session <session>

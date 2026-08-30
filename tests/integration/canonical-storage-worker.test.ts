@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   unlink,
   writeFile,
@@ -13,6 +14,14 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  runCaptureWorkerOnce,
+} from "@provenloop/cli";
+import {
+  createDefaultCopilotAdapterState,
+  setPersistedCapability,
+  writeCopilotAdapterState,
+} from "@provenloop/copilot-adapter";
+import {
   captureQueueItemSchema,
 } from "@provenloop/contracts";
 import { createCaptureDeduplicationKey } from "@provenloop/domain";
@@ -21,6 +30,7 @@ import {
   CaptureWorkerCircuitBreaker,
 } from "@provenloop/host";
 import {
+  resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
   WindowsNamedPipeLeaseProvider,
 } from "@provenloop/platform-windows";
@@ -853,6 +863,101 @@ describe("canonical SQLite storage", () => {
 });
 
 describe("shared capture worker", () => {
+  it("honors the persisted worker capability and writes a heartbeat", async () => {
+    const dataRoot = await createTemporaryDirectory();
+    const paths = resolveWindowsProvenLoopPaths(dataRoot);
+    await mkdir(paths.data, {
+      recursive: true,
+    });
+    await writeFile(
+      paths.rootMarker,
+      `${JSON.stringify({
+        product: "ProvenLoop",
+        root: paths.root,
+        schemaVersion: 1,
+      })}\n`,
+      "utf8",
+    );
+    let state = {
+      ...createDefaultCopilotAdapterState(
+        new Date("2026-08-30T00:00:00.000Z"),
+      ),
+      installed: true,
+    };
+    state = setPersistedCapability(
+      state,
+      "worker",
+      {
+        enabled: true,
+      },
+      new Date("2026-08-30T00:00:01.000Z"),
+    );
+    await writeCopilotAdapterState(paths.adapterState, state);
+    const queue = await createQueue(paths.queue);
+    const queued = await queue.enqueue(
+      captureInput("worker-runtime"),
+      {
+        environment: {},
+      },
+    );
+    const store = new CanonicalSqliteStore(paths.database);
+    store.close();
+
+    expect(
+      await runCaptureWorkerOnce({
+        batchSize: 10,
+        dataRoot,
+        lease: new WindowsNamedPipeLeaseProvider(
+          `worker-runtime-${randomUUID()}`,
+        ),
+        now: () => new Date("2026-08-30T00:00:02.000Z"),
+        workerId: "worker-runtime",
+      }),
+    ).toMatchObject({
+      status: "completed",
+      acknowledged: 1,
+      stored: 1,
+    });
+    const verified = new CanonicalSqliteStore(paths.database);
+    expect(
+      verified.rawEvent(queued.envelope.deduplicationKey),
+    ).toBeDefined();
+    verified.close();
+    expect(
+      JSON.parse(await readFile(paths.heartbeat, "utf8")),
+    ).toMatchObject({
+      result: {
+        status: "completed",
+      },
+      timestamp: "2026-08-30T00:00:02.000Z",
+      workerId: "worker-runtime",
+    });
+
+    state = setPersistedCapability(
+      state,
+      "worker",
+      {
+        enabled: false,
+      },
+      new Date("2026-08-30T00:00:03.000Z"),
+    );
+    await writeCopilotAdapterState(paths.adapterState, state);
+    await queue.enqueue(captureInput("worker-disabled"), {
+      environment: {},
+    });
+    expect(
+      await runCaptureWorkerOnce({
+        dataRoot,
+        lease: new WindowsNamedPipeLeaseProvider(
+          `worker-runtime-${randomUUID()}`,
+        ),
+      }),
+    ).toEqual({
+      status: "disabled",
+    });
+    expect(await queue.list("pending")).toHaveLength(1);
+  });
+
   it("stores supported events and acknowledges only after commit", async () => {
     const root = await createTemporaryDirectory();
     const queue = await createQueue(join(root, "queue"));

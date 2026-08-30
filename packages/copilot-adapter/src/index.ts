@@ -12,6 +12,7 @@ export {
   getCopilotCaptureCapability,
 } from "./capabilities.js";
 export {
+  assertCopilotAdapterDataRoot,
   CopilotCliAdapter,
   CopilotCommandError,
   registerInternalCopilotSession,
@@ -75,3 +76,11 @@ export {
   type CopilotSessionFileParserOptions,
   type CopilotSessionFileParseResult,
 } from "./session-file-parser.js";
+export {
+  createDefaultCopilotAdapterState,
+  readCopilotAdapterState,
+  setPersistedCapability,
+  writeCopilotAdapterState,
+  type PersistedCapabilityState,
+  type PersistedCopilotAdapterState,
+} from "./operational-state.js";

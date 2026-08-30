@@ -25,6 +25,7 @@ import {
 import {
   DeletionPropagationGateError,
   DeletionService,
+  type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
   resolveWindowsProvenLoopDataRoot,
@@ -36,6 +37,10 @@ import {
 } from "@provenloop/storage-sqlite";
 
 import { runMcpServer } from "./run-mcp-server.js";
+import {
+  runCaptureWorkerOnce,
+  type RunCaptureWorkerOnceOptions,
+} from "./run-worker.js";
 
 export interface CliIo {
   readonly error: (message: string) => void;
@@ -47,6 +52,9 @@ export interface CliDependencies {
     dataRoot: string,
   ) => AgentAdapter;
   readonly runMcpServer: () => Promise<void>;
+  readonly runWorker?: (
+    options: RunCaptureWorkerOnceOptions,
+  ) => Promise<CaptureWorkerRunResult>;
 }
 
 const defaultIo: CliIo = {
@@ -60,6 +68,7 @@ const defaultDependencies: CliDependencies = {
       dataRoot,
     }),
   runMcpServer,
+  runWorker: runCaptureWorkerOnce,
 };
 
 const option = (
@@ -77,6 +86,7 @@ const usage = `Usage:
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
   provenloop delete (--source <event-or-dedup-id> | --session <id> | --episode <id>) [--data-root <directory>]
+  provenloop worker run [--batch-size <count>] [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory>
@@ -283,6 +293,48 @@ const runEvaluationCommand = async (
   return 2;
 };
 
+const runWorkerCommand = async (
+  args: readonly string[],
+  io: CliIo,
+  dependencies: CliDependencies,
+): Promise<number> => {
+  const rawBatchSize = option(args, "--batch-size");
+  const batchSize =
+    rawBatchSize === undefined ? 100 : Number(rawBatchSize);
+  if (
+    args[1] !== "run" ||
+    hasInvalidOptionValue(args, "--batch-size") ||
+    hasInvalidOptionValue(args, "--data-root") ||
+    !Number.isInteger(batchSize) ||
+    batchSize <= 0
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  try {
+    const result = await (
+      dependencies.runWorker ?? runCaptureWorkerOnce
+    )({
+      batchSize,
+      dataRoot: dataRoot(args),
+    });
+    io.log(JSON.stringify(result, null, 2));
+    return result.status === "circuit_open" ||
+      (
+        result.status === "completed" &&
+        (
+          result.failed > 0 ||
+          result.circuitOpenReasons.length > 0
+        )
+      )
+      ? 1
+      : 0;
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return 3;
+  }
+};
+
 export const runCli = async (
   args: readonly string[],
   io: CliIo = defaultIo,
@@ -293,6 +345,9 @@ export const runCli = async (
   }
   if (args[0] === "delete") {
     return runDeletionCommand(args, io);
+  }
+  if (args[0] === "worker") {
+    return runWorkerCommand(args, io, dependencies);
   }
   if (args[0] === "mcp" && args[1] === "serve") {
     try {

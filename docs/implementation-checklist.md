@@ -335,8 +335,9 @@ frozen.
 - [x] Installation requires no wrapper command for ordinary Copilot use.
 - [x] Daily operation requires no additional model API key.
 - [ ] Capability disable stops only the selected capture, retrieval, or worker
-  behavior. Capture is operational; retrieval and worker remain unavailable
-  until their runtime consumers are wired to the shared capability state.
+  behavior. Capture and the on-demand worker are operational; retrieval remains
+  unavailable until its runtime consumer is wired to the shared capability
+  state.
 
 ## 9. Batch 6: basic Work Episode builder
 

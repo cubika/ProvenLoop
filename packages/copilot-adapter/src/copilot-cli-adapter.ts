@@ -36,6 +36,8 @@ import {
   sanitizeDiagnostic,
 } from "@provenloop/domain";
 import {
+  resolveWindowsCaptureWorkerLeaseName,
+  resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
   WindowsNamedPipeLeaseProvider,
@@ -130,7 +132,7 @@ const capabilityAvailability = (
   compatibility: AdapterCompatibility,
 ): AdapterCapabilityAvailability => {
   if (capability === "worker") {
-    return "unavailable";
+    return "available";
   }
   if (capability === "capture") {
     return compatibility === "supported"
@@ -210,7 +212,7 @@ const stateWith = (
   updatedAt: now.toISOString(),
 });
 
-const assertDataRootMarker = async (
+export const assertCopilotAdapterDataRoot = async (
   paths: WindowsProvenLoopPaths,
 ): Promise<void> => {
   let marker: unknown;
@@ -345,7 +347,11 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public async install(): Promise<AdapterOperationResult> {
+  public install(): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#install());
+  }
+
+  async #install(): Promise<AdapterOperationResult> {
     await this.#initializeCoreStorage();
     let state = await this.#readState();
     const stateWasInstalled = state.installed;
@@ -459,7 +465,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public async enable(
+  public enable(
+    capability: ProvenLoopCapability,
+  ): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#enable(capability));
+  }
+
+  async #enable(
     capability: ProvenLoopCapability,
   ): Promise<AdapterOperationResult> {
     let state = await this.#readState();
@@ -488,7 +500,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: "incompatible",
       };
     }
-    if (!state.installed && PLUGIN_CAPABILITIES.has(capability)) {
+    if (
+      !state.installed &&
+      (
+        PLUGIN_CAPABILITIES.has(capability) ||
+        capability === "worker"
+      )
+    ) {
       const message =
         `Capability ${capability} requires provenloop install first.`;
       return {
@@ -549,7 +567,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public async disable(
+  public disable(
+    capability: ProvenLoopCapability,
+  ): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#disable(capability));
+  }
+
+  async #disable(
     capability: ProvenLoopCapability,
   ): Promise<AdapterOperationResult> {
     if (!await pathExists(this.#paths.root)) {
@@ -594,7 +618,15 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public async uninstall(
+  public uninstall(
+    options: {
+      readonly purge: boolean;
+    },
+  ): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#uninstall(options));
+  }
+
+  async #uninstall(
     options: {
       readonly purge: boolean;
     },
@@ -664,12 +696,33 @@ implements AgentAdapter<CopilotEventMappingResult> {
       force: true,
       recursive: true,
     });
-    if (options.purge) {
-      this.#assertSafePurgePath();
-      await rm(this.#paths.root, {
-        force: true,
-        recursive: true,
-      });
+    let workerLease: Awaited<
+      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
+    >;
+    if (options.purge && dataRootWasPresent) {
+      const workerLeaseName =
+        await resolveWindowsCaptureWorkerLeaseName(
+          this.#paths.root,
+        );
+      workerLease = await new WindowsNamedPipeLeaseProvider(
+        workerLeaseName,
+      ).tryAcquire();
+      if (workerLease === undefined) {
+        throw new Error(
+          "Cannot purge while the capture worker is active.",
+        );
+      }
+    }
+    try {
+      if (options.purge) {
+        this.#assertSafePurgePath();
+        await rm(this.#paths.root, {
+          force: true,
+          recursive: true,
+        });
+      }
+    } finally {
+      await workerLease?.release();
     }
     const changed =
       registration.pluginInstalled ||
@@ -688,7 +741,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
     return this.install();
   }
 
-  public async registerContextTools(): Promise<AdapterOperationResult> {
+  public registerContextTools(): Promise<AdapterOperationResult> {
+    return this.#withStateLease(
+      () => this.#registerContextTools(),
+    );
+  }
+
+  async #registerContextTools(): Promise<AdapterOperationResult> {
     await this.#initializeCoreStorage();
     const version = await this.#detectCopilotVersion();
     if (
@@ -931,10 +990,32 @@ implements AgentAdapter<CopilotEventMappingResult> {
     );
   }
 
+  async #withStateLease<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const leaseName = await resolveWindowsProvenLoopLeaseName(
+      this.#paths.root,
+      "adapter-state",
+    );
+    const provider = new WindowsNamedPipeLeaseProvider(leaseName);
+    let lease = await provider.tryAcquire();
+    while (lease === undefined) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      lease = await provider.tryAcquire();
+    }
+    try {
+      return await operation();
+    } finally {
+      await lease.release();
+    }
+  }
+
   async #writeState(
     state: PersistedCopilotAdapterState,
   ): Promise<void> {
-    await assertDataRootMarker(this.#paths);
+    await assertCopilotAdapterDataRoot(this.#paths);
     await writeCopilotAdapterState(this.#paths.adapterState, state);
   }
 
@@ -1402,18 +1483,21 @@ implements AgentAdapter<CopilotEventMappingResult> {
   }
 
   async #workerCheck(): Promise<AdapterHealthCheck> {
-    const lease = await new WindowsNamedPipeLeaseProvider(
-      "capture-worker",
-    ).tryAcquire();
-    if (lease === undefined) {
-      return {
-        id: "worker.lease",
-        message: "Capture worker lease is active.",
-        status: "pass",
-      };
-    }
-    await lease.release();
     try {
+      const leaseName = await resolveWindowsCaptureWorkerLeaseName(
+        this.#paths.root,
+      );
+      const lease = await new WindowsNamedPipeLeaseProvider(
+        leaseName,
+      ).tryAcquire();
+      if (lease === undefined) {
+        return {
+          id: "worker.lease",
+          message: "Capture worker lease is active.",
+          status: "pass",
+        };
+      }
+      await lease.release();
       const parsed = JSON.parse(
         await readFile(this.#paths.heartbeat, "utf8"),
       ) as unknown;
@@ -1530,7 +1614,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     const rootPresent = await pathExists(this.#paths.root);
     const markerPresent = await pathExists(this.#paths.rootMarker);
     if (markerPresent) {
-      await assertDataRootMarker(this.#paths);
+      await assertCopilotAdapterDataRoot(this.#paths);
       return;
     }
     if (rootPresent) {
@@ -1554,7 +1638,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
   }
 
   async #assertOwnedDataRoot(): Promise<void> {
-    await assertDataRootMarker(this.#paths);
+    await assertCopilotAdapterDataRoot(this.#paths);
     if (!await pathExists(this.#paths.adapterState)) {
       throw new Error(
         `ProvenLoop adapter state is missing from ${this.#paths.root}.`,
@@ -1589,7 +1673,7 @@ export const registerInternalCopilotSession = async (
     throw new Error("Internal Copilot session ID must be non-empty.");
   }
   const paths = resolveWindowsProvenLoopPaths(dataRoot);
-  await assertDataRootMarker(paths);
+  await assertCopilotAdapterDataRoot(paths);
   const state = await readCopilotAdapterState(
     paths.adapterState,
     new Date(),
@@ -1607,7 +1691,7 @@ export const unregisterInternalCopilotSession = async (
   sessionId: string,
 ): Promise<void> => {
   const paths = resolveWindowsProvenLoopPaths(dataRoot);
-  await assertDataRootMarker(paths);
+  await assertCopilotAdapterDataRoot(paths);
   await removeInternalSessionId(
     paths.internalSessions,
     sessionId.trim(),

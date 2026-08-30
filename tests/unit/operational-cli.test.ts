@@ -192,6 +192,108 @@ describe("operational CLI", () => {
     });
   });
 
+  it("runs one worker batch with stable exit codes", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+    const runWorker = vi.fn(async () => ({
+      status: "completed" as const,
+      acknowledged: 1,
+      circuitOpenReasons: [],
+      deadLettered: 0,
+      duplicates: 0,
+      failed: 0,
+      recoveredClaims: 0,
+      retried: 0,
+      stored: 1,
+      unsupported: 0,
+    }));
+
+    await expect(
+      runCli(
+        [
+          "worker",
+          "run",
+          "--batch-size",
+          "25",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        {
+          ...harness.dependencies,
+          runWorker,
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(runWorker).toHaveBeenCalledWith({
+      batchSize: 25,
+      dataRoot: "C:\\data",
+    });
+    expect(JSON.parse(harness.logs[0] ?? "{}")).toMatchObject({
+      status: "completed",
+      stored: 1,
+    });
+  });
+
+  it("rejects an invalid worker batch size", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+    const runWorker = vi.fn();
+
+    await expect(
+      runCli(
+        [
+          "worker",
+          "run",
+          "--batch-size",
+          "0",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        {
+          ...harness.dependencies,
+          runWorker,
+        },
+      ),
+    ).resolves.toBe(2);
+    expect(runWorker).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-zero code when a worker batch is circuit-limited", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "worker",
+          "run",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        {
+          ...harness.dependencies,
+          runWorker: vi.fn(async () => ({
+            acknowledged: 1,
+            circuitOpenReasons: [
+              "memory" as const,
+            ],
+            deadLettered: 0,
+            duplicates: 0,
+            failed: 0,
+            recoveredClaims: 0,
+            retried: 0,
+            status: "completed" as const,
+            stored: 1,
+            unsupported: 0,
+          })),
+        },
+      ),
+    ).resolves.toBe(1);
+  });
+
   it("runs the built-in Episode association quality report", async () => {
     const adapter = fakeAdapter();
     const harness = cli(adapter);

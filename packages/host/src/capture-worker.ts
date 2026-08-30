@@ -47,7 +47,7 @@ export interface CaptureWorkerOptions {
     | CaptureWorkerAdmission
     | Promise<CaptureWorkerAdmission>;
   readonly batchSize: number;
-  readonly enabled?: () => boolean;
+  readonly enabled?: () => boolean | Promise<boolean>;
   readonly lease: ProcessLeaseProvider;
   readonly queue: CaptureWorkerQueue;
   readonly store: CaptureWorkerStore;
@@ -111,7 +111,7 @@ export class CaptureWorker {
   readonly #admission: () =>
     | CaptureWorkerAdmission
     | Promise<CaptureWorkerAdmission>;
-  readonly #enabled: () => boolean;
+  readonly #enabled: () => boolean | Promise<boolean>;
   readonly #lease: ProcessLeaseProvider;
   readonly #queue: CaptureWorkerQueue;
   readonly #store: CaptureWorkerStore;
@@ -145,7 +145,7 @@ export class CaptureWorker {
   }
 
   public async runOnce(): Promise<CaptureWorkerRunResult> {
-    if (!this.#enabled()) {
+    if (!await this.#enabled()) {
       return {
         status: "disabled",
       };
@@ -183,7 +183,7 @@ export class CaptureWorker {
       const recoveredClaims =
         (await this.#queue.recoverExpiredClaims()).length;
       for (let index = 0; index < this.#batchSize; index += 1) {
-        if (!this.#enabled()) {
+        if (!await this.#enabled()) {
           break;
         }
         const admission = await this.#admission();

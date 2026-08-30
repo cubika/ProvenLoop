@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 export interface WindowsProvenLoopPaths {
@@ -57,3 +59,40 @@ export const resolveWindowsProvenLoopPaths = (
     temporary: resolve(resolvedRoot, "temp"),
   };
 };
+
+export const resolveWindowsProvenLoopLeaseName = async (
+  root: string,
+  purpose: string,
+): Promise<string> => {
+  const normalizedPurpose = purpose
+    .trim()
+    .replaceAll(/[^A-Za-z0-9_-]/gu, "-");
+  if (normalizedPurpose.length === 0) {
+    throw new Error("ProvenLoop lease purpose must be non-empty.");
+  }
+  const resolvedRoot = resolve(root);
+  let canonicalRoot = resolvedRoot;
+  try {
+    canonicalRoot = await realpath(resolvedRoot);
+  } catch (error) {
+    if (
+      !(
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+    ) {
+      throw error;
+    }
+  }
+  const rootDigest = createHash("sha256")
+    .update(canonicalRoot.toLocaleLowerCase("en-US"))
+    .digest("hex")
+    .slice(0, 24);
+  return `${normalizedPurpose}-${rootDigest}`;
+};
+
+export const resolveWindowsCaptureWorkerLeaseName = (
+  root: string,
+): Promise<string> =>
+  resolveWindowsProvenLoopLeaseName(root, "capture-worker");

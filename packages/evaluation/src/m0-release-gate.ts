@@ -432,7 +432,7 @@ const knownBlockedChecks = (): readonly M0ReleaseGateCheck[] => [
   {
     checkId: "capability-isolation",
     message:
-      "Retrieval and worker operational switches remain unavailable.",
+      "The retrieval operational switch remains unavailable.",
     status: "blocked",
   },
 ];

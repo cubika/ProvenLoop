@@ -21,6 +21,10 @@ import {
   type CommandResult,
   type CommandRunner,
 } from "@provenloop/copilot-adapter";
+import {
+  resolveWindowsCaptureWorkerLeaseName,
+  WindowsNamedPipeLeaseProvider,
+} from "@provenloop/platform-windows";
 
 const temporaryDirectories: string[] = [];
 
@@ -293,7 +297,7 @@ describe("Copilot operational adapter", () => {
           enabled: true,
         }),
         expect.objectContaining({
-          availability: "unavailable",
+          availability: "available",
           capability: "worker",
           enabled: false,
         }),
@@ -333,6 +337,12 @@ describe("Copilot operational adapter", () => {
       status: "changed",
     });
     expect(runner.pluginEnabled).toBe(true);
+    await expect(adapter.enable("worker")).resolves.toMatchObject({
+      status: "changed",
+    });
+    await expect(adapter.disable("worker")).resolves.toMatchObject({
+      status: "changed",
+    });
 
     await expect(
       adapter.uninstall({
@@ -370,6 +380,85 @@ describe("Copilot operational adapter", () => {
     ).toContain('"experimental": true');
 
     await adapter.install();
+    await expect(
+      adapter.uninstall({
+        purge: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "changed",
+    });
+    await expect(access(dataRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("serializes concurrent capability changes", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const adapter = new CopilotCliAdapter({
+      commandRunner: new FakeCommandRunner(),
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      environment: {},
+      platform: "win32",
+    });
+    await adapter.install();
+
+    await Promise.all([
+      adapter.enable("worker"),
+      adapter.disable("capture"),
+    ]);
+
+    const capabilities = await adapter.capabilities();
+    expect(
+      capabilities.capabilities.find(
+        (capability) => capability.capability === "worker",
+      ),
+    ).toMatchObject({
+      enabled: true,
+    });
+    expect(
+      capabilities.capabilities.find(
+        (capability) => capability.capability === "capture",
+      ),
+    ).toMatchObject({
+      enabled: false,
+    });
+  });
+
+  it("refuses to purge while the capture worker lease is active", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const adapter = new CopilotCliAdapter({
+      commandRunner: new FakeCommandRunner(),
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      environment: {},
+      platform: "win32",
+    });
+    await adapter.install();
+    await adapter.enable("worker");
+    const leaseName =
+      await resolveWindowsCaptureWorkerLeaseName(dataRoot);
+    const lease = await new WindowsNamedPipeLeaseProvider(
+      leaseName,
+    ).tryAcquire();
+    if (lease === undefined) {
+      throw new Error("Expected to acquire the worker lease.");
+    }
+    try {
+      await expect(
+        adapter.uninstall({
+          purge: true,
+        }),
+      ).rejects.toThrow(
+        "Cannot purge while the capture worker is active.",
+      );
+      await expect(access(dataRoot)).resolves.toBeUndefined();
+    } finally {
+      await lease.release();
+    }
+
     await expect(
       adapter.uninstall({
         purge: true,

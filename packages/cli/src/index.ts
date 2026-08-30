@@ -7,3 +7,7 @@ export {
   runMcpServer,
   type McpServerIo,
 } from "./run-mcp-server.js";
+export {
+  runCaptureWorkerOnce,
+  type RunCaptureWorkerOnceOptions,
+} from "./run-worker.js";

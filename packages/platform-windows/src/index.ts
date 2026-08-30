@@ -34,7 +34,9 @@ export {
 } from "./process-lease.js";
 export {
   LocalAppDataUnavailableError,
+  resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopDataRoot,
+  resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
   type WindowsProvenLoopPaths,
 } from "./operational-paths.js";

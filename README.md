@@ -170,6 +170,9 @@ uninstall. The Copilot adapter generates and registers a local marketplace with
 the capture Extension and MCP process, preserves JSONC user settings, resolves
 Git and Session identity, reports incompatible Copilot versions explicitly,
 and preserves local data unless uninstall is combined with `--purge`.
+The shared worker can now be enabled independently and drained on demand with
+`provenloop worker run`; each batch rechecks persisted capability state and
+writes a health heartbeat.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with
