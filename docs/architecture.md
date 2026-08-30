@@ -1130,6 +1130,8 @@ provenloop enable [capability]
 provenloop disable [capability]
 provenloop forget <knowledge-or-playbook>
 provenloop delete --source <source>
+provenloop delete --session <session>
+provenloop delete --episode <episode>
 provenloop uninstall
 provenloop purge
 ```

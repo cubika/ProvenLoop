@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
+  mkdir,
   mkdtemp,
   rm,
+  unlink,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -355,6 +358,231 @@ describe("canonical SQLite storage", () => {
       ]),
     );
     restored.close();
+  });
+
+  it("restores a legacy backup without a deletion key", async () => {
+    const root = await createTemporaryDirectory();
+    const sourcePath = join(root, "source.db");
+    const backupPath = join(root, "legacy-backup.db");
+    const restoredPath = join(root, "restored.db");
+    const queue = await createQueue(join(root, "queue"));
+    const item = await queue.enqueue(captureInput("legacy-backup"), {
+      environment: {},
+    });
+    const source = new CanonicalSqliteStore(sourcePath);
+    source.ingestQueueItem(item);
+    await source.backupTo(backupPath);
+    source.close();
+    await unlink(`${backupPath}.deletion.key`);
+
+    await CanonicalSqliteStore.restoreFromBackup(
+      backupPath,
+      restoredPath,
+    );
+    const restored = new CanonicalSqliteStore(restoredPath);
+    try {
+      expect(
+        restored.rawEvent(item.envelope.deduplicationKey),
+      ).toBeDefined();
+    } finally {
+      restored.close();
+    }
+  });
+
+  it("preserves the live database when deletion key installation fails", async () => {
+    const root = await createTemporaryDirectory();
+    const targetPath = join(root, "target.db");
+    const backupSourcePath = join(root, "backup-source.db");
+    const backupPath = join(root, "backup.db");
+    const queue = await createQueue(join(root, "queue"));
+    const retained = await queue.enqueue(captureInput("retained"), {
+      environment: {},
+    });
+    const replacement = await queue.enqueue(
+      captureInput("replacement"),
+      {
+        environment: {},
+      },
+    );
+    const target = new CanonicalSqliteStore(targetPath);
+    target.ingestQueueItem(retained);
+    target.close();
+    const backupSource = new CanonicalSqliteStore(
+      backupSourcePath,
+    );
+    backupSource.ingestQueueItem(replacement);
+    await backupSource.backupTo(backupPath);
+    backupSource.close();
+
+    const keyPath = `${targetPath}.deletion.key`;
+    await unlink(keyPath);
+    await mkdir(keyPath);
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        backupPath,
+        targetPath,
+      ),
+    ).rejects.toThrow();
+    await rm(keyPath, {
+      recursive: true,
+    });
+
+    const preserved = new CanonicalSqliteStore(targetPath);
+    try {
+      expect(
+        preserved.rawEvent(retained.envelope.deduplicationKey),
+      ).toBeDefined();
+      expect(
+        preserved.rawEvent(replacement.envelope.deduplicationKey),
+      ).toBeUndefined();
+    } finally {
+      preserved.close();
+    }
+  });
+
+  it("preserves deletion tombstones across backup and restore", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const backupPath = join(root, "backups", "deleted.db");
+    const restoredPath = join(root, "restored", "provenloop.db");
+    const queue = await createQueue(join(root, "queue"));
+    const item = await queue.enqueue(captureInput("deleted-event"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(databasePath);
+    expect(store.ingestQueueItem(item).status).toBe("stored");
+    const operation = store.beginDeletion(
+      {
+        targetId: item.envelope.event.eventId,
+        targetType: "source",
+      },
+      "backup-deletion",
+    );
+    const mutation = store.deleteCanonicalTarget(
+      operation.deletionId,
+      {
+        targetId: item.envelope.event.eventId,
+        targetType: "source",
+      },
+    );
+    store.prepareDeletionCompletion({
+      deletedDependentCount: mutation.dependentIds.length,
+      deletedQueueItemCount: 0,
+      deletedSourceCount: mutation.sourceIds.length,
+      deletionId: operation.deletionId,
+      gateDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      propagationEvidenceId:
+        "backup-deletion:propagation:0123456789abcdef",
+    });
+    store.completeDeletion(operation.deletionId);
+    await store.backupTo(backupPath);
+    store.close();
+
+    await CanonicalSqliteStore.restoreFromBackup(
+      backupPath,
+      restoredPath,
+    );
+    const restored = new CanonicalSqliteStore(restoredPath);
+    try {
+      expect(restored.ingestQueueItem(item).status).toBe(
+        "duplicate",
+      );
+    } finally {
+      restored.close();
+    }
+    await writeFile(
+      `${restoredPath}.deletion.key`,
+      "f".repeat(64),
+      "utf8",
+    );
+    expect(() =>
+      new CanonicalSqliteStore(restoredPath),
+    ).toThrow("does not match tombstones");
+    await unlink(`${restoredPath}.deletion.key`);
+    expect(() =>
+      new CanonicalSqliteStore(restoredPath),
+    ).toThrow("identity key is missing");
+  });
+
+  it("rejects restoring a backup older than installed deletion tombstones", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const backupPath = join(root, "backups", "before-delete.db");
+    const queue = await createQueue(join(root, "queue"));
+    const item = await queue.enqueue(captureInput("deleted-event"), {
+      environment: {},
+    });
+    const store = new CanonicalSqliteStore(databasePath);
+    expect(store.ingestQueueItem(item).status).toBe("stored");
+    await store.backupTo(backupPath);
+    const operation = store.beginDeletion(
+      {
+        targetId: item.envelope.event.eventId,
+        targetType: "source",
+      },
+      "installed-deletion",
+    );
+    const mutation = store.deleteCanonicalTarget(
+      operation.deletionId,
+      {
+        targetId: item.envelope.event.eventId,
+        targetType: "source",
+      },
+    );
+    store.prepareDeletionCompletion({
+      deletedDependentCount: mutation.dependentIds.length,
+      deletedQueueItemCount: 0,
+      deletedSourceCount: mutation.sourceIds.length,
+      deletionId: operation.deletionId,
+      gateDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      propagationEvidenceId:
+        "installed-deletion:propagation:1:0123456789abcdef",
+    });
+    store.completeDeletion(operation.deletionId);
+    store.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        backupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow("missing an installed deletion tombstone");
+    const preserved = new CanonicalSqliteStore(databasePath);
+    try {
+      expect(preserved.ingestQueueItem(item).status).toBe(
+        "duplicate",
+      );
+    } finally {
+      preserved.close();
+    }
+  });
+
+  it("rejects restore while an installed deletion is incomplete", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "provenloop.db");
+    const backupPath = join(root, "backup.db");
+    const source = new CanonicalSqliteStore(databasePath);
+    await source.backupTo(backupPath);
+    source.beginDeletion(
+      {
+        targetId:
+          "event-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        targetType: "source",
+      },
+      "incomplete-deletion",
+    );
+    source.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        backupPath,
+        databasePath,
+      ),
+    ).rejects.toThrow(
+      "Cannot restore while a deletion operation is incomplete",
+    );
   });
 
   it("preserves the existing database when backup validation fails", async () => {

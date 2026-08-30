@@ -5,6 +5,8 @@ export {
   InvalidCanonicalSchemaError,
   UnsupportedDatabaseVersionError,
   type CanonicalIngestResult,
+  type CanonicalDeletionMutationResult,
+  type CanonicalDeletionTarget,
   type CanonicalParserErrorRecord,
   type CanonicalRawEventRecord,
   type CanonicalSqliteStoreOptions,

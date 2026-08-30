@@ -16,6 +16,9 @@
       "path": "../domain"
     },
     {
+      "path": "../evaluation"
+    },
+    {
       "path": "../platform-windows"
     },
     {

@@ -19,7 +19,13 @@
       "path": "../evaluation"
     },
     {
+      "path": "../host"
+    },
+    {
       "path": "../platform-windows"
+    },
+    {
+      "path": "../storage-sqlite"
     }
   ]
 }

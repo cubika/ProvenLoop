@@ -1,7 +1,20 @@
-import { randomUUID } from "node:crypto";
+import {
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import {
   mkdir,
+  open,
+  readFile,
   unlink,
+  writeFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -13,17 +26,25 @@ import {
   captureEnvelopeSchema,
   captureQueueItemSchema,
   classifyRawEvent,
+  CURRENT_SCHEMA_VERSION,
+  deletionOperationSchema,
+  deletionTargetTypeSchema,
   episodeAssociationSchema,
   episodeGroupingCorrectionSchema,
   workEpisodeSchema,
   type CaptureEnvelope,
   type CaptureQueueItem,
+  type DeletionOperation,
+  type DeletionPlannedIdentity,
+  type DeletionIdentityType,
+  type DeletionTargetType,
   type EpisodeAssociation,
   type EpisodeGroupingCorrection,
   type WorkEpisode,
 } from "@provenloop/contracts";
 import {
   createCaptureDeduplicationKey,
+  deletionIdentityDigest,
   redactCaptureEnvelopeForPersistence,
   sanitizeDiagnostic,
   sha256,
@@ -89,6 +110,17 @@ export interface WorkEpisodeProjectionWriteResult {
   readonly associations: number;
   readonly corrections: number;
   readonly episodes: number;
+}
+
+export interface CanonicalDeletionTarget {
+  readonly targetId: string;
+  readonly targetType: DeletionTargetType;
+}
+
+export interface CanonicalDeletionMutationResult {
+  readonly affectedSessionIds: readonly string[];
+  readonly dependentIds: readonly string[];
+  readonly sourceIds: readonly string[];
 }
 
 export const DEFAULT_SQLITE_MIGRATIONS = [
@@ -273,6 +305,360 @@ const sqliteIdentifier = (value: string): string =>
 
 const normalizeSchemaSql = (value: unknown): string =>
   String(value).replaceAll(/\s+/gu, " ").trim();
+
+interface TypedDeletionReferences {
+  readonly deduplication: Set<string>;
+  readonly episode: Set<string>;
+  readonly event: Set<string>;
+  readonly record: Set<string>;
+  readonly session: Set<string>;
+}
+
+const normalizedReferenceKey = (key: string): string =>
+  key.toLowerCase().replaceAll(/[-_.]/gu, "");
+
+const stringValues = (value: unknown): readonly string[] =>
+  typeof value === "string"
+    ? [
+        value,
+      ]
+    : Array.isArray(value)
+      ? value.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [];
+
+const bodyReferences = (
+  input: unknown,
+  references: TypedDeletionReferences,
+): boolean => {
+  if (input === null || typeof input !== "object") {
+    return false;
+  }
+  if (Array.isArray(input)) {
+    return input.some((value) =>
+      bodyReferences(value, references),
+    );
+  }
+  const record = input as Readonly<Record<string, unknown>>;
+  if (
+    record.targetType === "episode" &&
+    typeof record.targetId === "string" &&
+    references.episode.has(record.targetId)
+  ) {
+    return true;
+  }
+  if (
+    record.targetType === "process_claim" &&
+    typeof record.targetId === "string" &&
+    references.record.has(record.targetId)
+  ) {
+    return true;
+  }
+  for (const [
+    key,
+    value,
+  ] of Object.entries(record)) {
+    const normalized = normalizedReferenceKey(key);
+    const values = stringValues(value);
+    const matched =
+      [
+        "episodeid",
+        "sourceepisodeids",
+      ].includes(normalized)
+        ? values.some((id) => references.episode.has(id))
+        : [
+              "leftsessionid",
+              "rightsessionid",
+              "sessionid",
+              "sessionids",
+            ].includes(normalized)
+          ? values.some((id) => references.session.has(id))
+          : [
+                "correctioneventids",
+                "eventid",
+                "parenteventid",
+                "sourceid",
+                "sourceeventids",
+              ].includes(normalized)
+            ? values.some((id) => references.event.has(id))
+            : [
+                  "availabilityevidenceids",
+                  "correctionids",
+                  "evidenceid",
+                  "evidenceids",
+                  "evidenceref",
+                  "invocationids",
+                  "supportingevidenceids",
+                ].includes(normalized)
+              ? values.some(
+                  (id) =>
+                      references.deduplication.has(id) ||
+                      references.event.has(id) ||
+                      references.record.has(id),
+                  )
+              : false;
+    if (matched || bodyReferences(value, references)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const placeholders = (count: number): string =>
+  Array.from({
+    length: count,
+  }, () => "?").join(", ");
+
+const validateDeletionTargetId = (
+  targetType: DeletionTargetType,
+  targetId: string,
+): void => {
+  if (
+    targetType === "source" &&
+    !/^(?:event-)?[a-f0-9]{64}$/iu.test(targetId)
+  ) {
+    throw new Error(
+      "Source deletion requires a canonical event ID or deduplication key.",
+    );
+  }
+};
+
+const normalizedDeletionTargetId = (
+  targetType: DeletionTargetType,
+  targetId: string,
+): string =>
+  targetType === "source"
+    ? targetId.toLowerCase()
+    : targetId;
+
+const sourceIdentityForms = (targetId: string): readonly string[] =>
+  targetId.startsWith("event-")
+    ? [
+        targetId,
+        targetId.slice("event-".length),
+      ]
+    : [
+        targetId,
+        `event-${targetId}`,
+      ];
+
+const deletionIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+
+interface LoadedDeletionIdentityKey {
+  readonly key: string;
+}
+
+const loadDeletionIdentityKey = (
+  path: string,
+): LoadedDeletionIdentityKey => {
+  if (path === ":memory:") {
+    return {
+      key: randomBytes(32).toString("hex"),
+    };
+  }
+  const keyPath = `${path}.deletion.key`;
+  try {
+    const existing = readFileSync(keyPath, "utf8").trim();
+    if (/^[a-f0-9]{64}$/u.test(existing)) {
+      return {
+        key: existing,
+      };
+    }
+    throw new Error("Canonical deletion identity key is malformed.");
+  } catch (error) {
+    if (
+      !(
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+    ) {
+      throw error;
+    }
+  }
+  if (existsSync(path)) {
+    let existingDatabase: DatabaseSync | undefined;
+    try {
+      existingDatabase = new DatabaseSync(path, {
+        readOnly: true,
+      });
+      const table = existingDatabase
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'deletion_operations'`,
+        )
+        .get() as Readonly<Record<string, unknown>>;
+      if (asNumber(table.count) > 0) {
+        const operations = existingDatabase
+          .prepare(
+            `SELECT COUNT(*) AS count
+               FROM deletion_operations`,
+          )
+          .get() as Readonly<Record<string, unknown>>;
+        if (asNumber(operations.count) > 0) {
+          throw new InvalidCanonicalSchemaError(
+            "Canonical deletion identity key is missing.",
+          );
+        }
+      }
+    } finally {
+      existingDatabase?.close();
+    }
+  }
+  const generated = randomBytes(32).toString("hex");
+  try {
+    const descriptor = openSync(keyPath, "wx");
+    try {
+      writeFileSync(descriptor, generated, "utf8");
+    } finally {
+      closeSync(descriptor);
+    }
+    return {
+      key: generated,
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EEXIST"
+    ) {
+      const existing = readFileSync(keyPath, "utf8").trim();
+      if (/^[a-f0-9]{64}$/u.test(existing)) {
+        return {
+          key: existing,
+        };
+      }
+    }
+    throw error;
+  }
+};
+
+const deleteDependentRows = (
+  database: DatabaseSync,
+  table: string,
+  idColumn: string,
+  bodyColumn: string,
+  references: TypedDeletionReferences,
+  dependentIds: Set<string>,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT ${idColumn} AS id, ${bodyColumn} AS body
+         FROM ${table}`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    `DELETE FROM ${table} WHERE ${idColumn} = ?`,
+  );
+  for (const row of rows) {
+    const parsed = JSON.parse(String(row.body)) as unknown;
+    if (!bodyReferences(parsed, references)) {
+      continue;
+    }
+    const id = String(row.id);
+    remove.run(id);
+    dependentIds.add(id);
+    references.record.add(id);
+    deleted += 1;
+  }
+  return deleted;
+};
+
+const deleteEvidenceLinkRows = (
+  database: DatabaseSync,
+  references: TypedDeletionReferences,
+  dependentIds: Set<string>,
+  dependencySeedIds: Set<string>,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT link_id, body_json
+         FROM evidence_links`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    "DELETE FROM evidence_links WHERE link_id = ?",
+  );
+  for (const row of rows) {
+    const parsed = JSON.parse(String(row.body_json)) as unknown;
+    if (!bodyReferences(parsed, references)) {
+      continue;
+    }
+    const id = String(row.link_id);
+    remove.run(id);
+    if (episodeAssociationSchema.safeParse(parsed).success) {
+      dependencySeedIds.add(id);
+    } else {
+      dependentIds.add(id);
+    }
+    references.record.add(id);
+    deleted += 1;
+  }
+  return deleted;
+};
+
+const deleteIdentityRows = (
+  database: DatabaseSync,
+  references: TypedDeletionReferences,
+  dependentIds: Set<string>,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT identity_id, identity_type, canonical_value
+         FROM identities`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    "DELETE FROM identities WHERE identity_id = ?",
+  );
+  for (const row of rows) {
+    const identityId = String(row.identity_id);
+    const identityType = String(row.identity_type)
+      .toLowerCase();
+    const canonicalValue = String(row.canonical_value);
+    const matches =
+      references.record.has(identityId) ||
+      references.record.has(canonicalValue) ||
+      (
+        identityType.includes("alias") &&
+        (
+          references.event.has(canonicalValue) ||
+          references.session.has(canonicalValue) ||
+          references.episode.has(canonicalValue)
+        )
+      ) ||
+      (
+        identityType.includes("dedup") &&
+        references.deduplication.has(canonicalValue)
+      ) ||
+      (
+        identityType.includes("session") &&
+        references.session.has(canonicalValue)
+      ) ||
+      (
+        identityType.includes("episode") &&
+        references.episode.has(canonicalValue)
+      ) ||
+      (
+        identityType.includes("event") &&
+        references.event.has(canonicalValue)
+      );
+    if (!matches) {
+      continue;
+    }
+    remove.run(identityId);
+    dependentIds.add(identityId);
+    references.record.add(identityId);
+    deleted += 1;
+  }
+  return deleted;
+};
 
 const createExpectedCanonicalObjectSql = (
   migrations: readonly SqliteMigration[],
@@ -478,15 +864,18 @@ const RUNTIME_SCHEMA_INDEXES = {
 
 export class CanonicalSqliteStore {
   readonly #database: DatabaseSync;
+  readonly #deletionIdentityKey: string;
   readonly #faultInjector:
     | ((stage: "after_raw_event_insert") => void)
     | undefined;
   readonly #now: () => Date;
+  readonly #path: string;
 
   public constructor(
     path: string,
     options: CanonicalSqliteStoreOptions = {},
   ) {
+    this.#path = path;
     const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
     if (!Number.isInteger(busyTimeoutMs) || busyTimeoutMs <= 0) {
       throw new RangeError("busyTimeoutMs must be a positive integer.");
@@ -494,6 +883,8 @@ export class CanonicalSqliteStore {
     const migrations =
       options.migrations ?? DEFAULT_SQLITE_MIGRATIONS;
     this.#validateMigrations(migrations);
+    const deletionIdentityKey = loadDeletionIdentityKey(path);
+    this.#deletionIdentityKey = deletionIdentityKey.key;
     this.#faultInjector = options.faultInjector;
     this.#now = options.now ?? (() => new Date());
     this.#database = new DatabaseSync(path);
@@ -502,6 +893,7 @@ export class CanonicalSqliteStore {
       this.#database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs};`);
       this.#database.exec("PRAGMA journal_mode = WAL;");
       this.#applyMigrations(migrations);
+      this.#validateDeletionIdentityKey();
     } catch (error) {
       this.#database.close();
       throw error;
@@ -516,7 +908,13 @@ export class CanonicalSqliteStore {
     await mkdir(dirname(path), {
       recursive: true,
     });
-    return backup(this.#database, path);
+    const pages = await backup(this.#database, path);
+    await writeFile(
+      `${path}.deletion.key`,
+      this.#deletionIdentityKey,
+      "utf8",
+    );
+    return pages;
   }
 
   public static async restoreFromBackup(
@@ -527,9 +925,75 @@ export class CanonicalSqliteStore {
     await mkdir(dirname(targetPath), {
       recursive: true,
     });
+    const restoreBarrierPath = `${targetPath}.restore.lock`;
+    const restoreBarrier = await open(restoreBarrierPath, "wx");
+    await restoreBarrier.writeFile(
+      `${process.pid}\n`,
+      "utf8",
+    );
+    await restoreBarrier.sync();
+    const requiredTombstones = new Map<string, DeletionOperation>();
+    let installedIncompleteDeletion = false;
+    let requiredDeletionKey: string | undefined;
     const restoreId = randomUUID();
     const temporaryPath = `${targetPath}.restore-${restoreId}.tmp`;
     try {
+      if (existsSync(targetPath)) {
+      let current: DatabaseSync | undefined;
+      try {
+        current = new DatabaseSync(targetPath);
+        current.exec("BEGIN EXCLUSIVE;");
+        const hasTable = current
+          .prepare(
+            `SELECT COUNT(*) AS count
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = 'deletion_operations'`,
+          )
+          .get() as Readonly<Record<string, unknown>>;
+        if (asNumber(hasTable.count) > 0) {
+          const rows = current
+            .prepare(
+              `SELECT body_json
+                 FROM deletion_operations
+                ORDER BY updated_at`,
+            )
+            .all() as readonly Readonly<Record<string, unknown>>[];
+          for (const row of rows) {
+            const operation = deletionOperationSchema.parse(
+              JSON.parse(String(row.body_json)) as unknown,
+            );
+            if (operation.status === "completed") {
+              requiredTombstones.set(
+                operation.deletionId,
+                operation,
+              );
+            } else {
+              installedIncompleteDeletion = true;
+            }
+          }
+        }
+        current.exec("COMMIT;");
+      } finally {
+        try {
+          current?.exec("ROLLBACK;");
+        } catch {
+          // The exclusive transaction may already be committed.
+        }
+        current?.close();
+      }
+      if (requiredTombstones.size > 0) {
+        requiredDeletionKey = (
+          await readFile(`${targetPath}.deletion.key`, "utf8")
+        ).trim();
+      }
+      }
+      if (installedIncompleteDeletion) {
+        throw new InvalidCanonicalSchemaError(
+          "Cannot restore while a deletion operation is incomplete.",
+        );
+      }
+      let backupDeletionKey: string | undefined;
       let source: DatabaseSync | undefined;
       try {
         source = new DatabaseSync(backupPath, {
@@ -539,7 +1003,86 @@ export class CanonicalSqliteStore {
           source,
           options.migrations ?? DEFAULT_SQLITE_MIGRATIONS,
         );
+        const backupOperationRows = source
+          .prepare(
+            `SELECT body_json
+               FROM deletion_operations
+              ORDER BY updated_at`,
+          )
+          .all() as readonly Readonly<Record<string, unknown>>[];
+        try {
+          backupDeletionKey = (
+            await readFile(`${backupPath}.deletion.key`, "utf8")
+          ).trim();
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ENOENT"
+            ) ||
+            backupOperationRows.length > 0
+          ) {
+            throw error;
+          }
+          backupDeletionKey = randomBytes(32).toString("hex");
+        }
+        if (!/^[a-f0-9]{64}$/u.test(backupDeletionKey)) {
+          throw new InvalidCanonicalSchemaError(
+            "Backup deletion identity key is malformed.",
+          );
+        }
+        if (
+          backupOperationRows.length > 0 &&
+          requiredDeletionKey !== undefined &&
+          backupDeletionKey !== requiredDeletionKey
+        ) {
+          throw new InvalidCanonicalSchemaError(
+            "Backup deletion identity key does not match the installed database.",
+          );
+        }
+        if (requiredTombstones.size > 0) {
+          const backupTombstones = new Map(
+            backupOperationRows.flatMap((row) => {
+              const operation = deletionOperationSchema.parse(
+                JSON.parse(String(row.body_json)) as unknown,
+              );
+              if (operation.status !== "completed") {
+                return [];
+              }
+              return [
+                [
+                  operation.deletionId,
+                  operation,
+                ] as const,
+              ];
+            }),
+          );
+          for (const [
+            deletionId,
+            required,
+          ] of requiredTombstones) {
+            const candidate = backupTombstones.get(deletionId);
+            if (
+              candidate === undefined ||
+              candidate.targetDigest !== required.targetDigest ||
+              candidate.tombstoneKeyVerifier !==
+                required.tombstoneKeyVerifier ||
+              JSON.stringify(candidate.blockedIdentityDigests) !==
+                JSON.stringify(required.blockedIdentityDigests)
+            ) {
+              throw new InvalidCanonicalSchemaError(
+                "Backup is missing an installed deletion tombstone.",
+              );
+            }
+          }
+        }
         await backup(source, temporaryPath);
+        await writeFile(
+          `${temporaryPath}.deletion.key`,
+          backupDeletionKey,
+          "utf8",
+        );
       } finally {
         source?.close();
       }
@@ -565,6 +1108,11 @@ export class CanonicalSqliteStore {
         validatedSource = new DatabaseSync(temporaryPath, {
           readOnly: true,
         });
+        await writeFile(
+          `${targetPath}.deletion.key`,
+          backupDeletionKey,
+          "utf8",
+        );
         await backup(validatedSource, targetPath);
       } finally {
         validatedSource?.close();
@@ -590,6 +1138,10 @@ export class CanonicalSqliteStore {
       await CanonicalSqliteStore.#removeDatabaseFiles(
         temporaryPath,
       );
+      await restoreBarrier.close();
+      await unlink(restoreBarrierPath).catch(
+        CanonicalSqliteStore.#ignoreMissing,
+      );
     }
   }
 
@@ -614,25 +1166,1250 @@ export class CanonicalSqliteStore {
     };
   }
 
+  public hasActiveDeletion(): boolean {
+    const row = this.#database
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM deletion_operations
+          WHERE status IN ('running', 'completing', 'failed')`,
+      )
+      .get() as Readonly<Record<string, unknown>>;
+    return asNumber(row.count) > 0;
+  }
+
+  public beginDeletion(
+    target: CanonicalDeletionTarget,
+    deletionId: string = randomUUID(),
+  ): DeletionOperation {
+    this.#assertNoRestoreBarrier();
+    const targetType = deletionTargetTypeSchema.parse(
+      target.targetType,
+    );
+    const targetId = normalizedDeletionTargetId(
+      targetType,
+      target.targetId.trim(),
+    );
+    if (
+      targetId.length === 0 ||
+      !deletionIdPattern.test(deletionId)
+    ) {
+      throw new Error(
+        "Deletion target and operation IDs must be non-empty.",
+      );
+    }
+    validateDeletionTargetId(targetType, targetId);
+    const targetDigest = deletionIdentityDigest(
+      "target",
+      `${targetType}:${targetId}`,
+      this.#deletionIdentityKey,
+    );
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const existing = (this.#database
+        .prepare(
+          `SELECT body_json
+             FROM deletion_operations
+            ORDER BY updated_at DESC`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[])
+        .map((row) =>
+          deletionOperationSchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          ),
+        );
+      const active = existing.find(
+        (candidate) =>
+          candidate.status === "running" ||
+          candidate.status === "completing",
+      );
+      if (active !== undefined) {
+        if (active.targetDigest !== targetDigest) {
+          throw new Error(
+            "A deletion operation is already active.",
+          );
+        }
+        this.#database.exec("COMMIT;");
+        return active;
+      }
+      const completed = existing.find(
+        (candidate) =>
+          candidate.status === "completed" &&
+          candidate.targetDigest === targetDigest,
+      );
+      if (completed !== undefined) {
+        this.#database.exec("COMMIT;");
+        return completed;
+      }
+      const resumable = existing.find(
+        (candidate) =>
+          candidate.status === "failed" &&
+          candidate.targetDigest === targetDigest,
+      );
+      if (resumable !== undefined) {
+        const resumed = deletionOperationSchema.parse({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        activeTargetId: targetId,
+        attemptCount: resumable.attemptCount + 1,
+        blockedIdentityDigests:
+          resumable.blockedIdentityDigests,
+        deletedDependentCount: 0,
+        deletedQueueItemCount: 0,
+        deletedSourceCount: 0,
+        deletionId: resumable.deletionId,
+        ...(resumable.plannedAffectedSessionIds === undefined
+          ? {}
+          : {
+              plannedAffectedSessionIds:
+                resumable.plannedAffectedSessionIds,
+            }),
+        ...(resumable.plannedDependentIds === undefined
+          ? {}
+          : {
+              plannedDependentIds:
+                resumable.plannedDependentIds,
+            }),
+        ...(resumable.plannedDependencySeedIds === undefined
+          ? {}
+          : {
+              plannedDependencySeedIds:
+                resumable.plannedDependencySeedIds,
+            }),
+        ...(resumable.plannedSourceIds === undefined
+          ? {}
+          : {
+              plannedSourceIds: resumable.plannedSourceIds,
+            }),
+        ...(resumable.plannedQueueItemIds === undefined
+          ? {}
+          : {
+              plannedQueueItemIds:
+                resumable.plannedQueueItemIds,
+            }),
+        ...(resumable.plannedQueueIdentities === undefined
+          ? {}
+          : {
+              plannedQueueIdentities:
+                resumable.plannedQueueIdentities,
+            }),
+        requestedAt: resumable.requestedAt,
+        status: "running",
+        targetDigest,
+        targetType,
+        tombstoneKeyVerifier:
+          this.#deletionIdentityKeyVerifier(),
+      });
+        this.#writeDeletionOperation(resumed);
+        this.#database.exec("COMMIT;");
+        return resumed;
+      }
+      if (
+        existing.some((candidate) => candidate.status === "failed")
+      ) {
+        throw new Error(
+          "A failed deletion must be resumed before another deletion starts.",
+        );
+      }
+      const operation = deletionOperationSchema.parse({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      activeTargetId: targetId,
+      attemptCount: 1,
+      blockedIdentityDigests: [],
+      deletedDependentCount: 0,
+      deletedQueueItemCount: 0,
+      deletedSourceCount: 0,
+      deletionId,
+      requestedAt: this.#now().toISOString(),
+      status: "running",
+      targetDigest,
+      targetType,
+      tombstoneKeyVerifier:
+        this.#deletionIdentityKeyVerifier(),
+    });
+      this.#database
+        .prepare(
+          `INSERT INTO deletion_operations (
+             deletion_id,
+             status,
+             body_json,
+             created_at,
+             updated_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          operation.deletionId,
+          operation.status,
+          JSON.stringify(operation),
+          operation.requestedAt,
+          operation.requestedAt,
+        );
+      this.#database.exec("COMMIT;");
+      return operation;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public deletionOperation(
+    deletionId: string,
+  ): DeletionOperation | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM deletion_operations
+          WHERE deletion_id = ?`,
+      )
+      .get(deletionId) as
+      | Readonly<Record<string, unknown>>
+      | undefined;
+    return row === undefined
+      ? undefined
+      : deletionOperationSchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        );
+  }
+
+  public deleteCanonicalTarget(
+    deletionId: string,
+    target: CanonicalDeletionTarget,
+  ): CanonicalDeletionMutationResult {
+    this.#assertNoRestoreBarrier();
+    let operation = this.deletionOperation(deletionId);
+    if (operation?.status !== "running") {
+      throw new Error(
+        `Deletion operation ${deletionId} is not active.`,
+      );
+    }
+    const targetType = deletionTargetTypeSchema.parse(
+      target.targetType,
+    );
+    const targetId = normalizedDeletionTargetId(
+      targetType,
+      target.targetId.trim(),
+    );
+    validateDeletionTargetId(targetType, targetId);
+    if (
+      operation.targetType !== targetType ||
+      operation.targetDigest !==
+        deletionIdentityDigest(
+          "target",
+          `${targetType}:${targetId}`,
+          this.#deletionIdentityKey,
+        )
+    ) {
+      throw new Error(
+        "Deletion target does not match the active operation.",
+      );
+    }
+    const allRawRows = this.#database
+      .prepare(
+        `SELECT deduplication_key,
+                event_id,
+                session_id,
+                safe_envelope_json
+           FROM raw_events`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    const allParserRows = this.#database
+      .prepare(
+        `SELECT parser_error_id,
+                queue_item_id,
+                deduplication_key,
+                safe_envelope_json
+           FROM parser_errors`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    const episodeTarget =
+      targetType === "episode"
+        ? this.workEpisodes().find(
+            (episode) => episode.episodeId === targetId,
+          )
+        : undefined;
+    const sourceIds = new Set(
+      operation.plannedSourceIds ??
+        (
+          targetType === "source"
+            ? sourceIdentityForms(targetId)
+            : []
+        ),
+    );
+    const dependentIds = new Set(
+      operation.plannedDependentIds ?? [],
+    );
+    const dependencySeedIds = new Set(
+      operation.plannedDependencySeedIds ?? [],
+    );
+    const targetSessionIds = new Set(
+      operation.plannedAffectedSessionIds ?? [],
+    );
+    const candidateSessionIds = new Set(targetSessionIds);
+    if (targetType === "session") {
+      targetSessionIds.add(targetId);
+      candidateSessionIds.add(targetId);
+    }
+    if (episodeTarget !== undefined) {
+      dependencySeedIds.add(episodeTarget.episodeId);
+      for (const eventId of episodeTarget.sourceEventIds) {
+        sourceIds.add(eventId);
+      }
+      for (const sessionId of episodeTarget.sessionIds) {
+        targetSessionIds.add(sessionId);
+        candidateSessionIds.add(sessionId);
+      }
+    }
+    const knownIdentityIds = new Set(
+      allRawRows.flatMap((row) => [
+        String(row.deduplication_key),
+        String(row.event_id),
+      ]),
+    );
+    const parserEnvelopes = new Map<number, CaptureEnvelope>();
+    for (const row of allParserRows) {
+      if (row.safe_envelope_json === null) {
+        continue;
+      }
+      const parsed = captureEnvelopeSchema.safeParse(
+        JSON.parse(String(row.safe_envelope_json)) as unknown,
+      );
+      if (parsed.success) {
+        parserEnvelopes.set(
+          asNumber(row.parser_error_id),
+          parsed.data,
+        );
+        knownIdentityIds.add(parsed.data.deduplicationKey);
+        knownIdentityIds.add(parsed.data.event.eventId);
+      }
+    }
+    const referenceIdentifiers = new Set(
+      sourceIds,
+    );
+    const selectedRawKeys = new Set<string>();
+    const selectedParserIds = new Set<number>();
+    let changed: boolean;
+    do {
+      changed = false;
+      for (const row of allRawRows) {
+        const deduplicationKey = String(row.deduplication_key);
+        if (selectedRawKeys.has(deduplicationKey)) {
+          continue;
+        }
+        const eventId = String(row.event_id);
+        const sessionId =
+          row.session_id === null
+            ? undefined
+            : String(row.session_id);
+        const envelope = captureEnvelopeSchema.parse(
+          JSON.parse(String(row.safe_envelope_json)) as unknown,
+        );
+        const directlySelected =
+          (
+            targetType === "source" &&
+            (
+              deduplicationKey === targetId ||
+              eventId === targetId
+            )
+          ) ||
+          (
+            targetType === "session" &&
+            sessionId === targetId
+          ) ||
+          (
+            targetType === "episode" &&
+            (
+              sourceIds.has(eventId) ||
+              (
+                sessionId !== undefined &&
+                targetSessionIds.has(sessionId)
+              )
+            )
+          );
+        if (
+          !directlySelected &&
+          !(
+            envelope.event.parentEventId !== undefined &&
+            referenceIdentifiers.has(
+              envelope.event.parentEventId,
+            )
+          )
+        ) {
+          continue;
+        }
+        selectedRawKeys.add(deduplicationKey);
+        sourceIds.add(deduplicationKey);
+        sourceIds.add(eventId);
+        referenceIdentifiers.add(deduplicationKey);
+        referenceIdentifiers.add(eventId);
+        if (sessionId !== undefined) {
+          candidateSessionIds.add(sessionId);
+        }
+        changed = true;
+      }
+      for (const row of allParserRows) {
+        const parserErrorId = asNumber(row.parser_error_id);
+        if (selectedParserIds.has(parserErrorId)) {
+          continue;
+        }
+        const envelope = parserEnvelopes.get(parserErrorId);
+        const deduplicationKey =
+          row.deduplication_key === null
+            ? undefined
+            : String(row.deduplication_key);
+        const directlySelected =
+          (
+            targetType === "source" &&
+            (
+              (
+                deduplicationKey !== undefined &&
+                sourceIds.has(deduplicationKey)
+              ) ||
+              (
+                envelope !== undefined &&
+                sourceIds.has(envelope.event.eventId)
+              )
+            )
+          ) ||
+          (
+            targetType === "session" &&
+            envelope?.event.sessionId === targetId
+          ) ||
+          (
+            targetType === "episode" &&
+            envelope !== undefined &&
+            (
+              sourceIds.has(envelope.event.eventId) ||
+              (
+                envelope.event.sessionId !== undefined &&
+                targetSessionIds.has(
+                  envelope.event.sessionId,
+                )
+              )
+            )
+          );
+        if (
+          !directlySelected &&
+          (
+            envelope === undefined ||
+            envelope.event.parentEventId === undefined ||
+            !referenceIdentifiers.has(
+              envelope.event.parentEventId,
+            )
+          )
+        ) {
+          continue;
+        }
+        selectedParserIds.add(parserErrorId);
+        dependentIds.add(String(row.queue_item_id));
+        if (deduplicationKey !== undefined) {
+          sourceIds.add(deduplicationKey);
+          referenceIdentifiers.add(deduplicationKey);
+        }
+        if (envelope !== undefined) {
+          sourceIds.add(envelope.event.eventId);
+          sourceIds.add(envelope.deduplicationKey);
+          referenceIdentifiers.add(envelope.event.eventId);
+          referenceIdentifiers.add(envelope.deduplicationKey);
+          if (envelope.event.sessionId !== undefined) {
+            candidateSessionIds.add(envelope.event.sessionId);
+          }
+        }
+        changed = true;
+      }
+    } while (changed);
+    const deduplicationKeys = [...selectedRawKeys].sort();
+    const oldEpisodes = this.workEpisodes();
+    const selectedEventIds = new Set(
+      allRawRows
+        .filter((row) =>
+          selectedRawKeys.has(String(row.deduplication_key)),
+        )
+        .map((row) => String(row.event_id)),
+    );
+    for (const episode of oldEpisodes) {
+      if (
+        (
+          targetType === "episode" &&
+          episode.episodeId === targetId
+        ) ||
+        episode.sourceEventIds.some((eventId) =>
+          selectedEventIds.has(eventId),
+        ) ||
+        (
+          targetType === "session" &&
+          episode.sessionIds.includes(targetId)
+        )
+      ) {
+        dependencySeedIds.add(episode.episodeId);
+      }
+    }
+    operation = deletionOperationSchema.parse({
+      ...operation,
+      plannedAffectedSessionIds: [
+        ...targetSessionIds,
+      ].sort(),
+      plannedDependentIds: [
+        ...dependentIds,
+      ].sort(),
+      plannedDependencySeedIds: [
+        ...dependencySeedIds,
+      ].sort(),
+      plannedSourceIds: [
+        ...sourceIds,
+      ].sort(),
+    });
+    this.#writeDeletionOperation(operation);
+    const oldAssociations = this.episodeAssociations();
+
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (deduplicationKeys.length > 0) {
+        const parameters = placeholders(deduplicationKeys.length);
+        this.#database
+          .prepare(
+            `DELETE FROM parser_errors
+              WHERE deduplication_key IN (${parameters})`,
+          )
+          .run(...deduplicationKeys);
+        this.#database
+          .prepare(
+            `DELETE FROM queue_processing
+              WHERE deduplication_key IN (${parameters})`,
+          )
+          .run(...deduplicationKeys);
+        this.#database
+          .prepare(
+            `DELETE FROM raw_events
+              WHERE deduplication_key IN (${parameters})`,
+          )
+          .run(...deduplicationKeys);
+      }
+      if (selectedParserIds.size > 0) {
+        const parserIds = [...selectedParserIds];
+        const parserQueueItemIds = allParserRows
+          .filter((row) =>
+            selectedParserIds.has(asNumber(row.parser_error_id)),
+          )
+          .map((row) => String(row.queue_item_id));
+        if (parserQueueItemIds.length > 0) {
+          this.#database
+            .prepare(
+              `DELETE FROM queue_processing
+                WHERE queue_item_id IN (${placeholders(
+                  parserQueueItemIds.length,
+                )})`,
+            )
+            .run(...parserQueueItemIds);
+        }
+        this.#database
+          .prepare(
+            `DELETE FROM parser_errors
+              WHERE parser_error_id IN (${placeholders(
+                parserIds.length,
+              )})`,
+          )
+          .run(...parserIds);
+      }
+      const removedSessionIds = new Set(
+        [...candidateSessionIds].filter((sessionId) => {
+          const row = this.#database
+            .prepare(
+              `SELECT COUNT(*) AS count
+                 FROM raw_events
+                WHERE session_id = ?`,
+            )
+            .get(sessionId) as Readonly<Record<string, unknown>>;
+          return asNumber(row.count) === 0;
+        }),
+      );
+      for (const episode of oldEpisodes) {
+        if (
+          (
+            targetType === "episode" &&
+            episode.episodeId === targetId
+          ) ||
+          episode.sessionIds.some((sessionId) =>
+            removedSessionIds.has(sessionId),
+          )
+        ) {
+          dependentIds.add(episode.episodeId);
+          this.#database
+            .prepare(
+              "DELETE FROM work_episodes WHERE episode_id = ?",
+            )
+            .run(episode.episodeId);
+        }
+      }
+      for (const association of oldAssociations) {
+        if (
+          removedSessionIds.has(association.leftSessionId) ||
+          removedSessionIds.has(association.rightSessionId)
+        ) {
+          dependentIds.add(association.associationId);
+          this.#database
+            .prepare(
+              "DELETE FROM evidence_links WHERE link_id = ?",
+            )
+            .run(association.associationId);
+        }
+      }
+      const dependencyReferences: TypedDeletionReferences = {
+        deduplication: new Set(
+          [...sourceIds].filter((id) =>
+            /^[a-f0-9]{64}$/iu.test(id),
+          ),
+        ),
+        episode: new Set(dependencySeedIds),
+        event: new Set(
+          [...sourceIds].filter((id) =>
+            /^event-[a-f0-9]{64}$/iu.test(id),
+          ),
+        ),
+        record: new Set(dependentIds),
+        session: new Set(removedSessionIds),
+      };
+      let deletedInPass: number;
+      do {
+        deletedInPass =
+          deleteIdentityRows(
+            this.#database,
+            dependencyReferences,
+            dependentIds,
+          ) +
+          deleteEvidenceLinkRows(
+            this.#database,
+            dependencyReferences,
+            dependentIds,
+            dependencySeedIds,
+          ) +
+          deleteDependentRows(
+            this.#database,
+            "process_claims",
+            "claim_id",
+            "body_json",
+            dependencyReferences,
+            dependentIds,
+          ) +
+          deleteDependentRows(
+            this.#database,
+            "feedback_events",
+            "feedback_id",
+            "body_json",
+            dependencyReferences,
+            dependentIds,
+          ) +
+          deleteDependentRows(
+            this.#database,
+            "metrics",
+            "metric_id",
+            "dimensions_json",
+            dependencyReferences,
+            dependentIds,
+          );
+      } while (deletedInPass > 0);
+      const planned = deletionOperationSchema.parse({
+        ...operation,
+        plannedAffectedSessionIds: [
+          ...targetSessionIds,
+        ].sort(),
+        plannedDependentIds: [
+          ...dependentIds,
+        ].sort(),
+        plannedDependencySeedIds: [
+          ...dependencySeedIds,
+        ].sort(),
+        plannedSourceIds: [
+          ...sourceIds,
+        ].sort(),
+      });
+      this.#writeDeletionOperation(planned);
+      this.#database.exec("COMMIT;");
+      return {
+        affectedSessionIds: [...targetSessionIds].sort(),
+        dependentIds: [...dependentIds].sort(),
+        sourceIds: [...sourceIds].sort(),
+      };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public remainingIdentifiers(
+    identifiers: ReadonlySet<string>,
+  ): readonly string[] {
+    const remaining = new Set<string>();
+    const inspect = (id: unknown, body?: unknown): void => {
+      const normalizedId = String(id);
+      if (identifiers.has(normalizedId)) {
+        remaining.add(normalizedId);
+      }
+      if (body !== undefined) {
+        const parsed =
+          typeof body === "string"
+            ? JSON.parse(body) as unknown
+            : body;
+        const references: TypedDeletionReferences = {
+          deduplication: new Set(),
+          episode: new Set(),
+          event: new Set(),
+          record: new Set(identifiers),
+          session: new Set(),
+        };
+        if (bodyReferences(parsed, references)) {
+          for (const identifier of identifiers) {
+            remaining.add(identifier);
+          }
+        }
+      }
+    };
+    for (const row of this.#database
+      .prepare(
+        `SELECT deduplication_key,
+                event_id,
+                source_event_id,
+                session_id,
+                safe_envelope_json
+           FROM raw_events`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const value of Object.values(row)) {
+        if (value !== null && identifiers.has(String(value))) {
+          remaining.add(String(value));
+        }
+      }
+      const envelope = captureEnvelopeSchema.parse(
+        JSON.parse(String(row.safe_envelope_json)) as unknown,
+      );
+      if (
+        envelope.event.parentEventId !== undefined &&
+        identifiers.has(envelope.event.parentEventId)
+      ) {
+        remaining.add(envelope.event.parentEventId);
+      }
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT parser_error_id,
+                queue_item_id,
+                deduplication_key,
+                safe_envelope_json
+           FROM parser_errors`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const value of Object.values(row)) {
+        if (value !== null && identifiers.has(String(value))) {
+          remaining.add(String(value));
+        }
+      }
+      if (row.safe_envelope_json !== null) {
+        const parsed = captureEnvelopeSchema.safeParse(
+          JSON.parse(String(row.safe_envelope_json)) as unknown,
+        );
+        if (
+          parsed.success &&
+          [
+            parsed.data.deduplicationKey,
+            parsed.data.event.eventId,
+            parsed.data.event.sessionId,
+            parsed.data.event.parentEventId,
+          ].some(
+            (identifier) =>
+              identifier !== undefined &&
+              identifiers.has(identifier),
+          )
+        ) {
+          for (const identifier of [
+            parsed.data.deduplicationKey,
+            parsed.data.event.eventId,
+            parsed.data.event.sessionId,
+            parsed.data.event.parentEventId,
+          ]) {
+            if (
+              identifier !== undefined &&
+              identifiers.has(identifier)
+            ) {
+              remaining.add(identifier);
+            }
+          }
+        }
+      }
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT queue_item_id,
+                deduplication_key,
+                last_error
+           FROM queue_processing`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const value of Object.values(row)) {
+        if (value !== null && identifiers.has(String(value))) {
+          remaining.add(String(value));
+        }
+      }
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT identity_id, canonical_value
+           FROM identities`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const value of Object.values(row)) {
+        if (identifiers.has(String(value))) {
+          remaining.add(String(value));
+        }
+      }
+    }
+    for (const [
+      table,
+      idColumn,
+      bodyColumn,
+    ] of [
+      ["work_episodes", "episode_id", "body_json"],
+      ["evidence_links", "link_id", "body_json"],
+      ["process_claims", "claim_id", "body_json"],
+      ["feedback_events", "feedback_id", "body_json"],
+      ["metrics", "metric_id", "dimensions_json"],
+    ] as const) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT ${idColumn} AS id, ${bodyColumn} AS body
+             FROM ${table}`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[]) {
+        inspect(row.id, row.body);
+      }
+    }
+    return [...remaining].sort();
+  }
+
+  public remainingDeletionIdentities(
+    identities: readonly DeletionPlannedIdentity[],
+  ): readonly DeletionPlannedIdentity[] {
+    const remaining = new Map<string, DeletionPlannedIdentity>();
+    const record = (identity: DeletionPlannedIdentity): void => {
+      remaining.set(
+        `${identity.identityType}\u0000${identity.identifier}`,
+        identity,
+      );
+    };
+    const inspectEnvelope = (envelope: CaptureEnvelope): void => {
+      for (const identity of identities) {
+        const present =
+          identity.identityType === "deduplication"
+            ? envelope.deduplicationKey === identity.identifier
+            : identity.identityType === "event"
+              ? (
+                  envelope.event.eventId === identity.identifier ||
+                  envelope.event.parentEventId === identity.identifier
+                )
+              : identity.identityType === "session"
+                ? envelope.event.sessionId === identity.identifier
+                : false;
+        if (present) {
+          record(identity);
+        }
+      }
+    };
+    for (const envelope of this.episodeSourceEnvelopes()) {
+      inspectEnvelope(envelope);
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT safe_envelope_json
+           FROM parser_errors
+          WHERE safe_envelope_json IS NOT NULL`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      const parsed = captureEnvelopeSchema.safeParse(
+        JSON.parse(String(row.safe_envelope_json)) as unknown,
+      );
+      if (parsed.success) {
+        inspectEnvelope(parsed.data);
+      }
+    }
+    for (const episode of this.workEpisodes()) {
+      for (const identity of identities) {
+        const present =
+          identity.identityType === "episode"
+            ? episode.episodeId === identity.identifier
+            : identity.identityType === "event"
+              ? episode.sourceEventIds.includes(identity.identifier)
+              : identity.identityType === "session"
+                ? episode.sessionIds.includes(identity.identifier)
+                : false;
+        if (present) {
+          record(identity);
+        }
+      }
+    }
+    for (const association of this.episodeAssociations()) {
+      for (const identity of identities) {
+        const present =
+          identity.identityType === "event"
+            ? association.evidence.some((item) =>
+                item.sourceEventIds.includes(identity.identifier),
+              )
+            : identity.identityType === "session"
+              ? (
+                  association.leftSessionId === identity.identifier ||
+                  association.rightSessionId === identity.identifier
+                )
+              : false;
+        if (present) {
+          record(identity);
+        }
+      }
+    }
+    for (const correction of this.episodeGroupingCorrections()) {
+      for (const identity of identities) {
+        if (
+          identity.identityType === "session" &&
+          correction.sessionIds.includes(identity.identifier)
+        ) {
+          record(identity);
+        }
+      }
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT identity_type, canonical_value
+           FROM identities`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      const identityType = String(row.identity_type).toLowerCase();
+      const canonicalValue = String(row.canonical_value);
+      for (const identity of identities) {
+        const present =
+          identityType.includes("alias")
+            ? canonicalValue === identity.identifier
+            : identity.identityType === "deduplication"
+              ? (
+                  identityType.includes("dedup") &&
+                  canonicalValue === identity.identifier
+                )
+              : identity.identityType === "event"
+                ? (
+                    identityType.includes("event") &&
+                    canonicalValue === identity.identifier
+                  )
+                : identity.identityType === "session"
+                  ? (
+                      identityType.includes("session") &&
+                      canonicalValue === identity.identifier
+                    )
+                  : identity.identityType === "episode"
+                    ? (
+                        identityType.includes("episode") &&
+                        canonicalValue === identity.identifier
+                      )
+                    : false;
+        if (present) {
+          record(identity);
+        }
+      }
+    }
+    return [...remaining.values()].sort(
+      (left, right) =>
+        left.identityType.localeCompare(right.identityType) ||
+        left.identifier.localeCompare(right.identifier),
+    );
+  }
+
+  public prepareDeletionCompletion(input: {
+    readonly deletedDependentCount: number;
+    readonly deletedQueueItemCount: number;
+    readonly deletedSourceCount: number;
+    readonly deletionId: string;
+    readonly gateDigest: string;
+    readonly propagationEvidenceId: string;
+  }): DeletionOperation {
+    this.#assertNoRestoreBarrier();
+    const current = this.deletionOperation(input.deletionId);
+    if (current?.status !== "running") {
+      throw new Error(
+        `Deletion operation ${input.deletionId} is not active.`,
+      );
+    }
+    const completing = deletionOperationSchema.parse({
+      ...current,
+      deletedDependentCount: input.deletedDependentCount,
+      deletedQueueItemCount: input.deletedQueueItemCount,
+      deletedSourceCount: input.deletedSourceCount,
+      gateDigest: input.gateDigest,
+      propagationEvidenceId: input.propagationEvidenceId,
+      status: "completing",
+    });
+    this.#writeDeletionOperation(completing);
+    return completing;
+  }
+
+  public completeDeletion(
+    deletionId: string,
+  ): DeletionOperation {
+    this.#assertNoRestoreBarrier();
+    const current = this.deletionOperation(deletionId);
+    if (
+      current?.status !== "completing" ||
+      current.gateDigest === undefined ||
+      current.propagationEvidenceId === undefined ||
+      current.plannedSourceIds === undefined
+    ) {
+      throw new Error(
+        `Deletion operation ${deletionId} is not ready to complete.`,
+      );
+    }
+    const completed = deletionOperationSchema.parse({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      attemptCount: current.attemptCount,
+      blockedIdentityDigests: [
+        ...new Map(
+          [
+            ...this.#typedDeletionIdentities(
+              current.targetType,
+              current.activeTargetId,
+              current.plannedSourceIds,
+            ),
+            ...(
+              current.targetType === "session" ||
+              current.targetType === "episode"
+                ? (
+                    current.plannedAffectedSessionIds ?? []
+                  ).map((identifier) => ({
+                    identifier,
+                    identityType: "session" as const,
+                  }))
+                : []
+            ),
+            ...(current.plannedQueueIdentities ?? []),
+          ].map((identity) => {
+            const tombstone = {
+              digest: deletionIdentityDigest(
+                identity.identityType,
+                identity.identifier,
+                this.#deletionIdentityKey,
+              ),
+              identityType: identity.identityType,
+            };
+            return [
+              `${tombstone.identityType}\u0000${tombstone.digest}`,
+              tombstone,
+            ];
+          }),
+        ).values(),
+      ].sort(
+        (left, right) =>
+          left.identityType.localeCompare(right.identityType) ||
+          left.digest.localeCompare(right.digest),
+      ),
+      completedAt: this.#now().toISOString(),
+      deletedDependentCount: current.deletedDependentCount,
+      deletedQueueItemCount: current.deletedQueueItemCount,
+      deletedSourceCount: current.deletedSourceCount,
+      deletionId: current.deletionId,
+      gateDigest: deletionIdentityDigest(
+        "gate",
+        current.gateDigest,
+        this.#deletionIdentityKey,
+      ),
+      tombstoneKeyVerifier:
+        this.#deletionIdentityKeyVerifier(),
+      propagationEvidenceId: current.propagationEvidenceId,
+      requestedAt: current.requestedAt,
+      status: "completed",
+      targetDigest: current.targetDigest,
+      targetType: current.targetType,
+    });
+    this.#writeDeletionOperation(completed);
+    return completed;
+  }
+
+  public deleteQueueArtifacts(
+    queueItemIds: readonly string[],
+  ): number {
+    this.#assertNoRestoreBarrier();
+    const ids = [
+      ...new Set(
+        queueItemIds
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0),
+      ),
+    ];
+    if (ids.length === 0) {
+      return 0;
+    }
+    const parameters = placeholders(ids.length);
+    const parser = this.#database
+      .prepare(
+        `DELETE FROM parser_errors
+          WHERE queue_item_id IN (${parameters})`,
+      )
+      .run(...ids).changes;
+    const processing = this.#database
+      .prepare(
+        `DELETE FROM queue_processing
+          WHERE queue_item_id IN (${parameters})`,
+      )
+      .run(...ids).changes;
+    return Number(parser) + Number(processing);
+  }
+
+  public checkpointDeletionQueue(input: {
+    readonly deletionId: string;
+    readonly identities: readonly DeletionPlannedIdentity[];
+    readonly queueItemIds: readonly string[];
+  }): DeletionOperation {
+    this.#assertNoRestoreBarrier();
+    const current = this.deletionOperation(input.deletionId);
+    if (current?.status !== "running") {
+      throw new Error(
+        `Deletion operation ${input.deletionId} is not active.`,
+      );
+    }
+    const updated = deletionOperationSchema.parse({
+      ...current,
+      plannedQueueItemIds: [
+        ...new Set([
+          ...(current.plannedQueueItemIds ?? []),
+          ...input.queueItemIds,
+        ]),
+      ].sort(),
+      plannedQueueIdentities: [
+        ...new Map(
+          [
+            ...(current.plannedQueueIdentities ?? []),
+            ...input.identities,
+          ].map((identity) => [
+            `${identity.identityType}\u0000${identity.identifier}`,
+            identity,
+          ]),
+        ).values(),
+      ].sort(
+        (left, right) =>
+          left.identityType.localeCompare(right.identityType) ||
+          left.identifier.localeCompare(right.identifier),
+      ),
+      plannedSourceIds: [
+        ...new Set([
+          ...(current.plannedSourceIds ?? []),
+          ...input.identities.map(
+            (identity) => identity.identifier,
+          ),
+        ]),
+      ].sort(),
+    });
+    this.#writeDeletionOperation(updated);
+    return updated;
+  }
+
+  public failDeletion(
+    deletionId: string,
+    error: unknown,
+  ): DeletionOperation {
+    this.#assertNoRestoreBarrier();
+    void error;
+    const current = this.deletionOperation(deletionId);
+    if (current?.status !== "running") {
+      throw new Error(
+        `Deletion operation ${deletionId} is not active.`,
+      );
+    }
+    const failed = deletionOperationSchema.parse({
+      ...current,
+      completedAt: this.#now().toISOString(),
+      error: "Deletion operation failed.",
+      status: "failed",
+    });
+    this.#writeDeletionOperation(failed);
+    return failed;
+  }
+
+  public deletionIdentityBlocked(
+    identityType: DeletionIdentityType,
+    identifier: string,
+  ): boolean {
+    const digest = deletionIdentityDigest(
+      identityType,
+      identifier,
+      this.#deletionIdentityKey,
+    );
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM deletion_operations
+          WHERE status = 'completed'`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.some((row) =>
+      deletionOperationSchema
+        .parse(JSON.parse(String(row.body_json)) as unknown)
+        .blockedIdentityDigests.some(
+          (tombstone) =>
+            tombstone.identityType === identityType &&
+            tombstone.digest === digest,
+        ),
+    );
+  }
+
   public ingestQueueItem(
     input: CaptureQueueItem,
   ): CanonicalIngestResult {
+    this.#assertNoRestoreBarrier();
     const item = captureQueueItemSchema.parse(input);
     const parsedEnvelope = item.envelope;
+    if (this.hasActiveDeletion()) {
+      throw new Error(
+        "Canonical ingestion is blocked by an active deletion.",
+      );
+    }
+    if (
+      this.#captureEnvelopeDeletionBlocked(parsedEnvelope)
+    ) {
+      return {
+        deduplicationKey: parsedEnvelope.deduplicationKey,
+        status: "duplicate",
+      };
+    }
     if (parsedEnvelope.event.sessionId === undefined) {
       const reason = "Capture envelope sessionId is required.";
-      this.#recordRejected(
+      const placeholder = captureEnvelopeSchema.parse({
+        ...parsedEnvelope,
+        event: {
+          ...parsedEnvelope.event,
+          sessionId: "invalid-session-placeholder",
+        },
+      });
+      const safeRejected = redactCaptureEnvelopeForPersistence(
+        placeholder,
+      ).envelope;
+      const safeRejectedEvent = {
+        ...safeRejected.event,
+        eventId: parsedEnvelope.event.eventId,
+      };
+      Reflect.deleteProperty(safeRejectedEvent, "sessionId");
+      const safeRejectedEnvelope = captureEnvelopeSchema.parse({
+        ...safeRejected,
+        deduplicationKey: parsedEnvelope.deduplicationKey,
+        event: safeRejectedEvent,
+        sourceEventId: parsedEnvelope.sourceEventId,
+      });
+      const recorded = this.#recordRejected(
         item,
         parsedEnvelope.deduplicationKey,
         "invalid_identity",
         reason,
-        undefined,
+        JSON.stringify(safeRejectedEnvelope),
       );
-      return {
-        status: "rejected",
-        deduplicationKey: parsedEnvelope.deduplicationKey,
-        reason,
-      };
+      return recorded
+        ? {
+            status: "rejected",
+            deduplicationKey: parsedEnvelope.deduplicationKey,
+            reason,
+          }
+        : {
+            status: "duplicate",
+            deduplicationKey: parsedEnvelope.deduplicationKey,
+          };
     }
     const expectedDeduplicationKey =
       createCaptureDeduplicationKey({
@@ -653,18 +2430,23 @@ export class CanonicalSqliteStore {
         `event-${expectedDeduplicationKey}`
     ) {
       const reason = "Capture envelope identity is inconsistent.";
-      this.#recordRejected(
+      const recorded = this.#recordRejected(
         item,
         expectedDeduplicationKey,
         "invalid_identity",
         reason,
         safeEnvelopeJson,
       );
-      return {
-        status: "rejected",
-        deduplicationKey: expectedDeduplicationKey,
-        reason,
-      };
+      return recorded
+        ? {
+            status: "rejected",
+            deduplicationKey: expectedDeduplicationKey,
+            reason,
+          }
+        : {
+            status: "duplicate",
+            deduplicationKey: expectedDeduplicationKey,
+          };
     }
 
     const classification = classifyRawEvent(safe.envelope.event);
@@ -685,6 +2467,21 @@ export class CanonicalSqliteStore {
 
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion()) {
+        throw new Error(
+          "Canonical ingestion is blocked by an active deletion.",
+        );
+      }
+      if (
+        this.#captureEnvelopeDeletionBlocked(parsedEnvelope)
+      ) {
+        this.#database.exec("ROLLBACK;");
+        return {
+          deduplicationKey: parsedEnvelope.deduplicationKey,
+          status: "duplicate",
+        };
+      }
       const existing = this.#database
         .prepare(
           `SELECT delivery_count, parse_status
@@ -899,10 +2696,12 @@ export class CanonicalSqliteStore {
   }
 
   public replaceWorkEpisodeProjection(input: {
+    readonly allowDuringDeletion?: boolean;
     readonly associations: readonly EpisodeAssociation[];
     readonly corrections: readonly EpisodeGroupingCorrection[];
     readonly episodes: readonly WorkEpisode[];
   }): WorkEpisodeProjectionWriteResult {
+    this.#assertNoRestoreBarrier();
     const associations = input.associations.map((association) =>
       episodeAssociationSchema.parse(association),
     );
@@ -914,6 +2713,66 @@ export class CanonicalSqliteStore {
     );
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Work Episode projection is blocked by an active deletion.",
+        );
+      }
+      const projectionIdentities: DeletionPlannedIdentity[] = [
+        ...episodes.flatMap((episode) => [
+          {
+            identifier: episode.episodeId,
+            identityType: "episode" as const,
+          },
+          ...episode.sessionIds.map((identifier) => ({
+            identifier,
+            identityType: "session" as const,
+          })),
+          ...episode.sourceEventIds.map((identifier) => ({
+            identifier,
+            identityType: "event" as const,
+          })),
+        ]),
+        ...associations.flatMap((association) => [
+          {
+            identifier: association.leftSessionId,
+            identityType: "session" as const,
+          },
+          {
+            identifier: association.rightSessionId,
+            identityType: "session" as const,
+          },
+          ...association.evidence.flatMap(
+            (item) =>
+              item.sourceEventIds.map((identifier) => ({
+                identifier,
+                identityType: "event" as const,
+              })),
+          ),
+        ]),
+        ...corrections.flatMap((correction) =>
+          correction.sessionIds.map((identifier) => ({
+            identifier,
+            identityType: "session" as const,
+          })),
+        ),
+      ];
+      if (
+        projectionIdentities.some((identity) =>
+          this.deletionIdentityBlocked(
+            identity.identityType,
+            identity.identifier,
+          ),
+        )
+      ) {
+        throw new Error(
+          "Work Episode projection contains a deleted identity.",
+        );
+      }
       const existingLinks = this.#database
         .prepare(
           `SELECT link_id, body_json
@@ -1094,16 +2953,159 @@ export class CanonicalSqliteStore {
         };
   }
 
+  #typedDeletionIdentities(
+    targetType: DeletionTargetType,
+    targetId: string | undefined,
+    identifiers: readonly string[],
+  ): readonly DeletionPlannedIdentity[] {
+    const typed = new Map<string, DeletionPlannedIdentity>();
+    const add = (
+        identityType: DeletionIdentityType,
+        identifier: string,
+    ): void => {
+        typed.set(
+          `${identityType}\u0000${identifier}`,
+          {
+            identifier,
+            identityType,
+          },
+        );
+    };
+    if (targetId !== undefined) {
+        if (targetType === "episode") {
+          add("episode", targetId);
+        } else if (targetType === "session") {
+          add("session", targetId);
+        }
+    }
+    for (const identifier of identifiers) {
+        if (/^event-[a-f0-9]{64}$/iu.test(identifier)) {
+          add("event", identifier.toLowerCase());
+        } else if (/^[a-f0-9]{64}$/iu.test(identifier)) {
+          add("deduplication", identifier.toLowerCase());
+        }
+    }
+    return [...typed.values()];
+  }
+
+  #validateDeletionIdentityKey(): void {
+    const expectedVerifier = this.#deletionIdentityKeyVerifier();
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM deletion_operations`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    for (const row of rows) {
+      const operation = deletionOperationSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      );
+      if (operation.tombstoneKeyVerifier !== expectedVerifier) {
+        throw new InvalidCanonicalSchemaError(
+          "Canonical deletion identity key does not match tombstones.",
+        );
+      }
+    }
+  }
+
+  #deletionIdentityKeyVerifier(): string {
+    return deletionIdentityDigest(
+      "key",
+      "provenloop-deletion-tombstone-key",
+      this.#deletionIdentityKey,
+    );
+  }
+
+  #assertNoRestoreBarrier(): void {
+    if (
+      this.#path !== ":memory:" &&
+      existsSync(`${this.#path}.restore.lock`)
+    ) {
+      throw new Error(
+        "Canonical writes are blocked by an active restore.",
+      );
+    }
+  }
+
+  #writeDeletionOperation(operation: DeletionOperation): void {
+    this.#database
+        .prepare(
+          `UPDATE deletion_operations
+              SET status = ?,
+                  body_json = ?,
+                  updated_at = ?
+            WHERE deletion_id = ?`,
+        )
+        .run(
+          operation.status,
+          JSON.stringify(operation),
+          operation.completedAt ?? this.#now().toISOString(),
+          operation.deletionId,
+        );
+  }
+
+  #captureEnvelopeDeletionBlocked(
+    envelope: CaptureEnvelope,
+  ): boolean {
+    return [
+        {
+          identifier: envelope.deduplicationKey,
+          identityType: "deduplication" as const,
+        },
+        {
+          identifier: envelope.event.eventId,
+          identityType: "event" as const,
+        },
+        ...(envelope.event.sessionId === undefined
+          ? []
+          : [
+              {
+                identifier: envelope.event.sessionId,
+                identityType: "session" as const,
+              },
+            ]),
+        ...(envelope.event.parentEventId === undefined
+          ? []
+          : [
+              {
+                identifier: envelope.event.parentEventId,
+                identityType: "event" as const,
+              },
+            ]),
+    ].some(
+          (identity) =>
+            this.deletionIdentityBlocked(
+              identity.identityType,
+              identity.identifier,
+            ),
+    );
+  }
+
   #recordRejected(
     item: CaptureQueueItem,
     deduplicationKey: string,
     errorKind: string,
     message: string,
     safeEnvelopeJson: string | undefined,
-  ): void {
+  ): boolean {
     const now = this.#now().toISOString();
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      if (this.hasActiveDeletion()) {
+        throw new Error(
+          "Canonical ingestion is blocked by an active deletion.",
+        );
+      }
+      if (
+        this.#captureEnvelopeDeletionBlocked(item.envelope) ||
+        this.deletionIdentityBlocked(
+          "deduplication",
+          deduplicationKey,
+        )
+      ) {
+        this.#database.exec("ROLLBACK;");
+        return false;
+      }
       this.#insertParserError(
         item.queueItemId,
         deduplicationKey,
@@ -1120,6 +3122,7 @@ export class CanonicalSqliteStore {
         message,
       );
       this.#database.exec("COMMIT;");
+      return true;
     } catch (error) {
       this.#database.exec("ROLLBACK;");
       throw error;
@@ -1553,6 +3556,7 @@ export class CanonicalSqliteStore {
     await Promise.all(
       [
         path,
+        `${path}.deletion.key`,
         `${path}-shm`,
         `${path}-wal`,
       ].map((file) =>

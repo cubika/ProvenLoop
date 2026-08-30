@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  DuplicateLedgerEntryError,
   EvidenceLedgerWriter,
   loadEvaluationReport,
   regenerateMarkdownReport,
@@ -49,6 +50,7 @@ const expectedBuiltInResults = [
   ["repository-scope-leakage", "fail", 1, true],
   ["malformed-event", "invalid_input", 2, false],
   ["deletion-propagation-unavailable", "inconclusive", 0, true],
+  ["deletion-propagation", "pass", 0, true],
 ] as const;
 
 describe.each(expectedBuiltInResults)(
@@ -656,16 +658,79 @@ describe("evaluation artifacts", () => {
     expect(regenerated.markdown).toContain("lacks successful invocation");
   });
 
-  it("refuses to initialize an existing Evidence Ledger", async () => {
+  it("resumes an existing Evidence Ledger without duplicating entries", async () => {
     const root = await createTemporaryDirectory();
     const path = join(root, "evidence-ledger.jsonl");
     const first = new EvidenceLedgerWriter(path);
     const second = new EvidenceLedgerWriter(path);
+    const entry = {
+      schemaVersion: 1 as const,
+      ledgerEntryId: "existing-entry",
+      runId: "run-1",
+      status: "observed",
+      timestamp: "2026-08-30T00:00:00.000Z",
+    };
 
     await first.initialize();
-    await expect(second.initialize()).rejects.toMatchObject({
-      code: "EEXIST",
-    });
+    await first.append([
+      entry,
+    ]);
+    await second.initialize();
+    await expect(
+      second.appendIfAbsent([
+        entry,
+      ]),
+    ).resolves.toEqual([]);
+    await expect(
+      second.append([
+        entry,
+      ]),
+    ).rejects.toBeInstanceOf(DuplicateLedgerEntryError);
+  });
+
+  it("recovers an incomplete trailing Ledger record", async () => {
+    const root = await createTemporaryDirectory();
+    const path = join(root, "evidence-ledger.jsonl");
+    const entry = {
+      schemaVersion: 1 as const,
+      ledgerEntryId: "complete-entry",
+      runId: "run-1",
+      status: "observed",
+      timestamp: "2026-08-30T00:00:00.000Z",
+    };
+    await writeFile(
+      path,
+      `${JSON.stringify(entry)}\n{"schemaVersion":1`,
+      "utf8",
+    );
+    const writer = new EvidenceLedgerWriter(path);
+    await writer.initialize();
+    await writer.append([
+      {
+        ...entry,
+        ledgerEntryId: "after-recovery",
+      },
+    ]);
+
+    const lines = (await readFile(path, "utf8"))
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => JSON.parse(line) as unknown);
+    expect(lines).toHaveLength(2);
+  });
+
+  it("rejects a malformed complete Ledger record", async () => {
+    const root = await createTemporaryDirectory();
+    const path = join(root, "evidence-ledger.jsonl");
+    await writeFile(
+      path,
+      "{\"schemaVersion\":1}\n",
+      "utf8",
+    );
+
+    await expect(
+      new EvidenceLedgerWriter(path).initialize(),
+    ).rejects.toThrow();
   });
 
   it("sanitizes every Ledger append source", async () => {

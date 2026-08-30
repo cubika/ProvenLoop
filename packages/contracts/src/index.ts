@@ -63,6 +63,20 @@ export {
   type CorrectionOpportunity,
 } from "./correction.js";
 export {
+  deletionOperationSchema,
+  deletionIdentityTombstoneSchema,
+  deletionIdentityTypeSchema,
+  deletionPlannedIdentitySchema,
+  deletionStatusSchema,
+  deletionTargetTypeSchema,
+  type DeletionOperation,
+  type DeletionIdentityTombstone,
+  type DeletionIdentityType,
+  type DeletionPlannedIdentity,
+  type DeletionStatus,
+  type DeletionTargetType,
+} from "./deletion.js";
+export {
   EVALUATION_EXIT_CODES,
   evaluationExitCodeSchema,
   evidenceLedgerEntrySchema,

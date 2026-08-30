@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+} from "node:crypto";
 
 const canonicalize = (
   value: unknown,
@@ -73,3 +76,15 @@ export const stableJson = (value: unknown): string =>
 
 export const sha256 = (value: unknown): string =>
   createHash("sha256").update(stableJson(value)).digest("hex");
+
+export const deletionIdentityDigest = (
+  identityType: string,
+  identifier: string,
+  key: string,
+): string =>
+  createHmac("sha256", key)
+    .update(stableJson({
+      deletionIdentity: identifier.trim(),
+      identityType,
+    }))
+    .digest("hex");

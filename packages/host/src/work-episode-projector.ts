@@ -14,7 +14,9 @@ import {
 export interface WorkEpisodeProjectionStore {
   episodeSourceEnvelopes(): readonly CaptureEnvelope[];
   episodeGroupingCorrections(): readonly EpisodeGroupingCorrection[];
+  hasActiveDeletion(): boolean;
   replaceWorkEpisodeProjection(input: {
+    readonly allowDuringDeletion?: boolean;
     readonly associations: readonly EpisodeAssociation[];
     readonly corrections: readonly EpisodeGroupingCorrection[];
     readonly episodes: readonly WorkEpisode[];
@@ -37,6 +39,10 @@ extends WorkEpisodeBuildResult {
   readonly persistedEpisodes: number;
 }
 
+export interface WorkEpisodeRebuildOptions {
+  readonly allowDuringDeletion?: boolean;
+}
+
 export class WorkEpisodeProjector {
   readonly #builder: WorkEpisodeBuilder | undefined;
   readonly #store: WorkEpisodeProjectionStore;
@@ -48,7 +54,16 @@ export class WorkEpisodeProjector {
 
   public rebuild(
     corrections?: readonly EpisodeGroupingCorrection[],
+    options: WorkEpisodeRebuildOptions = {},
   ): WorkEpisodeProjectionResult {
+    if (
+      this.#store.hasActiveDeletion() &&
+      options.allowDuringDeletion !== true
+    ) {
+      throw new Error(
+        "Work Episode projection is blocked by an active deletion.",
+      );
+    }
     const storedCorrections =
       this.#store.episodeGroupingCorrections();
     const effectiveCorrections =
@@ -83,6 +98,11 @@ export class WorkEpisodeProjector {
       effectiveCorrections,
     );
     const persisted = this.#store.replaceWorkEpisodeProjection({
+      ...(options.allowDuringDeletion === true
+        ? {
+            allowDuringDeletion: true,
+          }
+        : {}),
       associations: result.associations,
       corrections: effectiveCorrections,
       episodes: result.episodes,

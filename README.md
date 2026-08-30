@@ -181,6 +181,9 @@ wrong-split, candidate, and ambiguous-case metrics.
 The M0 release gate is now executable through
 `provenloop eval m0 --out <directory>`. It retains all suite reports and
 Ledgers, the Episode dataset result, code provenance, and known blockers.
+`provenloop delete` now removes source, Session, or Episode evidence across the
+canonical store and durable queue, rebuilds dependent Episode projections, and
+reports success only after persisted deletion-propagation evidence passes.
 Current M0 output is intentionally `blocked` until the remaining Windows
-latency, provider-degradation, remote-upgrade, deletion, and operational
+latency, provider-degradation, remote-upgrade, and operational
 capability evidence is completed.

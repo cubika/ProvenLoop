@@ -8,6 +8,14 @@ export {
   type CaptureWorkerStore,
 } from "./capture-worker.js";
 export {
+  DeletionPropagationGateError,
+  DeletionService,
+  type DeletionExecutionResult,
+  type DeletionQueue,
+  type DeletionServiceOptions,
+  type DeletionStore,
+} from "./deletion-service.js";
+export {
   CAPTURE_WORKER_PRESSURE_REASONS,
   CaptureWorkerCircuitBreaker,
   InvalidWorkerPressureThresholdError,
@@ -21,4 +29,5 @@ export {
   type WorkEpisodeProjectionResult,
   type WorkEpisodeProjectionStore,
   type WorkEpisodeProjectorOptions,
+  type WorkEpisodeRebuildOptions,
 } from "./work-episode-projector.js";

@@ -18,6 +18,7 @@ export {
   type RedactedCaptureEnvelopeResult,
 } from "./capture.js";
 export {
+  deletionIdentityDigest,
   sha256,
   stableJson,
 } from "./digest.js";

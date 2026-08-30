@@ -1,7 +1,8 @@
 import {
-  appendFile,
   mkdir,
   open,
+  readFile,
+  truncate,
 } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -50,7 +51,59 @@ export class EvidenceLedgerWriter {
     await mkdir(dirname(this.#path), {
       recursive: true,
     });
-    const handle = await open(this.#path, "ax");
+    let content = Buffer.alloc(0);
+    try {
+      content = await readFile(this.#path);
+    } catch (error) {
+      if (
+        !(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        )
+      ) {
+        throw error;
+      }
+    }
+    if (
+      content.length > 0 &&
+      content.at(-1) !== 0x0a
+    ) {
+      const lastNewline = content.lastIndexOf(0x0a);
+      const trailing = content
+        .subarray(lastNewline + 1)
+        .toString("utf8");
+      let parsedTrailing: unknown;
+      try {
+        parsedTrailing = JSON.parse(trailing) as unknown;
+      } catch {
+        await truncate(this.#path, lastNewline + 1);
+        content = content.subarray(0, lastNewline + 1);
+      }
+      if (parsedTrailing !== undefined) {
+        evidenceLedgerEntrySchema.parse(parsedTrailing);
+        const handle = await open(this.#path, "a");
+        try {
+          await handle.writeFile("\n", "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      }
+    }
+    for (const line of content
+      .toString("utf8")
+      .split(/\r?\n/u)
+      .filter((value) => value.trim().length > 0)) {
+      const entry = evidenceLedgerEntrySchema.parse(
+        JSON.parse(line) as unknown,
+      );
+      if (this.#ledgerEntryIds.has(entry.ledgerEntryId)) {
+        throw new DuplicateLedgerEntryError();
+      }
+      this.#ledgerEntryIds.add(entry.ledgerEntryId);
+    }
+    const handle = await open(this.#path, "a");
     await handle.close();
     this.#initialized = true;
   }
@@ -60,6 +113,24 @@ export class EvidenceLedgerWriter {
   ): Promise<readonly EvidenceLedgerEntry[]> {
     const operation = this.#appendChain.then(() =>
       this.#appendExclusive(entries),
+    );
+    this.#appendChain = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  public appendIfAbsent(
+    entries: readonly EvidenceLedgerEntry[],
+  ): Promise<readonly EvidenceLedgerEntry[]> {
+    const operation = this.#appendChain.then(() =>
+      this.#appendExclusive(
+        entries.filter(
+          (entry) =>
+            !this.#ledgerEntryIds.has(entry.ledgerEntryId),
+        ),
+      ),
     );
     this.#appendChain = operation.then(
       () => undefined,
@@ -108,7 +179,13 @@ export class EvidenceLedgerWriter {
     const body = persistedEntries
       .map((entry) => JSON.stringify(entry))
       .join("\n");
-    await appendFile(this.#path, `${body}\n`, "utf8");
+    const handle = await open(this.#path, "a");
+    try {
+      await handle.writeFile(`${body}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     for (const entry of persistedEntries) {
       this.#ledgerEntryIds.add(entry.ledgerEntryId);
     }

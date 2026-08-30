@@ -1,8 +1,11 @@
 export {
   CaptureQueueItemNotFoundError,
   CaptureQueueNotInitializedError,
+  CaptureQueueDeletionInProgressError,
+  ConflictingCaptureQueueDeletionError,
   CorruptCaptureQueueItemError,
   DuplicateQueueItemIdError,
+  DeletedCaptureSourceError,
   InvalidCaptureQueueConfigurationError,
   InvalidCaptureQueueTransitionError,
   InvalidQueueItemIdError,
@@ -10,6 +13,9 @@ export {
   WindowsCaptureQueue,
   type EnqueueCaptureIfAbsentResult,
   type CaptureQueueClaim,
+  type CaptureQueueIdentity,
+  type DeleteCaptureQueueResult,
+  type DeleteCaptureQueueOptions,
   type EnqueueCaptureOptions,
   type WindowsCaptureQueueOptions,
 } from "./capture-queue.js";

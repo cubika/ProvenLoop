@@ -3,6 +3,12 @@ export {
   evaluateCanonicalCaptureGate,
 } from "./capture-gate.js";
 export {
+  createDeletionCompletionEvidence,
+  evaluateDeletionPropagation,
+  type DeletionPropagationGateInput,
+  type DeletionPropagationGateResult,
+} from "./deletion-gate.js";
+export {
   episodeAssociationDatasetSchema,
   evaluateEpisodeAssociationDataset,
   loadEpisodeAssociationDataset,

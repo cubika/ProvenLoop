@@ -7,6 +7,7 @@ import {
   correctionKeySchema,
   correctionOpportunitySchema,
   CURRENT_SCHEMA_VERSION,
+  deletionOperationSchema,
   EVALUATION_EXIT_CODES,
   episodeAssociationSchema,
   episodeGroupingCorrectionSchema,
@@ -96,6 +97,28 @@ const validCases: readonly {
       sourceEventIds: [
         "event-1",
       ],
+    },
+  },
+  {
+    name: "DeletionOperation",
+    schema: deletionOperationSchema,
+    input: {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      attemptCount: 1,
+      deletionId: "deletion-1",
+      targetType: "source",
+      targetDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      status: "completed",
+      requestedAt: timestamp,
+      completedAt: timestamp,
+      deletedSourceCount: 1,
+      deletedDependentCount: 2,
+      deletedQueueItemCount: 1,
+      gateDigest:
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      propagationEvidenceId: "deletion-1:propagation:abcdef0123456789",
+      tombstoneKeyVerifier: "1".repeat(64),
     },
   },
   {

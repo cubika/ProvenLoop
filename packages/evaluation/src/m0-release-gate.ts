@@ -46,7 +46,7 @@ const M0_SUITES = [
   "unknown-adapter-version",
   "repository-scope-leakage",
   "malformed-event",
-  "deletion-propagation-unavailable",
+  "deletion-propagation",
 ] as const;
 
 export type M0ReleaseGateStatus = "blocked" | "fail" | "pass";
@@ -162,14 +162,14 @@ const EXPECTED_SUITE_PROFILES: Readonly<
     }
   >
 > = {
-  "deletion-propagation-unavailable": {
-    actualGate: "inconclusive",
+  "deletion-propagation": {
+    actualGate: "pass",
     exitCode: 0,
-    expectedGate: "inconclusive",
+    expectedGate: "pass",
     gates: [
-      "deletion-propagation-unavailable:deletion-propagation:inconclusive",
+      "deletion-propagation:deletion-propagation:pass",
     ],
-    status: "inconclusive",
+    status: "pass",
   },
   "duplicate-event": {
     actualGate: "pass",
@@ -433,12 +433,6 @@ const knownBlockedChecks = (): readonly M0ReleaseGateCheck[] => [
     checkId: "capability-isolation",
     message:
       "Retrieval and worker operational switches remain unavailable.",
-    status: "blocked",
-  },
-  {
-    checkId: "deletion-propagation",
-    message:
-      "Deletion propagation has a verifier contract but no implementation.",
     status: "blocked",
   },
 ];

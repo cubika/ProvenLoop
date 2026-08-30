@@ -426,12 +426,12 @@ frozen.
 
 - [ ] Implement explicit remember, correct, forget, and mute-for-session.
 - [ ] Implement `forget <knowledge-or-playbook>`.
-- [ ] Implement delete by source/session/episode.
+- [x] Implement delete by source/session/episode.
 - [ ] Implement purge of database, artifacts, projections, queue, cache,
   evaluations, logs, and tombstones.
-- [ ] Block dependent work while deletion is active.
+- [x] Block dependent work while deletion is active.
 - [ ] Recompute or deactivate dependent Knowledge.
-- [ ] Run the deletion propagation gate before reporting success.
+- [x] Run the deletion propagation gate before reporting success.
 
 ### 11.5 M1 gate
 

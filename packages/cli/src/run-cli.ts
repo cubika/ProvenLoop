@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
+
 import type {
   AdapterOperationResult,
   AgentAdapter,
@@ -10,6 +14,7 @@ import {
 } from "@provenloop/copilot-adapter";
 import {
   evaluateEpisodeAssociationDataset,
+  EvidenceLedgerWriter,
   EvaluationReportInputError,
   loadEpisodeAssociationDataset,
   regenerateMarkdownReport,
@@ -18,8 +23,17 @@ import {
   runM0ReleaseGate,
 } from "@provenloop/evaluation";
 import {
+  DeletionPropagationGateError,
+  DeletionService,
+} from "@provenloop/host";
+import {
   resolveWindowsProvenLoopDataRoot,
+  resolveWindowsProvenLoopPaths,
+  WindowsCaptureQueue,
 } from "@provenloop/platform-windows";
+import {
+  CanonicalSqliteStore,
+} from "@provenloop/storage-sqlite";
 
 import { runMcpServer } from "./run-mcp-server.js";
 
@@ -62,6 +76,7 @@ const usage = `Usage:
   provenloop doctor [--data-root <directory>]
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
+  provenloop delete (--source <event-or-dedup-id> | --session <id> | --episode <id>) [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory>
@@ -86,6 +101,103 @@ const hasInvalidOptionValue = (
 const operationExitCode = (
   result: AdapterOperationResult,
 ): number => result.status === "incompatible" ? 1 : 0;
+
+const deletionTarget = (
+  args: readonly string[],
+):
+  | {
+      readonly targetId: string;
+      readonly targetType: "episode" | "session" | "source";
+    }
+  | undefined => {
+  const targets = [
+    ["--source", "source"],
+    ["--session", "session"],
+    ["--episode", "episode"],
+  ] as const;
+  const selected = targets.flatMap(([
+    name,
+    targetType,
+  ]) => {
+    const targetId = option(args, name);
+    return args.includes(name) &&
+      targetId !== undefined &&
+      !targetId.startsWith("--")
+      ? [
+          {
+            targetId,
+            targetType,
+          },
+        ]
+      : [];
+  });
+  return selected.length === 1 ? selected[0] : undefined;
+};
+
+const runDeletionCommand = async (
+  args: readonly string[],
+  io: CliIo,
+): Promise<number> => {
+  const target = deletionTarget(args);
+  if (
+    target === undefined ||
+    ["--source", "--session", "--episode"].some((name) =>
+      hasInvalidOptionValue(args, name),
+    ) ||
+    hasInvalidOptionValue(args, "--data-root")
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  const root = dataRoot(args);
+  const paths = resolveWindowsProvenLoopPaths(root);
+  const deletionId = `deletion-${randomUUID()}`;
+  let store: CanonicalSqliteStore | undefined;
+  try {
+    await access(paths.rootMarker);
+    await access(paths.database);
+    const queue = new WindowsCaptureQueue(paths.queue);
+    await queue.initialize();
+    store = new CanonicalSqliteStore(paths.database);
+    const ledgers = new Map<string, EvidenceLedgerWriter>();
+    const result = await new DeletionService({
+      queue,
+      recordEvidence: async (entry) => {
+        let ledger = ledgers.get(entry.runId);
+        if (ledger === undefined) {
+          ledger = new EvidenceLedgerWriter(
+            join(
+              paths.evaluation,
+              "deletions",
+              entry.runId,
+              "evidence-ledger.jsonl",
+            ),
+          );
+          await ledger.initialize();
+          ledgers.set(entry.runId, ledger);
+        }
+        await ledger.appendIfAbsent([
+          entry,
+        ]);
+      },
+      store,
+    }).delete({
+      deletionId,
+      ...target,
+    });
+    io.log(
+      `Deletion completed: ${result.operation.deletedSourceCount} source identifiers, ` +
+      `${result.operation.deletedDependentCount} dependent records, ` +
+      `${result.operation.deletedQueueItemCount} queue items.`,
+    );
+    return 0;
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return error instanceof DeletionPropagationGateError ? 1 : 3;
+  } finally {
+    store?.close();
+  }
+};
 
 const runEvaluationCommand = async (
   args: readonly string[],
@@ -179,6 +291,9 @@ export const runCli = async (
   if (args[0] === "eval") {
     return runEvaluationCommand(args, io);
   }
+  if (args[0] === "delete") {
+    return runDeletionCommand(args, io);
+  }
   if (args[0] === "mcp" && args[1] === "serve") {
     try {
       await dependencies.runMcpServer();
@@ -191,6 +306,7 @@ export const runCli = async (
   if (
     ![
       "disable",
+      "delete",
       "doctor",
       "enable",
       "install",
