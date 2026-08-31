@@ -15,6 +15,7 @@ export default defineConfig({
       "@provenloop/evaluation": packageSource("evaluation"),
       "@provenloop/host": packageSource("host"),
       "@provenloop/platform-windows": packageSource("platform-windows"),
+      "@provenloop/retrieval": packageSource("retrieval"),
       "@provenloop/storage-sqlite": packageSource("storage-sqlite"),
       "@provenloop/testkit": packageSource("testkit"),
     },

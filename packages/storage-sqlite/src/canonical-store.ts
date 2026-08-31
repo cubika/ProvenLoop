@@ -32,6 +32,7 @@ import {
   deletionTargetTypeSchema,
   episodeAssociationSchema,
   episodeGroupingCorrectionSchema,
+  knowledgeCandidateSchema,
   workEpisodeSchema,
   type BranchContext,
   type CaptureEnvelope,
@@ -42,6 +43,7 @@ import {
   type DeletionTargetType,
   type EpisodeAssociation,
   type EpisodeGroupingCorrection,
+  type KnowledgeCandidate,
   type WorkEpisode,
 } from "@provenloop/contracts";
 import {
@@ -275,6 +277,19 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         ON branch_contexts(repo_id, branch);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE knowledge_candidates (
+        knowledge_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 export class UnsupportedDatabaseVersionError extends Error {
@@ -401,7 +416,11 @@ const bodyReferences = (
                 "sourceid",
                 "sourceeventids",
               ].includes(normalized)
-            ? values.some((id) => references.event.has(id))
+            ? values.some(
+                (id) =>
+                  references.event.has(id) ||
+                  references.event.has(id.toLowerCase()),
+              )
             : [
                   "availabilityevidenceids",
                   "correctionids",
@@ -409,12 +428,17 @@ const bodyReferences = (
                   "evidenceids",
                   "evidenceref",
                   "invocationids",
+                  "sourceevidenceids",
                   "supportingevidenceids",
                 ].includes(normalized)
               ? values.some(
                   (id) =>
                       references.deduplication.has(id) ||
+                      references.deduplication.has(
+                        id.toLowerCase(),
+                      ) ||
                       references.event.has(id) ||
+                      references.event.has(id.toLowerCase()) ||
                       references.record.has(id),
                   )
               : false;
@@ -756,6 +780,14 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["updated_at", "TEXT", true, false],
     ["expires_at", "TEXT", false, false],
   ],
+  knowledge_candidates: [
+    ["knowledge_id", "TEXT", true, true],
+    ["schema_version", "INTEGER", true, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
+    ["updated_at", "TEXT", true, false],
+  ],
   parser_errors: [
     ["parser_error_id", "INTEGER", false, true],
     ["queue_item_id", "TEXT", true, false],
@@ -836,6 +868,14 @@ const RUNTIME_SCHEMA_INDEXES = {
       ],
       name: "branch_context_scope",
       origin: "c",
+    },
+  ],
+  knowledge_candidates: [
+    {
+      columns: [
+        "knowledge_id",
+      ],
+      origin: "pk",
     },
   ],
   deletion_operations: [
@@ -1513,6 +1553,9 @@ export class CanonicalSqliteStore {
     const dependencySeedIds = new Set(
       operation.plannedDependencySeedIds ?? [],
     );
+    if (targetType === "episode") {
+      dependencySeedIds.add(targetId);
+    }
     const targetSessionIds = new Set(
       operation.plannedAffectedSessionIds ?? [],
     );
@@ -1522,7 +1565,6 @@ export class CanonicalSqliteStore {
       candidateSessionIds.add(targetId);
     }
     if (episodeTarget !== undefined) {
-      dependencySeedIds.add(episodeTarget.episodeId);
       for (const eventId of episodeTarget.sourceEventIds) {
         sourceIds.add(eventId);
       }
@@ -1864,6 +1906,14 @@ export class CanonicalSqliteStore {
           ) +
           deleteDependentRows(
             this.#database,
+            "knowledge_candidates",
+            "knowledge_id",
+            "body_json",
+            dependencyReferences,
+            dependentIds,
+          ) +
+          deleteDependentRows(
+            this.#database,
             "process_claims",
             "claim_id",
             "body_json",
@@ -2047,6 +2097,7 @@ export class CanonicalSqliteStore {
       bodyColumn,
     ] of [
       ["branch_contexts", "branch_context_id", "body_json"],
+      ["knowledge_candidates", "knowledge_id", "body_json"],
       ["work_episodes", "episode_id", "body_json"],
       ["evidence_links", "link_id", "body_json"],
       ["process_claims", "claim_id", "body_json"],
@@ -2424,6 +2475,23 @@ export class CanonicalSqliteStore {
     if (identities.length === 0) {
       return false;
     }
+    const tombstones = this.#deletionTombstoneKeys();
+    return identities.some((identity) =>
+      tombstones.has(this.#deletionIdentityKeyFor(identity)),
+    );
+  }
+
+  #deletionIdentityKeyFor(
+    identity: DeletionPlannedIdentity,
+  ): string {
+    return `${identity.identityType}\u0000${deletionIdentityDigest(
+      identity.identityType,
+      identity.identifier,
+      this.#deletionIdentityKey,
+    )}`;
+  }
+
+  #deletionTombstoneKeys(): ReadonlySet<string> {
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -2441,15 +2509,7 @@ export class CanonicalSqliteStore {
           ),
       ),
     );
-    return identities.some((identity) =>
-      tombstones.has(
-        `${identity.identityType}\u0000${deletionIdentityDigest(
-          identity.identityType,
-          identity.identifier,
-          this.#deletionIdentityKey,
-        )}`,
-      ),
-    );
+    return tombstones;
   }
 
   public ingestQueueItem(
@@ -3083,6 +3143,248 @@ export class CanonicalSqliteStore {
     return context;
   }
 
+  public upsertKnowledgeCandidates(
+    input: readonly KnowledgeCandidate[],
+  ): number {
+    this.#assertNoRestoreBarrier();
+    const candidates = input.map((candidate) => {
+      const parsed = knowledgeCandidateSchema.parse(candidate);
+      return knowledgeCandidateSchema.parse({
+        ...parsed,
+        sourceEvidenceIds: parsed.sourceEvidenceIds.map(
+          (identifier) =>
+            /^(?:event-)?[a-f0-9]{64}$/iu.test(identifier)
+              ? identifier.toLowerCase()
+              : identifier,
+        ),
+      });
+    });
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion()) {
+        throw new Error(
+          "Knowledge persistence is blocked by an active deletion.",
+        );
+      }
+      if (
+        this.knowledgeCandidatesWithDeletedSources(candidates)
+          .size > 0
+      ) {
+        throw new Error(
+          "Knowledge candidate contains a deleted identity.",
+        );
+      }
+      const sourceEpisodeIds = new Set(
+        candidates.flatMap(
+          (candidate) => candidate.sourceEpisodeIds,
+        ),
+      );
+      if (sourceEpisodeIds.size > 0) {
+        const ids = [...sourceEpisodeIds];
+        const existing = new Set(
+          (
+            this.#database
+              .prepare(
+                `SELECT episode_id
+                   FROM work_episodes
+                  WHERE episode_id IN (${placeholders(ids.length)})`,
+              )
+              .all(...ids) as readonly Readonly<
+              Record<string, unknown>
+            >[]
+          ).map((row) => String(row.episode_id)),
+        );
+        const missing = ids.find((id) => !existing.has(id));
+        if (missing !== undefined) {
+          throw new Error(
+            `Knowledge candidate references missing source Episode ${missing}.`,
+          );
+        }
+      }
+      const upsert = this.#database.prepare(
+        `INSERT INTO knowledge_candidates (
+           knowledge_id,
+           schema_version,
+           body_json,
+           source_digest,
+           created_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(knowledge_id) DO UPDATE SET
+           schema_version = excluded.schema_version,
+           body_json = excluded.body_json,
+           source_digest = excluded.source_digest,
+           updated_at = excluded.updated_at`,
+      );
+      for (const candidate of candidates) {
+        upsert.run(
+          candidate.knowledgeId,
+          candidate.schemaVersion,
+          JSON.stringify(candidate),
+          sha256(candidate),
+          candidate.createdAt,
+          candidate.validatedAt ?? candidate.createdAt,
+        );
+      }
+      this.#database.exec("COMMIT;");
+      return candidates.length;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public removeKnowledgeCandidates(
+    ids: readonly string[],
+  ): number {
+    this.#assertNoRestoreBarrier();
+    const selected = [
+      ...new Set(
+        ids
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0),
+      ),
+    ];
+    if (selected.length === 0) {
+      return 0;
+    }
+    return Number(
+      this.#database
+        .prepare(
+          `DELETE FROM knowledge_candidates
+            WHERE knowledge_id IN (${placeholders(
+              selected.length,
+            )})`,
+        )
+        .run(...selected).changes,
+    );
+  }
+
+  public knowledgeCandidates(
+    ids?: readonly string[],
+  ): readonly KnowledgeCandidate[] {
+    const selected =
+      ids === undefined
+        ? undefined
+        : [
+            ...new Set(
+              ids
+                .map((id) => id.trim())
+                .filter((id) => id.length > 0),
+            ),
+          ];
+    if (selected !== undefined && selected.length === 0) {
+      return [];
+    }
+    const rows = this.#database
+      .prepare(
+        selected === undefined
+          ? `SELECT body_json
+               FROM knowledge_candidates
+              ORDER BY created_at, knowledge_id`
+          : `SELECT body_json
+               FROM knowledge_candidates
+              WHERE knowledge_id IN (${placeholders(
+                selected.length,
+              )})
+              ORDER BY created_at, knowledge_id`,
+      )
+      .all(...(selected ?? [])) as readonly Readonly<
+      Record<string, unknown>
+    >[];
+    return rows.map((row) =>
+      knowledgeCandidateSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      ),
+    );
+  }
+
+  public knowledgeCandidatesWithDeletedSources(
+    input: readonly KnowledgeCandidate[],
+  ): ReadonlySet<string> {
+    const candidates = input.map((candidate) =>
+      knowledgeCandidateSchema.parse(candidate),
+    );
+    const tombstones = this.#deletionTombstoneKeys();
+    return new Set(
+      candidates.flatMap((candidate) => {
+        const evidenceIdentities: DeletionPlannedIdentity[] = [];
+        for (const identifier of candidate.sourceEvidenceIds) {
+          if (/^event-[a-f0-9]{64}$/iu.test(identifier)) {
+            evidenceIdentities.push({
+              identifier: identifier.toLowerCase(),
+              identityType: "event",
+            });
+          } else if (/^[a-f0-9]{64}$/iu.test(identifier)) {
+            evidenceIdentities.push({
+              identifier: identifier.toLowerCase(),
+              identityType: "deduplication",
+            });
+          }
+        }
+        const identities: DeletionPlannedIdentity[] = [
+          ...candidate.sourceEpisodeIds.map((identifier) => ({
+            identifier,
+            identityType: "episode" as const,
+          })),
+          ...evidenceIdentities,
+        ];
+        return identities.some((identity) =>
+          tombstones.has(this.#deletionIdentityKeyFor(identity)),
+        )
+          ? [candidate.knowledgeId]
+          : [];
+      }),
+    );
+  }
+
+  public knowledgeCandidatesWithUnavailableSources(
+    input: readonly KnowledgeCandidate[],
+  ): ReadonlySet<string> {
+    const candidates = input.map((candidate) =>
+      knowledgeCandidateSchema.parse(candidate),
+    );
+    const unavailable = new Set(
+      this.knowledgeCandidatesWithDeletedSources(candidates),
+    );
+    const sourceEpisodeIds = [
+      ...new Set(
+        candidates.flatMap(
+          (candidate) => candidate.sourceEpisodeIds,
+        ),
+      ),
+    ];
+    if (sourceEpisodeIds.length === 0) {
+      return unavailable;
+    }
+    const existing = new Set(
+      (
+        this.#database
+          .prepare(
+            `SELECT episode_id
+               FROM work_episodes
+              WHERE episode_id IN (${placeholders(
+                sourceEpisodeIds.length,
+              )})`,
+          )
+          .all(...sourceEpisodeIds) as readonly Readonly<
+          Record<string, unknown>
+        >[]
+      ).map((row) => String(row.episode_id)),
+    );
+    for (const candidate of candidates) {
+      if (
+        candidate.sourceEpisodeIds.some(
+          (episodeId) => !existing.has(episodeId),
+        )
+      ) {
+        unavailable.add(candidate.knowledgeId);
+      }
+    }
+    return unavailable;
+  }
+
   public episodeAssociations(): readonly EpisodeAssociation[] {
     const rows = this.#database
       .prepare(
@@ -3511,6 +3813,7 @@ export class CanonicalSqliteStore {
 
       const requiredTables = [
         ...(expectedVersion >= 2 ? ["branch_contexts"] : []),
+        ...(expectedVersion >= 3 ? ["knowledge_candidates"] : []),
         "deletion_operations",
         "evaluation_runs",
         "evidence_links",
@@ -3615,7 +3918,13 @@ export class CanonicalSqliteStore {
       for (const [table, expectedColumns] of Object.entries(
         RUNTIME_SCHEMA_COLUMNS,
       )) {
-        if (table === "branch_contexts" && expectedVersion < 2) {
+        if (
+          (table === "branch_contexts" && expectedVersion < 2) ||
+          (
+            table === "knowledge_candidates" &&
+            expectedVersion < 3
+          )
+        ) {
           continue;
         }
         CanonicalSqliteStore.#assertTableColumns(
@@ -3627,7 +3936,13 @@ export class CanonicalSqliteStore {
       for (const [table, expectedIndexes] of Object.entries(
         RUNTIME_SCHEMA_INDEXES,
       )) {
-        if (table === "branch_contexts" && expectedVersion < 2) {
+        if (
+          (table === "branch_contexts" && expectedVersion < 2) ||
+          (
+            table === "knowledge_candidates" &&
+            expectedVersion < 3
+          )
+        ) {
           continue;
         }
         CanonicalSqliteStore.#assertIndexAllowlist(

@@ -811,6 +811,63 @@ describe("deletion propagation", () => {
     }
   });
 
+  it("recovers a missing Episode projection before deleting its evidence", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = new WindowsCaptureQueue(join(root, "queue"), {
+      idGenerator: () => "queue-missing-episode",
+    });
+    await queue.initialize();
+    const item = await queue.enqueue({
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      branch: "feat/missing-episode",
+      content: {
+        message: "Implement missing Episode recovery.",
+      },
+      eventType: "prompt.submitted",
+      repoId: "repo-1",
+      sessionId: "session-missing-episode",
+      sourceEventId: "source-missing-episode",
+      timestamp: "2026-08-30T00:00:00.000Z",
+      trust: "user",
+    });
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    try {
+      expect(store.ingestQueueItem(item).status).toBe("stored");
+      const episode = new WorkEpisodeProjector({
+        store,
+      }).rebuild().episodes[0];
+      if (episode === undefined) {
+        throw new Error("Expected an Episode.");
+      }
+      store.replaceWorkEpisodeProjection({
+        associations: [],
+        corrections: [],
+        episodes: [],
+      });
+
+      const result = await new DeletionService({
+        queue,
+        recordEvidence: async () => undefined,
+        store,
+      }).delete({
+        deletionId: "delete-missing-episode",
+        targetId: episode.episodeId,
+        targetType: "episode",
+      });
+
+      expect(result.gate.status).toBe("pass");
+      expect(
+        store.rawEvent(item.envelope.deduplicationKey),
+      ).toBeUndefined();
+      expect(store.workEpisodes()).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("does not expand Episode deletion into a dependency child session", async () => {
     const root = await createTemporaryDirectory();
     let sequence = 0;

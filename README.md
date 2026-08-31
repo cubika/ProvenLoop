@@ -176,6 +176,10 @@ writes a health heartbeat.
 M1 now starts with a rebuildable Branch Context projection. Material changes
 produce short-lived repo/branch/HEAD-bound context, while browsing-only
 Sessions produce no context and stale or mismatched HEADs fail closed.
+The `@provenloop/retrieval` package now defines the backend-neutral Knowledge
+boundary and a SQLite FTS5/BM25 implementation. Search hits are always
+rechecked against canonical lifecycle, evidence tier, scope, expiry, and
+deletion state before retrieval.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

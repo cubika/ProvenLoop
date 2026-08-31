@@ -29,9 +29,15 @@ import {
 } from "@provenloop/host";
 import {
   resolveWindowsProvenLoopDataRoot,
+  resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
+  WindowsNamedPipeLeaseProvider,
 } from "@provenloop/platform-windows";
+import {
+  KnowledgeProjectionManager,
+  SqliteFtsKnowledgeBackend,
+} from "@provenloop/retrieval";
 import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
@@ -162,6 +168,7 @@ const runDeletionCommand = async (
   const root = dataRoot(args);
   const paths = resolveWindowsProvenLoopPaths(root);
   const deletionId = `deletion-${randomUUID()}`;
+  let knowledgeBackend: SqliteFtsKnowledgeBackend | undefined;
   let store: CanonicalSqliteStore | undefined;
   try {
     await access(paths.rootMarker);
@@ -169,8 +176,48 @@ const runDeletionCommand = async (
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
     store = new CanonicalSqliteStore(paths.database);
+    knowledgeBackend = new SqliteFtsKnowledgeBackend(
+      paths.knowledgeDatabase,
+    );
+    const knowledgeProjection = new KnowledgeProjectionManager({
+      backend: knowledgeBackend,
+      store,
+    });
     const ledgers = new Map<string, EvidenceLedgerWriter>();
     const result = await new DeletionService({
+      knowledgeProjection: {
+        acquireLease: async () => {
+          const leaseName = await resolveWindowsProvenLoopLeaseName(
+            paths.root,
+            "knowledge-projection",
+          );
+          const provider = new WindowsNamedPipeLeaseProvider(
+            leaseName,
+          );
+          let lease = await provider.tryAcquire();
+          while (lease === undefined) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 5);
+            });
+            lease = await provider.tryAcquire();
+          }
+          return lease;
+        },
+        rebuild: async () => {
+          await knowledgeProjection.rebuild();
+        },
+        remainingIdentifiers: async (identifiers) => {
+          const remaining: string[] = [];
+          for (const identifier of identifiers) {
+            if (
+              await knowledgeBackend?.get(identifier) !== undefined
+            ) {
+              remaining.push(identifier);
+            }
+          }
+          return remaining;
+        },
+      },
       queue,
       recordEvidence: async (entry) => {
         let ledger = ledgers.get(entry.runId);
@@ -205,6 +252,7 @@ const runDeletionCommand = async (
     io.error(error instanceof Error ? error.message : String(error));
     return error instanceof DeletionPropagationGateError ? 1 : 3;
   } finally {
+    knowledgeBackend?.close();
     store?.close();
   }
 };

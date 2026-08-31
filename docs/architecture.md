@@ -1100,6 +1100,13 @@ Implementations:
 - `MemorixKnowledgeBackend`: optional richer search implementation after the
   fallback path is stable.
 
+The MVP projection stores only searchable text and stable Knowledge IDs.
+Canonical scope, lifecycle state, evidence tier, expiry, provenance, and
+deletion remain in the canonical SQLite store. Every search result is joined
+back to canonical `KnowledgeCandidate` state before it can be returned.
+Projection rebuild uses a single SQLite transaction and can recover completely
+from the canonical candidate table.
+
 Feedback, admission, archive, delete, and scope changes are domain operations,
 not Knowledge backend operations. No ProvenLoop domain table may depend
 directly on a backend internal schema.

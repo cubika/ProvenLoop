@@ -11,6 +11,9 @@
       "path": "packages/platform-windows"
     },
     {
+      "path": "packages/retrieval"
+    },
+    {
       "path": "packages/storage-sqlite"
     },
     {

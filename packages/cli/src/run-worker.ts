@@ -12,6 +12,7 @@ import {
   assertCopilotAdapterDataRoot,
   readCopilotAdapterState,
 } from "@provenloop/copilot-adapter";
+import { sanitizeDiagnostic } from "@provenloop/domain";
 import {
   BranchContextProjector,
   CaptureWorker,
@@ -21,11 +22,17 @@ import {
 } from "@provenloop/host";
 import {
   resolveWindowsCaptureWorkerLeaseName,
+  resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
   WindowsNamedPipeLeaseProvider,
+  type ProcessLease,
   type ProcessLeaseProvider,
 } from "@provenloop/platform-windows";
+import {
+  KnowledgeProjectionManager,
+  SqliteFtsKnowledgeBackend,
+} from "@provenloop/retrieval";
 import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
@@ -47,9 +54,23 @@ const defaultCircuitBreaker = (): CaptureWorkerCircuitBreaker =>
     minFreeDiskBytes: 512 * 1024 * 1024,
   });
 
+const acquireRequiredLease = async (
+  provider: ProcessLeaseProvider,
+): Promise<ProcessLease> => {
+  let lease = await provider.tryAcquire();
+  while (lease === undefined) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+    lease = await provider.tryAcquire();
+  }
+  return lease;
+};
+
 const writeHeartbeat = async (
   path: string,
   input: {
+    readonly knowledgeProjectionError?: string;
     readonly result: CaptureWorkerRunResult;
     readonly timestamp: string;
     readonly workerId: string;
@@ -92,6 +113,7 @@ export const runCaptureWorkerOnce = async (
     };
   }
   let store: CanonicalSqliteStore | undefined;
+  let knowledgeBackend: SqliteFtsKnowledgeBackend | undefined;
   const queue = new WindowsCaptureQueue(paths.queue);
   const breaker = defaultCircuitBreaker();
   let previousCpu = process.cpuUsage();
@@ -158,15 +180,63 @@ export const runCaptureWorkerOnce = async (
         store,
       }).rebuild();
     }
+    let knowledgeProjectionError: string | undefined;
+    if (
+      result.status === "completed" &&
+      (
+        await readCopilotAdapterState(
+          paths.adapterState,
+          now(),
+        )
+      ).capabilities.retrieval.enabled
+    ) {
+      try {
+        knowledgeBackend = new SqliteFtsKnowledgeBackend(
+          paths.knowledgeDatabase,
+        );
+        const knowledgeLease = await acquireRequiredLease(
+          new WindowsNamedPipeLeaseProvider(
+            await resolveWindowsProvenLoopLeaseName(
+              paths.root,
+              "knowledge-projection",
+            ),
+          ),
+        );
+        try {
+          await new KnowledgeProjectionManager({
+            backend: knowledgeBackend,
+            store,
+          }).rebuild();
+        } finally {
+          await knowledgeLease.release();
+        }
+      } catch (error) {
+        knowledgeProjectionError = sanitizeDiagnostic(error);
+      } finally {
+        knowledgeBackend?.close();
+        knowledgeBackend = undefined;
+      }
+    }
     store.close();
     store = undefined;
     await writeHeartbeat(paths.heartbeat, {
+      ...(knowledgeProjectionError === undefined
+        ? {}
+        : {
+            knowledgeProjectionError,
+          }),
       result,
       timestamp: now().toISOString(),
       workerId,
     });
+    if (knowledgeProjectionError !== undefined) {
+      throw new Error(
+        `Knowledge projection failed: ${knowledgeProjectionError}`,
+      );
+    }
     return result;
   } finally {
+    knowledgeBackend?.close();
     store?.close();
     await workerLease.release();
   }

@@ -13,25 +13,7 @@
       "path": "../contracts"
     },
     {
-      "path": "../copilot-adapter"
-    },
-    {
       "path": "../domain"
-    },
-    {
-      "path": "../evaluation"
-    },
-    {
-      "path": "../host"
-    },
-    {
-      "path": "../platform-windows"
-    },
-    {
-      "path": "../retrieval"
-    },
-    {
-      "path": "../storage-sqlite"
     }
   ]
 }

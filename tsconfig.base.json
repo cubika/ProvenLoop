@@ -39,6 +39,9 @@
       "@provenloop/platform-windows": [
         "./packages/platform-windows/src/index.ts"
       ],
+      "@provenloop/retrieval": [
+        "./packages/retrieval/src/index.ts"
+      ],
       "@provenloop/storage-sqlite": [
         "./packages/storage-sqlite/src/index.ts"
       ],

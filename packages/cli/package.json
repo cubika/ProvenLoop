@@ -17,8 +17,10 @@
   "dependencies": {
     "@provenloop/contracts": "0.0.0",
     "@provenloop/copilot-adapter": "0.0.0",
+    "@provenloop/domain": "0.0.0",
     "@provenloop/evaluation": "0.0.0",
     "@provenloop/host": "0.0.0",
+    "@provenloop/retrieval": "0.0.0",
     "@provenloop/storage-sqlite": "0.0.0",
     "@provenloop/platform-windows": "0.0.0"
   }

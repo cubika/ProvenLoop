@@ -18,6 +18,7 @@ export {
   DeletionPropagationGateError,
   DeletionService,
   type DeletionExecutionResult,
+  type DeletionKnowledgeProjection,
   type DeletionQueue,
   type DeletionServiceOptions,
   type DeletionStore,

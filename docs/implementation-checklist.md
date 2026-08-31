@@ -402,13 +402,13 @@ frozen.
 
 ### 11.2 Knowledge backend
 
-- [ ] Implement `KnowledgeBackend` without leaking backend-specific schema into
+- [x] Implement `KnowledgeBackend` without leaking backend-specific schema into
   domain code.
-- [ ] Implement the SQLite FTS5/BM25 backend.
-- [ ] Implement index, search, get, remove, rebuild, and health.
-- [ ] Recheck canonical scope, state, evidence tier, and deletion state after
+- [x] Implement the SQLite FTS5/BM25 backend.
+- [x] Implement index, search, get, remove, rebuild, and health.
+- [x] Recheck canonical scope, state, evidence tier, and deletion state after
   projection search.
-- [ ] Test complete projection rebuild from canonical SQLite.
+- [x] Test complete projection rebuild from canonical SQLite.
 
 ### 11.3 MCP retrieval
 

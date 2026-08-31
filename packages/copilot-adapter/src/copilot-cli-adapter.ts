@@ -1025,6 +1025,9 @@ implements AgentAdapter<CopilotEventMappingResult> {
       mkdir(this.#paths.artifacts, {
         recursive: true,
       }),
+      mkdir(this.#paths.backends, {
+        recursive: true,
+      }),
       mkdir(this.#paths.data, {
         recursive: true,
       }),

@@ -100,12 +100,23 @@ extends WorkEpisodeProjectionStore, BranchContextProjectionStore {
 }
 
 export interface DeletionServiceOptions {
+  readonly knowledgeProjection?: DeletionKnowledgeProjection;
   readonly now?: () => Date;
   readonly queue: DeletionQueue;
   readonly recordEvidence: (
     entry: EvidenceLedgerEntry,
   ) => Promise<void>;
   readonly store: DeletionStore;
+}
+
+export interface DeletionKnowledgeProjection {
+  acquireLease(): Promise<{
+    release(): Promise<void>;
+  }>;
+  rebuild(): Promise<void>;
+  remainingIdentifiers(
+    identifiers: ReadonlySet<string>,
+  ): Promise<readonly string[]>;
 }
 
 export interface DeletionExecutionResult {
@@ -172,6 +183,9 @@ const typedSourceIdentities = (
 export class DeletionService {
   readonly #now: () => Date;
   readonly #branchContextProjector: BranchContextProjector;
+  readonly #knowledgeProjection:
+    | DeletionKnowledgeProjection
+    | undefined;
   readonly #projector: WorkEpisodeProjector;
   readonly #queue: DeletionQueue;
   readonly #recordEvidence: (
@@ -181,6 +195,7 @@ export class DeletionService {
 
   public constructor(options: DeletionServiceOptions) {
     this.#now = options.now ?? (() => new Date());
+    this.#knowledgeProjection = options.knowledgeProjection;
     this.#queue = options.queue;
     this.#recordEvidence = options.recordEvidence;
     this.#store = options.store;
@@ -226,6 +241,8 @@ export class DeletionService {
         "This deletion operation is already executing.",
       );
     }
+    const knowledgeProjectionLease =
+      await this.#knowledgeProjection?.acquireLease();
     try {
       if (
         operation.status === "completed" &&
@@ -299,6 +316,9 @@ export class DeletionService {
           operation.deletionId,
         );
         barrierStarted = true;
+        this.#projector.rebuild(undefined, {
+          allowDuringDeletion: true,
+        });
         const mutation = this.#store.deleteCanonicalTarget(
           operation.deletionId,
           target,
@@ -352,6 +372,7 @@ export class DeletionService {
       this.#branchContextProjector.rebuild({
         allowDuringDeletion: true,
       });
+      await this.#knowledgeProjection?.rebuild();
       const checkpoint =
         this.#store.deletionOperation(operation.deletionId);
       const sourceIds = [
@@ -415,6 +436,11 @@ export class DeletionService {
           ...(await this.#queue.remainingIdentifiers(
             dependentSet,
           )).map((identifier) => `record:${identifier}`),
+          ...(
+            await this.#knowledgeProjection?.remainingIdentifiers(
+              dependentSet,
+            ) ?? []
+          ).map((identifier) => `record:${identifier}`),
         ]),
       ].sort();
       const gateResult = evaluateDeletionPropagation({
@@ -483,6 +509,7 @@ export class DeletionService {
         }
       }
     } finally {
+      await knowledgeProjectionLease?.release();
       await operationLease.release();
     }
   }

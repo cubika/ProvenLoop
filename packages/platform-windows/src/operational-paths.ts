@@ -5,12 +5,14 @@ import { resolve } from "node:path";
 export interface WindowsProvenLoopPaths {
   readonly adapterState: string;
   readonly artifacts: string;
+  readonly backends: string;
   readonly data: string;
   readonly database: string;
   readonly evaluation: string;
   readonly heartbeat: string;
   readonly integration: string;
   readonly internalSessions: string;
+  readonly knowledgeDatabase: string;
   readonly logs: string;
   readonly queue: string;
   readonly root: string;
@@ -46,12 +48,18 @@ export const resolveWindowsProvenLoopPaths = (
   return {
     adapterState: resolve(data, "adapter-state.json"),
     artifacts: resolve(resolvedRoot, "artifacts"),
+    backends: resolve(resolvedRoot, "backends"),
     data,
     database: resolve(data, "provenloop.db"),
     evaluation: resolve(resolvedRoot, "evaluation"),
     heartbeat: resolve(data, "worker-heartbeat.json"),
     integration,
     internalSessions: resolve(data, "internal-sessions"),
+    knowledgeDatabase: resolve(
+      resolvedRoot,
+      "backends",
+      "knowledge.db",
+    ),
     logs: resolve(resolvedRoot, "logs"),
     queue: resolve(resolvedRoot, "queue"),
     root: resolvedRoot,

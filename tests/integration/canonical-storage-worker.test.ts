@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -109,7 +110,7 @@ describe("canonical SQLite storage", () => {
       busyTimeoutMs: 2_500,
       journalMode: "wal",
       quickCheck: "ok",
-      userVersion: 2,
+      userVersion: 3,
     });
 
     const result = store.ingestQueueItem(queued);
@@ -147,7 +148,7 @@ describe("canonical SQLite storage", () => {
     legacy.close();
 
     const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(2);
+    expect(upgraded.health().userVersion).toBe(3);
     upgraded.close();
 
     const verification = new DatabaseSync(databasePath);
@@ -226,7 +227,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 3,
+            version: 4,
             sql: `
               CREATE TABLE migration_probe (
                 value TEXT NOT NULL
@@ -250,7 +251,7 @@ describe("canonical SQLite storage", () => {
             AND name = 'migration_probe'`,
       )
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(2);
+    expect(Number(version.user_version)).toBe(3);
     expect(Number(probe.count)).toBe(0);
     database.close();
   });
@@ -266,7 +267,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 3,
+            version: 4,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN unexpected TEXT;
@@ -283,7 +284,7 @@ describe("canonical SQLite storage", () => {
     const columns = database
       .prepare("PRAGMA table_info(raw_events);")
       .all() as readonly Readonly<Record<string, unknown>>[];
-    expect(Number(version.user_version)).toBe(2);
+    expect(Number(version.user_version)).toBe(3);
     expect(
       columns.some((column) => column.name === "unexpected"),
     ).toBe(false);
@@ -301,7 +302,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 3,
+            version: 4,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN generated_guard TEXT
@@ -322,7 +323,7 @@ describe("canonical SQLite storage", () => {
     const version = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(2);
+    expect(Number(version.user_version)).toBe(3);
     database.close();
   });
 
@@ -336,7 +337,7 @@ describe("canonical SQLite storage", () => {
       migrations: [
         ...DEFAULT_SQLITE_MIGRATIONS,
         {
-          version: 3,
+          version: 4,
           sql: `
             CREATE TABLE recovery_probe (
               value TEXT NOT NULL
@@ -345,7 +346,7 @@ describe("canonical SQLite storage", () => {
         },
       ],
     });
-    expect(upgraded.health().userVersion).toBe(3);
+    expect(upgraded.health().userVersion).toBe(4);
     upgraded.close();
 
     const database = new DatabaseSync(databasePath);
@@ -385,7 +386,7 @@ describe("canonical SQLite storage", () => {
       ),
     ).toMatchObject({
       quickCheck: "ok",
-      userVersion: 2,
+      userVersion: 3,
     });
     const restored = new CanonicalSqliteStore(databasePath);
     expect(
@@ -453,10 +454,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 2,
+      userVersion: 3,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(2);
+    expect(restored.health().userVersion).toBe(3);
     restored.close();
   });
 
@@ -700,7 +701,7 @@ describe("canonical SQLite storage", () => {
     store.close();
     const invalidBackup = new DatabaseSync(invalidBackupPath);
     invalidBackup.exec(`
-      PRAGMA user_version = 2;
+      PRAGMA user_version = 3;
       CREATE TABLE schema_migrations (
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
@@ -708,7 +709,8 @@ describe("canonical SQLite storage", () => {
       INSERT INTO schema_migrations(version, applied_at)
       VALUES
         (1, '2026-08-29T00:00:00.000Z'),
-        (2, '2026-08-30T00:00:00.000Z');
+        (2, '2026-08-30T00:00:00.000Z'),
+        (3, '2026-08-31T00:00:00.000Z');
     `);
     invalidBackup.close();
 
@@ -747,7 +749,7 @@ describe("canonical SQLite storage", () => {
     const preserved = new CanonicalSqliteStore(databasePath);
     expect(preserved.health()).toMatchObject({
       quickCheck: "ok",
-      userVersion: 2,
+      userVersion: 3,
     });
     preserved.close();
   });
@@ -1039,6 +1041,9 @@ describe("shared capture worker", () => {
       timestamp: "2026-08-30T00:00:02.000Z",
       workerId: "worker-runtime",
     });
+    await expect(access(paths.knowledgeDatabase)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
 
     state = setPersistedCapability(
       state,
@@ -1063,6 +1068,80 @@ describe("shared capture worker", () => {
       status: "disabled",
     });
     expect(await queue.list("pending")).toHaveLength(1);
+  });
+
+  it("isolates Knowledge projection failure after capture commit", async () => {
+    const dataRoot = await createTemporaryDirectory();
+    const paths = resolveWindowsProvenLoopPaths(dataRoot);
+    await mkdir(paths.data, {
+      recursive: true,
+    });
+    await writeFile(
+      paths.rootMarker,
+      `${JSON.stringify({
+        product: "ProvenLoop",
+        root: paths.root,
+        schemaVersion: 1,
+      })}\n`,
+      "utf8",
+    );
+    let state = {
+      ...createDefaultCopilotAdapterState(
+        new Date("2026-08-30T00:00:00.000Z"),
+      ),
+      installed: true,
+    };
+    for (const capability of [
+      "worker",
+      "retrieval",
+    ] as const) {
+      state = setPersistedCapability(
+        state,
+        capability,
+        {
+          enabled: true,
+        },
+        new Date("2026-08-30T00:00:01.000Z"),
+      );
+    }
+    await writeCopilotAdapterState(paths.adapterState, state);
+    const queue = await createQueue(paths.queue);
+    const item = await queue.enqueue(
+      captureInput("projection-failure"),
+      {
+        environment: {},
+      },
+    );
+    const store = new CanonicalSqliteStore(paths.database);
+    store.close();
+    await mkdir(paths.knowledgeDatabase, {
+      recursive: true,
+    });
+
+    await expect(
+      runCaptureWorkerOnce({
+        dataRoot,
+        lease: new WindowsNamedPipeLeaseProvider(
+          `worker-runtime-${randomUUID()}`,
+        ),
+      }),
+    ).rejects.toThrow("Knowledge projection failed");
+    const verified = new CanonicalSqliteStore(paths.database);
+    expect(
+      verified.rawEvent(item.envelope.deduplicationKey),
+    ).toBeDefined();
+    verified.close();
+    expect(await queue.list("acknowledged")).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(paths.heartbeat, "utf8")),
+    ).toMatchObject({
+      knowledgeProjectionError: expect.any(String),
+      result: {
+        acknowledged: 1,
+        status: "completed",
+        stored: 1,
+      },
+    });
   });
 
   it("stores supported events and acknowledges only after commit", async () => {
