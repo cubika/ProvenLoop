@@ -836,6 +836,10 @@ provenloop status
 provenloop doctor
 provenloop disable
 provenloop enable
+provenloop remember
+provenloop correct
+provenloop mute
+provenloop forget
 provenloop uninstall
 provenloop purge
 ```

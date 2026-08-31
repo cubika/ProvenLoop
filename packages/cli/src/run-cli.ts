@@ -5,9 +5,11 @@ import { join } from "node:path";
 import type {
   AdapterOperationResult,
   AgentAdapter,
+  Scope,
 } from "@provenloop/contracts";
 import {
   provenLoopCapabilitySchema,
+  scopeSchema,
 } from "@provenloop/contracts";
 import {
   CopilotCliAdapter,
@@ -25,6 +27,7 @@ import {
 import {
   DeletionPropagationGateError,
   DeletionService,
+  KnowledgeControlService,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
@@ -35,6 +38,7 @@ import {
   WindowsNamedPipeLeaseProvider,
 } from "@provenloop/platform-windows";
 import {
+  branchScopeIdFor,
   KnowledgeProjectionManager,
   SqliteFtsKnowledgeBackend,
 } from "@provenloop/retrieval";
@@ -97,9 +101,14 @@ const usage = `Usage:
   provenloop doctor [--data-root <directory>]
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
-  provenloop delete (--source <event-or-dedup-id> | --session <id> | --episode <id>) [--data-root <directory>]
+  provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop correct <knowledge-id> [--reason <text>] [--data-root <directory>]
+  provenloop mute <knowledge-id> --session <id> [--data-root <directory>]
+  provenloop forget <knowledge-or-playbook> [--data-root <directory>]
+  provenloop delete (--source <event-or-dedup-id> | --session <id> | --episode <id> | --knowledge <id>) [--data-root <directory>]
   provenloop worker run [--batch-size <count>] [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
+  provenloop purge [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory>
   provenloop eval run --suite <suite> --out <directory>
@@ -120,22 +129,349 @@ const hasInvalidOptionValue = (
   );
 };
 
+const hasOnlyOptions = (
+  args: readonly string[],
+  startIndex: number,
+  input: {
+    readonly flags?: readonly string[];
+    readonly values?: readonly string[];
+  },
+): boolean => {
+  const flags = new Set(input.flags ?? []);
+  const values = new Set(input.values ?? []);
+  const seen = new Set<string>();
+  let index = startIndex;
+  while (index < args.length) {
+    const argument = args[index];
+    if (
+      argument === undefined ||
+      seen.has(argument)
+    ) {
+      return false;
+    }
+    if (flags.has(argument)) {
+      seen.add(argument);
+      index += 1;
+      continue;
+    }
+    if (!values.has(argument)) {
+      return false;
+    }
+    const value = args[index + 1];
+    if (
+      value === undefined ||
+      value.startsWith("--")
+    ) {
+      return false;
+    }
+    seen.add(argument);
+    index += 2;
+  }
+  return true;
+};
+
 const operationExitCode = (
   result: AdapterOperationResult,
 ): number => result.status === "incompatible" ? 1 : 0;
+
+const acquireKnowledgeProjectionLease = async (
+  root: string,
+) => {
+  const leaseName = await resolveWindowsProvenLoopLeaseName(
+    root,
+    "knowledge-projection",
+  );
+  const provider = new WindowsNamedPipeLeaseProvider(leaseName);
+  let lease = await provider.tryAcquire();
+  while (lease === undefined) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 5);
+    });
+    lease = await provider.tryAcquire();
+  }
+  return lease;
+};
+
+const withKnowledgeControl = async <T>(
+  root: string,
+  operation: (
+    service: KnowledgeControlService,
+  ) => Promise<T> | T,
+): Promise<T> => {
+  const paths = resolveWindowsProvenLoopPaths(root);
+  await access(paths.rootMarker);
+  await access(paths.database);
+  const outerLease = await acquireKnowledgeProjectionLease(
+    paths.root,
+  );
+  let store: CanonicalSqliteStore | undefined;
+  let backend: SqliteFtsKnowledgeBackend | undefined;
+  try {
+    store = new CanonicalSqliteStore(paths.database);
+    backend = new SqliteFtsKnowledgeBackend(
+      paths.knowledgeDatabase,
+    );
+    const projection = new KnowledgeProjectionManager({
+      backend,
+      store,
+    });
+    return await operation(
+      new KnowledgeControlService({
+        projection: {
+          acquireLease: async () => ({
+            release: async () => undefined,
+          }),
+          rebuild: () => projection.rebuild().then(() => undefined),
+        },
+        store,
+      }),
+    );
+  } finally {
+    backend?.close();
+    store?.close();
+    await outerLease.release();
+  }
+};
+
+const rememberScopeId = async (
+  scope: Scope,
+  args: readonly string[],
+  adapter: AgentAdapter,
+): Promise<string | undefined> => {
+  if (scope === "personal") {
+    return undefined;
+  }
+  if (scope === "workflow") {
+    const workflow = option(args, "--workflow")?.trim();
+    if (!workflow) {
+      throw new Error(
+        "Workflow-scoped Knowledge requires --workflow.",
+      );
+    }
+    return workflow;
+  }
+  const identity = await adapter.resolveSession({
+    adapterVersion: "user-control",
+    cwd: option(args, "--cwd") ?? process.cwd(),
+    sessionId: `control-${randomUUID()}`,
+  });
+  if (identity.repositoryId === undefined) {
+    throw new Error(
+      "Repository identity is unavailable for remember.",
+    );
+  }
+  if (scope === "repository") {
+    return identity.repositoryId;
+  }
+  if (identity.branch === undefined) {
+    throw new Error(
+      "Branch identity is unavailable for remember.",
+    );
+  }
+  return branchScopeIdFor(
+    identity.repositoryId,
+    identity.branch,
+  );
+};
+
+const runKnowledgeControlCommand = async (
+  args: readonly string[],
+  io: CliIo,
+  dependencies: CliDependencies,
+): Promise<number> => {
+  const shapeIsValid =
+    args[0] === "remember"
+      ? hasOnlyOptions(args, 1, {
+          values: [
+            "--content",
+            "--cwd",
+            "--data-root",
+            "--not-when",
+            "--scope",
+            "--when",
+            "--workflow",
+          ],
+        })
+      : args[0] === "correct"
+        ? hasOnlyOptions(args, 2, {
+            values: [
+              "--data-root",
+              "--reason",
+            ],
+          })
+        : args[0] === "mute"
+          ? hasOnlyOptions(args, 2, {
+              values: [
+                "--data-root",
+                "--session",
+              ],
+            })
+          : args[0] === "forget"
+            ? hasOnlyOptions(args, 2, {
+                values: [
+                  "--data-root",
+                ],
+              })
+            : false;
+  if (
+    !shapeIsValid ||
+    hasInvalidOptionValue(args, "--data-root") ||
+    hasInvalidOptionValue(args, "--content") ||
+    hasInvalidOptionValue(args, "--when") ||
+    hasInvalidOptionValue(args, "--not-when") ||
+    hasInvalidOptionValue(args, "--scope") ||
+    hasInvalidOptionValue(args, "--workflow") ||
+    hasInvalidOptionValue(args, "--cwd") ||
+    hasInvalidOptionValue(args, "--reason") ||
+    hasInvalidOptionValue(args, "--session")
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  const root = dataRoot(args);
+  try {
+    switch (args[0]) {
+      case "remember": {
+        const content = option(args, "--content");
+        const appliesWhen = option(args, "--when");
+        const scopeResult = scopeSchema.safeParse(
+          option(args, "--scope") ?? "repository",
+        );
+        if (
+          !content ||
+          !appliesWhen ||
+          !scopeResult.success
+        ) {
+          io.error(usage);
+          return 2;
+        }
+        const adapter = dependencies.createAdapter(root);
+        const scopeId = await rememberScopeId(
+          scopeResult.data,
+          args,
+          adapter,
+        );
+        const result = await withKnowledgeControl(
+          root,
+          (service) =>
+            service.remember({
+              appliesWhen: [
+                appliesWhen,
+              ],
+              content,
+              nonApplicability: [
+                ...(option(args, "--not-when") === undefined
+                  ? []
+                  : [
+                      option(args, "--not-when") ?? "",
+                    ]),
+              ],
+              scope: scopeResult.data,
+              ...(scopeId === undefined ? {} : { scopeId }),
+            }),
+        );
+        io.log(
+          result.changed
+            ? `Remembered Knowledge ${result.candidate?.knowledgeId}.`
+            : `Knowledge ${result.candidate?.knowledgeId} was already remembered.`,
+        );
+        return 0;
+      }
+      case "correct": {
+        const knowledgeId = args[1]?.trim();
+        const reason = option(args, "--reason");
+        if (!knowledgeId || knowledgeId.startsWith("--")) {
+          io.error(usage);
+          return 2;
+        }
+        const result = await withKnowledgeControl(
+          root,
+          (service) =>
+            service.correct({
+              knowledgeId,
+              ...(reason === undefined
+                ? {}
+                : {
+                    reason,
+                  }),
+            }),
+        );
+        io.log(
+          result.changed
+            ? `Knowledge ${knowledgeId} marked disputed.`
+            : `Knowledge ${knowledgeId} was already corrected.`,
+        );
+        return 0;
+      }
+      case "mute": {
+        const knowledgeId = args[1]?.trim();
+        const sessionId = option(args, "--session");
+        if (
+          !knowledgeId ||
+          knowledgeId.startsWith("--") ||
+          !sessionId
+        ) {
+          io.error(usage);
+          return 2;
+        }
+        const result = await withKnowledgeControl(
+          root,
+          (service) =>
+            service.mute({
+              knowledgeId,
+              sessionId,
+            }),
+        );
+        io.log(
+          result.changed
+            ? `Knowledge ${knowledgeId} muted for Session ${sessionId}.`
+            : `Knowledge ${knowledgeId} is already muted for that Session.`,
+        );
+        return 0;
+      }
+      case "forget": {
+        const targetId = args[1]?.trim();
+        if (!targetId || targetId.startsWith("--")) {
+          io.error(usage);
+          return 2;
+        }
+        return runDeletionCommand(
+          [
+            "delete",
+            "--knowledge",
+            targetId,
+            "--data-root",
+            root,
+          ],
+          io,
+        );
+      }
+    }
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return 3;
+  }
+  io.error(usage);
+  return 2;
+};
 
 const deletionTarget = (
   args: readonly string[],
 ):
   | {
       readonly targetId: string;
-      readonly targetType: "episode" | "session" | "source";
+      readonly targetType:
+        | "episode"
+        | "knowledge"
+        | "session"
+        | "source";
     }
   | undefined => {
   const targets = [
     ["--source", "source"],
     ["--session", "session"],
     ["--episode", "episode"],
+    ["--knowledge", "knowledge"],
   ] as const;
   const selected = targets.flatMap(([
     name,
@@ -163,7 +499,21 @@ const runDeletionCommand = async (
   const target = deletionTarget(args);
   if (
     target === undefined ||
-    ["--source", "--session", "--episode"].some((name) =>
+    !hasOnlyOptions(args, 1, {
+      values: [
+        "--data-root",
+        "--episode",
+        "--knowledge",
+        "--session",
+        "--source",
+      ],
+    }) ||
+    [
+      "--source",
+      "--session",
+      "--episode",
+      "--knowledge",
+    ].some((name) =>
       hasInvalidOptionValue(args, name),
     ) ||
     hasInvalidOptionValue(args, "--data-root")
@@ -176,9 +526,15 @@ const runDeletionCommand = async (
   const deletionId = `deletion-${randomUUID()}`;
   let knowledgeBackend: SqliteFtsKnowledgeBackend | undefined;
   let store: CanonicalSqliteStore | undefined;
+  let projectionLease: Awaited<
+    ReturnType<typeof acquireKnowledgeProjectionLease>
+  > | undefined;
   try {
     await access(paths.rootMarker);
     await access(paths.database);
+    projectionLease = await acquireKnowledgeProjectionLease(
+      paths.root,
+    );
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
     store = new CanonicalSqliteStore(paths.database);
@@ -192,23 +548,9 @@ const runDeletionCommand = async (
     const ledgers = new Map<string, EvidenceLedgerWriter>();
     const result = await new DeletionService({
       knowledgeProjection: {
-        acquireLease: async () => {
-          const leaseName = await resolveWindowsProvenLoopLeaseName(
-            paths.root,
-            "knowledge-projection",
-          );
-          const provider = new WindowsNamedPipeLeaseProvider(
-            leaseName,
-          );
-          let lease = await provider.tryAcquire();
-          while (lease === undefined) {
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, 5);
-            });
-            lease = await provider.tryAcquire();
-          }
-          return lease;
-        },
+        acquireLease: async () => ({
+          release: async () => undefined,
+        }),
         rebuild: async () => {
           await knowledgeProjection.rebuild();
         },
@@ -255,7 +597,11 @@ const runDeletionCommand = async (
       ...target,
     });
     io.log(
-      `Deletion completed: ${result.operation.deletedSourceCount} source identifiers, ` +
+      `${
+        target.targetType === "knowledge"
+          ? "Forget"
+          : "Deletion"
+      } completed: ${result.operation.deletedSourceCount} source identifiers, ` +
       `${result.operation.deletedDependentCount} dependent records, ` +
       `${result.operation.deletedQueueItemCount} queue items.`,
     );
@@ -266,6 +612,7 @@ const runDeletionCommand = async (
   } finally {
     knowledgeBackend?.close();
     store?.close();
+    await projectionLease?.release();
   }
 };
 
@@ -406,6 +753,20 @@ export const runCli = async (
   if (args[0] === "delete") {
     return runDeletionCommand(args, io);
   }
+  if (
+    [
+      "correct",
+      "forget",
+      "mute",
+      "remember",
+    ].includes(args[0] ?? "")
+  ) {
+    return runKnowledgeControlCommand(
+      args,
+      io,
+      dependencies,
+    );
+  }
   if (args[0] === "worker") {
     return runWorkerCommand(args, io, dependencies);
   }
@@ -425,12 +786,38 @@ export const runCli = async (
     }
   }
   if (
+    args[0] === "purge" &&
+    !hasOnlyOptions(args, 1, {
+      values: [
+        "--data-root",
+      ],
+    })
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  if (
+    args[0] === "uninstall" &&
+    !hasOnlyOptions(args, 1, {
+      flags: [
+        "--purge",
+      ],
+      values: [
+        "--data-root",
+      ],
+    })
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  if (
     ![
       "disable",
       "delete",
       "doctor",
       "enable",
       "install",
+      "purge",
       "status",
       "uninstall",
     ].includes(args[0] ?? "")
@@ -482,6 +869,13 @@ export const runCli = async (
       case "uninstall": {
         const result = await adapter.uninstall({
           purge: args.includes("--purge"),
+        });
+        io.log(result.message);
+        return operationExitCode(result);
+      }
+      case "purge": {
+        const result = await adapter.uninstall({
+          purge: true,
         });
         io.log(result.message);
         return operationExitCode(result);

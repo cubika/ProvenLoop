@@ -1165,6 +1165,9 @@ provenloop status
 provenloop doctor
 provenloop enable [capability]
 provenloop disable [capability]
+provenloop remember --content <text> --when <condition> --scope <scope>
+provenloop correct <knowledge-id> [--reason <text>]
+provenloop mute <knowledge-id> --session <session-id>
 provenloop worker run [--batch-size <count>]
 provenloop forget <knowledge-or-playbook>
 provenloop delete --source <source>
@@ -1176,6 +1179,12 @@ provenloop purge
 
 Install is idempotent. Disable does not delete data. Uninstall preserves data
 unless explicitly combined with purge.
+Remember derives repository and branch identity from Git rather than accepting
+opaque scope IDs. Correct appends feedback and disputes the target. Forget
+hard-deletes the Knowledge body, feedback, usage records, mute projections, and
+search projection, then archives Knowledge that superseded or conflicted with
+the forgotten item. Purge is a dedicated alias for the guarded full uninstall
+and removes the owned local data root.
 
 ## 8. Technology choice
 

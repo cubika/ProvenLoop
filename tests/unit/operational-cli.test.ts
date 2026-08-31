@@ -214,6 +214,67 @@ describe("operational CLI", () => {
     });
   });
 
+  it("exposes purge as a dedicated command", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "purge",
+          "--data-root",
+          "C:\\data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(adapter.uninstall).toHaveBeenCalledWith({
+      purge: true,
+    });
+  });
+
+  it("rejects unknown arguments for destructive commands", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "purge",
+          "--help",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    await expect(
+      runCli(
+        [
+          "uninstall",
+          "--purge",
+          "--data-rooot",
+          "C:\\wrong",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    await expect(
+      runCli(
+        [
+          "forget",
+          "knowledge-1",
+          "--data-rooot",
+          "C:\\wrong",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    expect(adapter.uninstall).not.toHaveBeenCalled();
+  });
+
   it("runs one worker batch with stable exit codes", async () => {
     const adapter = fakeAdapter();
     const harness = cli(adapter);

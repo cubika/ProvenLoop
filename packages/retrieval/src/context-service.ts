@@ -10,7 +10,11 @@ import {
   type KnowledgeCandidate,
   type Scope,
 } from "@provenloop/contracts";
-import { sha256 } from "@provenloop/domain";
+import {
+  containsPotentialSecret,
+  redactPotentialSecrets,
+  sha256,
+} from "@provenloop/domain";
 
 import { CanonicalKnowledgeRetriever } from "./retriever.js";
 import { branchScopeIdFor } from "./types.js";
@@ -131,6 +135,37 @@ const nonApplicabilityMatches = (
     );
   });
 };
+
+const knowledgeContainsPotentialSecret = (
+  candidate: KnowledgeCandidate,
+): boolean =>
+  [
+    candidate.content,
+    ...(candidate.scopeId === undefined
+      ? []
+      : [
+          candidate.scopeId,
+        ]),
+    ...candidate.appliesWhen,
+    ...candidate.nonApplicability,
+  ].some(containsPotentialSecret);
+
+const branchContextContainsPotentialSecret = (
+  context: BranchContext,
+): boolean =>
+  [
+    context.branch,
+    context.goal,
+    context.repoId,
+    ...context.acceptedDecisions,
+    ...context.explicitConstraints,
+    ...context.implementationState,
+    ...context.unfinishedItems,
+  ].some(
+    (value) =>
+      value !== undefined &&
+      containsPotentialSecret(value),
+  );
 
 const evidenceWeight = (
   candidate: KnowledgeCandidate,
@@ -784,6 +819,7 @@ export class ContextRetrievalService {
       });
       if (
         branchContext !== undefined &&
+        !branchContextContainsPotentialSecret(branchContext) &&
         !previouslyReturned.has(
           `branch-context:${branchContext.branchContextId}`,
         )
@@ -798,6 +834,7 @@ export class ContextRetrievalService {
             !previouslyReturned.has(
               `knowledge:${input.candidate.knowledgeId}`,
             ) &&
+            !knowledgeContainsPotentialSecret(input.candidate) &&
             !nonApplicabilityMatches(
               input.candidate,
               requestTokens,
@@ -910,6 +947,17 @@ export class ContextRetrievalService {
           status: "not_found",
         };
       }
+      if (
+        [
+          context.branch,
+          context.repoId,
+        ].some(containsPotentialSecret)
+      ) {
+        return {
+          explanationRef,
+          status: "not_found",
+        };
+      }
       return {
         applicability: {
           branch: context.branch,
@@ -947,6 +995,12 @@ export class ContextRetrievalService {
         ])
         .has(candidate.knowledgeId)
     ) {
+      return {
+        explanationRef,
+        status: "not_found",
+      };
+    }
+    if (knowledgeContainsPotentialSecret(candidate)) {
       return {
         explanationRef,
         status: "not_found",
@@ -998,7 +1052,7 @@ export class ContextRetrievalService {
               : {
                   episodeId,
                   finishedAt: episode.finishedAt,
-                  goal: episode.goal,
+                  goal: redactPotentialSecrets(episode.goal),
                   startedAt: episode.startedAt,
                 };
           },
@@ -1036,6 +1090,23 @@ export class ContextRetrievalService {
     ) {
       throw new Error(
         "Feedback requestId, sessionId, and targetId must be non-empty.",
+      );
+    }
+    const reason = request.reason?.trim();
+    if (
+      [
+        reason,
+        request.branchScopeId,
+        request.repositoryScopeId,
+        request.workflowScopeId,
+      ].some(
+        (value) =>
+          value !== undefined &&
+          containsPotentialSecret(value),
+      )
+    ) {
+      throw new Error(
+        "Feedback rejected content that may contain a secret.",
       );
     }
     const useRecord = this.#store
@@ -1079,7 +1150,6 @@ export class ContextRetrievalService {
       targetId,
       workflowScopeId: request.workflowScopeId,
     }).slice(0, 24)}`;
-    const reason = request.reason?.trim();
     const event: FeedbackEvent = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       evidenceRef:

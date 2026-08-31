@@ -69,6 +69,7 @@ const candidate = (input: {
   readonly nonApplicability?: readonly string[];
   readonly scope?: Scope;
   readonly scopeId?: string;
+  readonly sourceEpisodeIds?: readonly string[];
   readonly sourceEvidenceIds?: readonly string[];
   readonly state?: KnowledgeCandidate["state"];
 }): KnowledgeCandidate => ({
@@ -102,7 +103,9 @@ const candidate = (input: {
     : {
         scopeId: input.scopeId,
       }),
-  sourceEpisodeIds: [],
+  sourceEpisodeIds: [
+    ...(input.sourceEpisodeIds ?? []),
+  ],
   sourceEvidenceIds: [
     ...(input.sourceEvidenceIds ?? []),
   ],
@@ -353,6 +356,162 @@ describe("M1 context retrieval", () => {
     }
   });
 
+  it("filters potential secrets again before rendering", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      store.upsertKnowledgeCandidates([
+        candidate({
+          content:
+            "Use token ghp_1234567890abcdefghijklmnopqrst for validation.",
+          id: "secret-guidance",
+          scopeId: "repo-1",
+        }),
+        {
+          ...candidate({
+            content: "Use safe token validation.",
+            id: "generated-topic",
+            scopeId: "repo-1",
+          }),
+          topicKey: "manual:9b1f9cafb5efd3f26414d33c",
+        },
+      ]);
+      await new KnowledgeProjectionManager({
+        backend,
+        store,
+      }).rebuild();
+      const response = await new ContextRetrievalService({
+        backend,
+        store,
+      }).context({
+        cwd: "C:\\repo",
+        prompt: "Use token validation.",
+        repoId: "repo-1",
+        sessionId: "session-secret-filter",
+        tokenBudget: 300,
+      });
+
+      expect(response).toMatchObject({
+        status: "ok",
+      });
+      expect(response.items.map((item) => item.id)).toEqual([
+        "generated-topic",
+      ]);
+    } finally {
+      backend.close();
+      store.close();
+    }
+  });
+
+  it("filters Branch Context with a secret-bearing branch name", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      const branch = "ghp_1234567890abcdefghijklmnopqrst";
+      store.replaceBranchContextProjection({
+        contexts: [
+          {
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+            acceptedDecisions: [],
+            branch,
+            branchContextId: "branch-context-secret",
+            explicitConstraints: [],
+            headSha: "abc123",
+            implementationState: [
+              "Continue safe work.",
+            ],
+            recentVerificationEvidenceIds: [],
+            repoId: "repo-1",
+            sourceEpisodeIds: [],
+            sourceEventIds: [],
+            unfinishedItems: [],
+            updatedAt: "2026-08-31T00:00:00.000Z",
+          },
+        ],
+      });
+      const response = await new ContextRetrievalService({
+        backend,
+        store,
+      }).context({
+        branch,
+        cwd: "C:\\repo",
+        headSha: "abc123",
+        prompt: "Continue safe work.",
+        repoId: "repo-1",
+        sessionId: "session-secret-branch",
+        tokenBudget: 300,
+      });
+
+      expect(response.items).toEqual([]);
+    } finally {
+      backend.close();
+      store.close();
+    }
+  });
+
+  it("rejects secrets in MCP feedback reason and resolved scope", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      const target = candidate({
+        id: "secret-feedback",
+        scopeId: "repo-1",
+      });
+      store.upsertKnowledgeCandidates([
+        target,
+      ]);
+      store.appendContextUseRecord(useRecord({
+        requestId: "request-secret-feedback",
+        sessionId: "session-secret-feedback",
+        targetId: target.knowledgeId,
+      }));
+      const service = new ContextRetrievalService({
+        backend,
+        store,
+      });
+      const token = "ghp_1234567890abcdefghijklmnopqrst";
+
+      await expect(service.feedback({
+        action: "wrong",
+        reason: `token=${token}`,
+        requestId: "request-secret-feedback",
+        sessionId: "session-secret-feedback",
+        targetId: target.knowledgeId,
+      })).rejects.toThrow(
+        "Feedback rejected content that may contain a secret.",
+      );
+      await expect(service.feedback({
+        action: "set_scope",
+        repositoryScopeId: token,
+        requestId: "request-secret-feedback",
+        scope: "repository",
+        sessionId: "session-secret-feedback",
+        targetId: target.knowledgeId,
+      })).rejects.toThrow(
+        "Feedback rejected content that may contain a secret.",
+      );
+      expect(store.feedbackEvents()).toEqual([]);
+    } finally {
+      backend.close();
+      store.close();
+    }
+  });
+
   it("clamps rendered context to the global token ceiling", async () => {
     const root = await createTemporaryDirectory();
     const store = new CanonicalSqliteStore(
@@ -539,6 +698,85 @@ describe("M1 context retrieval", () => {
           "collision",
         ])[0]?.state,
       ).toBe("active");
+    } finally {
+      backend.close();
+      store.close();
+    }
+  });
+
+  it("redacts potential secrets from explanation provenance", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      const episodeId = "episode-secret-explanation";
+      store.replaceWorkEpisodeProjection({
+        associations: [],
+        corrections: [],
+        episodes: [
+          {
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+            associationConfidence: 1,
+            associationEvidenceIds: [],
+            branches: [],
+            commitIds: [],
+            correctionEventIds: [],
+            episodeId,
+            goal:
+              "Use ghp_1234567890abcdefghijklmnopqrst during deployment.",
+            issueIds: [],
+            outcome: "unknown",
+            outcomeEvidenceIds: [],
+            outcomeQualification: "open",
+            pullRequestIds: [],
+            repoId: "repo-1",
+            sessionIds: [
+              "session-secret-explanation",
+            ],
+            sourceEventIds: [],
+            startedAt: "2026-08-31T00:00:00.000Z",
+          },
+        ],
+      });
+      store.upsertKnowledgeCandidates([
+        candidate({
+          content: "Run deployment validation.",
+          id: "safe-explanation",
+          scopeId: "repo-1",
+          sourceEpisodeIds: [
+            episodeId,
+          ],
+        }),
+      ]);
+      await new KnowledgeProjectionManager({
+        backend,
+        store,
+      }).rebuild();
+      const service = new ContextRetrievalService({
+        backend,
+        store,
+      });
+      const response = await service.context({
+        cwd: "C:\\repo",
+        prompt: "Run deployment validation.",
+        repoId: "repo-1",
+        sessionId: "session-secret-explanation",
+        tokenBudget: 300,
+      });
+      const explanation = service.explain({
+        explanationRef:
+          response.items[0]?.explanationRef ?? "",
+        sessionId: "session-secret-explanation",
+      });
+
+      expect(JSON.stringify(explanation)).not.toContain(
+        "ghp_1234567890abcdefghijklmnopqrst",
+      );
+      expect(JSON.stringify(explanation)).toContain("[REDACTED]");
     } finally {
       backend.close();
       store.close();

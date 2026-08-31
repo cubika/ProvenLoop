@@ -24,6 +24,14 @@ export {
   type DeletionStore,
 } from "./deletion-service.js";
 export {
+  KnowledgeControlService,
+  type KnowledgeControlProjection,
+  type KnowledgeControlResult,
+  type KnowledgeControlServiceOptions,
+  type KnowledgeControlStore,
+  type RememberKnowledgeInput,
+} from "./knowledge-control-service.js";
+export {
   CAPTURE_WORKER_PRESSURE_REASONS,
   CaptureWorkerCircuitBreaker,
   InvalidWorkerPressureThresholdError,

@@ -186,6 +186,10 @@ to three items and 1,200 rendered tokens, deduplicated per Session, and fails
 closed when the interruptible SQLite read path exceeds its deadline or reports
 degradation. Repository, Session, and workflow identities are host-bound rather
 than accepted from model-controlled tool arguments.
+M1 user control now adds deterministic CLI commands for remember, correct,
+mute, forget, and purge. Forget removes canonical and projected Knowledge plus
+its usage and feedback records, while dependent Knowledge is archived instead
+of silently remaining active.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

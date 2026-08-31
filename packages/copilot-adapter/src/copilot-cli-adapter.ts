@@ -637,7 +637,39 @@ implements AgentAdapter<CopilotEventMappingResult> {
     if (dataRootWasPresent) {
       await this.#assertOwnedDataRoot();
     }
-    const registration = await this.#requireRegistrationStatus();
+    let workerLease: Awaited<
+      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
+    >;
+    let knowledgeLease: Awaited<
+      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
+    >;
+    try {
+      if (options.purge && dataRootWasPresent) {
+        const workerLeaseName =
+          await resolveWindowsCaptureWorkerLeaseName(
+            this.#paths.root,
+          );
+        workerLease = await new WindowsNamedPipeLeaseProvider(
+          workerLeaseName,
+        ).tryAcquire();
+        if (workerLease === undefined) {
+          throw new Error(
+            "Cannot purge while the capture worker is active.",
+          );
+        }
+        knowledgeLease = await new WindowsNamedPipeLeaseProvider(
+          await resolveWindowsProvenLoopLeaseName(
+            this.#paths.root,
+            "knowledge-projection",
+          ),
+        ).tryAcquire();
+        if (knowledgeLease === undefined) {
+          throw new Error(
+            "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
+          );
+        }
+      }
+      const registration = await this.#requireRegistrationStatus();
     if (
       !stateWasInstalled &&
       !dataRootWasPresent &&
@@ -696,24 +728,6 @@ implements AgentAdapter<CopilotEventMappingResult> {
       force: true,
       recursive: true,
     });
-    let workerLease: Awaited<
-      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
-    >;
-    if (options.purge && dataRootWasPresent) {
-      const workerLeaseName =
-        await resolveWindowsCaptureWorkerLeaseName(
-          this.#paths.root,
-        );
-      workerLease = await new WindowsNamedPipeLeaseProvider(
-        workerLeaseName,
-      ).tryAcquire();
-      if (workerLease === undefined) {
-        throw new Error(
-          "Cannot purge while the capture worker is active.",
-        );
-      }
-    }
-    try {
       if (options.purge) {
         this.#assertSafePurgePath();
         await rm(this.#paths.root, {
@@ -721,20 +735,21 @@ implements AgentAdapter<CopilotEventMappingResult> {
           recursive: true,
         });
       }
+      const changed =
+        registration.pluginInstalled ||
+        registration.marketplaceRegistered ||
+        stateWasInstalled ||
+        (options.purge && dataRootWasPresent);
+      return {
+        message: options.purge
+          ? "ProvenLoop integration uninstalled and local data purged."
+          : "ProvenLoop integration uninstalled; local data was preserved.",
+        status: changed || options.purge ? "changed" : "unchanged",
+      };
     } finally {
+      await knowledgeLease?.release();
       await workerLease?.release();
     }
-    const changed =
-      registration.pluginInstalled ||
-      registration.marketplaceRegistered ||
-      stateWasInstalled ||
-      (options.purge && dataRootWasPresent);
-    return {
-      message: options.purge
-        ? "ProvenLoop integration uninstalled and local data purged."
-        : "ProvenLoop integration uninstalled; local data was preserved.",
-      status: changed || options.purge ? "changed" : "unchanged",
-    };
   }
 
   public async registerCaptureExtension(): Promise<AdapterOperationResult> {

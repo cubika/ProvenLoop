@@ -425,13 +425,13 @@ frozen.
 
 ### 11.4 User control and deletion
 
-- [ ] Implement explicit remember, correct, forget, and mute-for-session.
-- [ ] Implement `forget <knowledge-or-playbook>`.
+- [x] Implement explicit remember, correct, forget, and mute-for-session.
+- [x] Implement `forget <knowledge-or-playbook>`.
 - [x] Implement delete by source/session/episode.
-- [ ] Implement purge of database, artifacts, projections, queue, cache,
+- [x] Implement purge of database, artifacts, projections, queue, cache,
   evaluations, logs, and tombstones.
 - [x] Block dependent work while deletion is active.
-- [ ] Recompute or deactivate dependent Knowledge.
+- [x] Recompute or deactivate dependent Knowledge.
 - [x] Run the deletion propagation gate before reporting success.
 
 ### 11.5 M1 gate

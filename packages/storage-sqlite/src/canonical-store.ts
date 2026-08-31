@@ -1670,6 +1670,16 @@ export class CanonicalSqliteStore {
           "A failed deletion must be resumed before another deletion starts.",
         );
       }
+      if (
+        targetType === "knowledge" &&
+        this.knowledgeCandidates([
+          targetId,
+        ]).length === 0
+      ) {
+        throw new Error(
+          `Knowledge ${targetId} does not exist.`,
+        );
+      }
       const operation = deletionOperationSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,
       activeTargetId: targetId,
@@ -1797,6 +1807,9 @@ export class CanonicalSqliteStore {
     const dependentIds = new Set(
       operation.plannedDependentIds ?? [],
     );
+    if (targetType === "knowledge") {
+      dependentIds.add(`knowledge:${targetId}`);
+    }
     const dependencySeedIds = new Set(
       operation.plannedDependencySeedIds ?? [],
     );
@@ -2025,6 +2038,13 @@ export class CanonicalSqliteStore {
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
+      if (targetType === "knowledge") {
+        this.#database
+          .prepare(
+            "DELETE FROM knowledge_candidates WHERE knowledge_id = ?",
+          )
+          .run(targetId);
+      }
       if (deduplicationKeys.length > 0) {
         const parameters = placeholders(deduplicationKeys.length);
         this.#database
@@ -2152,13 +2172,17 @@ export class CanonicalSqliteStore {
             "body_json",
             dependencyReferences,
           ) +
-          deleteDependentRows(
-            this.#database,
-            "knowledge_candidates",
-            "knowledge_id",
-            "body_json",
-            dependencyReferences,
-            dependentIds,
+          (
+            targetType === "knowledge"
+              ? 0
+              : deleteDependentRows(
+                  this.#database,
+                  "knowledge_candidates",
+                  "knowledge_id",
+                  "body_json",
+                  dependencyReferences,
+                  dependentIds,
+                )
           ) +
           deleteDependentRows(
             this.#database,
@@ -2195,6 +2219,60 @@ export class CanonicalSqliteStore {
             dependentIds,
           );
       } while (deletedInPass > 0);
+      if (targetType === "knowledge") {
+        const timestamp = operation.requestedAt;
+        const rows = this.#database
+          .prepare(
+            `SELECT body_json
+               FROM knowledge_candidates
+              ORDER BY knowledge_id`,
+          )
+          .all() as readonly Readonly<Record<string, unknown>>[];
+        for (const row of rows) {
+          const candidate = knowledgeCandidateSchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          );
+          if (
+            candidate.supersedes !== targetId &&
+            !candidate.conflictsWith.includes(targetId)
+          ) {
+            continue;
+          }
+          const {
+            supersedes,
+            ...withoutSupersedes
+          } = candidate;
+          const updated = knowledgeCandidateSchema.parse({
+            ...withoutSupersedes,
+            conflictsWith: candidate.conflictsWith.filter(
+              (conflict) => conflict !== targetId,
+            ),
+            expiresAt: timestamp,
+            state: "archived",
+            ...(supersedes === undefined ||
+            supersedes === targetId
+              ? {}
+              : {
+                  supersedes,
+                }),
+            validatedAt: timestamp,
+          });
+          this.#database
+            .prepare(
+              `UPDATE knowledge_candidates
+                  SET body_json = ?,
+                      source_digest = ?,
+                      updated_at = ?
+                WHERE knowledge_id = ?`,
+            )
+            .run(
+              JSON.stringify(updated),
+              sha256(updated),
+              timestamp,
+              updated.knowledgeId,
+            );
+        }
+      }
       for (const knowledgeId of affectedKnowledgeIds) {
         const row = this.#database
           .prepare(
@@ -2833,6 +2911,28 @@ export class CanonicalSqliteStore {
       ),
     );
     return tombstones;
+  }
+
+  #knowledgeDeletionBlocked(knowledgeId: string): boolean {
+    const targetDigest = deletionIdentityDigest(
+      "target",
+      `knowledge:${knowledgeId}`,
+      this.#deletionIdentityKey,
+    );
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM deletion_operations
+          WHERE status = 'completed'`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.some((row) => {
+      const operation = deletionOperationSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      );
+      return operation.targetType === "knowledge" &&
+        operation.targetDigest === targetDigest;
+    });
   }
 
   public ingestQueueItem(
@@ -3485,6 +3585,14 @@ export class CanonicalSqliteStore {
       ) {
         throw new Error(
           "Knowledge candidate contains a deleted identity.",
+        );
+      }
+      const forgotten = candidates.find((candidate) =>
+        this.#knowledgeDeletionBlocked(candidate.knowledgeId),
+      );
+      if (forgotten !== undefined) {
+        throw new Error(
+          `Knowledge ${forgotten.knowledgeId} was forgotten and cannot be restored.`,
         );
       }
       const sourceEpisodeIds = new Set(

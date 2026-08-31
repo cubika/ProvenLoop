@@ -11,6 +11,7 @@ import {
 
 export const deletionTargetTypeSchema = z.enum([
   "episode",
+  "knowledge",
   "session",
   "source",
 ]);

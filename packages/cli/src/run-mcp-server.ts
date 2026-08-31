@@ -625,8 +625,13 @@ class LocalMcpToolHandlers implements McpToolHandlers {
     readonly sessionId: string;
   }): Promise<ContextExplanation> {
     await this.#assertRetrievalEnabled();
-    return this.#withService((service) =>
-      Promise.resolve(service.explain(request)),
+    return this.#withKnowledgeLease(() =>
+      this.#withService(
+        (service) =>
+          Promise.resolve(service.explain(request)),
+        undefined,
+        true,
+      ),
     );
   }
 
@@ -671,9 +676,37 @@ class LocalMcpToolHandlers implements McpToolHandlers {
             }),
       };
     }
-    return this.#withService((service) =>
-      service.feedback(scopedRequest),
+    return this.#withKnowledgeLease(() =>
+      this.#withService(
+        (service) => service.feedback(scopedRequest),
+        undefined,
+        true,
+      ),
     );
+  }
+
+  async #withKnowledgeLease<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const paths = resolveWindowsProvenLoopPaths(
+      this.#dataRoot,
+    );
+    const lease = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(
+        paths.root,
+        "knowledge-projection",
+      ),
+    ).tryAcquire();
+    if (lease === undefined) {
+      throw new Error(
+        "Knowledge projection is busy.",
+      );
+    }
+    try {
+      return await operation();
+    } finally {
+      await lease.release();
+    }
   }
 
   async #assertRetrievalEnabled(): Promise<void> {
@@ -700,9 +733,11 @@ class LocalMcpToolHandlers implements McpToolHandlers {
     operation: (
       service: ContextRetrievalService,
     ) => Promise<T>,
-    deadline: number =
-      Date.now() + DEFAULT_CONTEXT_TIMEOUT_MS,
+    deadline: number | undefined,
+    knowledgeLeaseHeld = false,
   ): Promise<T> {
+    const effectiveDeadline =
+      deadline ?? Date.now() + DEFAULT_CONTEXT_TIMEOUT_MS;
     const paths = resolveWindowsProvenLoopPaths(
       this.#dataRoot,
     );
@@ -711,7 +746,8 @@ class LocalMcpToolHandlers implements McpToolHandlers {
       access(paths.database),
       access(paths.knowledgeDatabase),
     ]);
-    const remainingBeforeOpen = deadline - Date.now();
+    const remainingBeforeOpen =
+      effectiveDeadline - Date.now();
     if (remainingBeforeOpen <= MCP_WRITE_RESERVE_MS) {
       throw new Error(
         "Retrieval deadline expired before database initialization.",
@@ -737,7 +773,7 @@ class LocalMcpToolHandlers implements McpToolHandlers {
       );
       const activeBackend = backend;
       const serviceTimeoutMs =
-        deadline - Date.now() - MCP_WRITE_RESERVE_MS;
+        effectiveDeadline - Date.now() - MCP_WRITE_RESERVE_MS;
       if (serviceTimeoutMs <= 0) {
         throw new Error(
           "Retrieval deadline expired during database initialization.",
@@ -748,6 +784,23 @@ class LocalMcpToolHandlers implements McpToolHandlers {
         now: this.#now,
         store,
         syncKnowledge: async (candidate) => {
+          const syncCurrent = async (): Promise<void> => {
+            const current = store.knowledgeCandidates([
+              candidate.knowledgeId,
+            ])[0];
+            if (current === undefined) {
+              throw new Error(
+                "Knowledge projection target no longer exists.",
+              );
+            }
+            await activeBackend.index([
+              knowledgeProjectionFromCandidate(current),
+            ]);
+          };
+          if (knowledgeLeaseHeld) {
+            await syncCurrent();
+            return;
+          }
           const lease = await new WindowsNamedPipeLeaseProvider(
             await resolveWindowsProvenLoopLeaseName(
               paths.root,
@@ -760,17 +813,7 @@ class LocalMcpToolHandlers implements McpToolHandlers {
             );
           }
           try {
-            const current = store.knowledgeCandidates([
-              candidate.knowledgeId,
-            ])[0];
-            if (current === undefined) {
-              throw new Error(
-                "Knowledge projection target no longer exists.",
-              );
-            }
-            await activeBackend.index([
-              knowledgeProjectionFromCandidate(current),
-            ]);
+            await syncCurrent();
           } finally {
             await lease.release();
           }

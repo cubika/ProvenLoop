@@ -23,6 +23,7 @@ import {
 } from "@provenloop/copilot-adapter";
 import {
   resolveWindowsCaptureWorkerLeaseName,
+  resolveWindowsProvenLoopLeaseName,
   WindowsNamedPipeLeaseProvider,
 } from "@provenloop/platform-windows";
 
@@ -455,6 +456,59 @@ describe("Copilot operational adapter", () => {
         "Cannot purge while the capture worker is active.",
       );
       await expect(access(dataRoot)).resolves.toBeUndefined();
+    } finally {
+      await lease.release();
+    }
+
+    await expect(
+      adapter.uninstall({
+        purge: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "changed",
+    });
+    await expect(access(dataRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("refuses to purge while retrieval or deletion holds the projection lease", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const adapter = new CopilotCliAdapter({
+      commandRunner: new FakeCommandRunner(),
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      platform: "win32",
+    });
+    await adapter.install();
+    const provider = new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(
+        dataRoot,
+        "knowledge-projection",
+      ),
+    );
+    const lease = await provider.tryAcquire();
+    if (lease === undefined) {
+      throw new Error(
+        "Expected to acquire the Knowledge projection lease.",
+      );
+    }
+    try {
+      await expect(
+        adapter.uninstall({
+          purge: true,
+        }),
+      ).rejects.toThrow(
+        "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
+      );
+      await expect(access(dataRoot)).resolves.toBeUndefined();
+      await expect(adapter.status()).resolves.toMatchObject({
+        installed: true,
+        marketplaceRegistered: true,
+        pluginEnabled: true,
+        pluginInstalled: true,
+      });
     } finally {
       await lease.release();
     }
