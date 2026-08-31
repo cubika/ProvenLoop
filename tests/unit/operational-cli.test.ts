@@ -7,6 +7,7 @@ import {
   runMcpServer,
   type CliDependencies,
   type CliIo,
+  type McpToolHandlers,
 } from "@provenloop/cli";
 import type {
   AdapterHealth,
@@ -136,6 +137,27 @@ describe("operational CLI", () => {
       "installed",
       "capture disabled",
     ]);
+  });
+
+  it("passes the configured data root to the MCP server", async () => {
+    const harness = cli(fakeAdapter());
+
+    await expect(
+      runCli(
+        [
+          "mcp",
+          "serve",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(harness.dependencies.runMcpServer)
+      .toHaveBeenCalledWith({
+        dataRoot: "C:\\custom-data",
+      });
   });
 
   it("uses stable exit codes for invalid input and doctor failures", async () => {
@@ -334,7 +356,7 @@ describe("operational CLI", () => {
 });
 
 describe("local MCP registration target", () => {
-  it("initializes and exposes no retrieval tools before that milestone", async () => {
+  it("initializes and exposes the M1 retrieval tools", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
     let content = "";
@@ -351,7 +373,7 @@ describe("local MCP registration target", () => {
         jsonrpc: "2.0",
         method: "initialize",
         params: {
-          protocolVersion: "2025-06-18",
+          protocolVersion: "9999-01-01",
         },
       })}\n`,
     );
@@ -373,6 +395,7 @@ describe("local MCP registration target", () => {
     expect(messages[0]).toMatchObject({
       id: 1,
       result: {
+        protocolVersion: "2025-06-18",
         serverInfo: {
           name: "provenloop",
         },
@@ -381,7 +404,147 @@ describe("local MCP registration target", () => {
     expect(messages[1]).toMatchObject({
       id: 2,
       result: {
-        tools: [],
+        tools: [
+          {
+            name: "provenloop_context",
+          },
+          {
+            name: "provenloop_explain",
+          },
+          {
+            name: "provenloop_feedback",
+          },
+        ],
+      },
+    });
+  });
+
+  it("dispatches validated MCP tool calls", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let content = "";
+    output.on("data", (chunk: Buffer) => {
+      content += chunk.toString("utf8");
+    });
+    const handlers = {
+      context: vi.fn(async () => ({
+        items: [],
+        latencyMs: 1,
+        renderedTokens: 0,
+        requestId: "context-1",
+        status: "ok" as const,
+      })),
+      explain: vi.fn(async (request) => ({
+        explanationRef: request.explanationRef,
+        status: "not_found" as const,
+      })),
+      feedback: vi.fn(async () => ({
+        status: "not_found" as const,
+      })),
+    } satisfies McpToolHandlers;
+    const running = runMcpServer(
+      {
+        input,
+        output,
+      },
+      {
+        cwd: "C:\\repo",
+        handlers,
+        sessionId: "session-1",
+      },
+    );
+    input.write(
+      `${JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          arguments: {
+            prompt: "Run package validation.",
+            tokenBudget: 200,
+          },
+          name: "provenloop_context",
+        },
+      })}\n`,
+    );
+    input.end();
+    await running;
+
+    expect(handlers.context).toHaveBeenCalledWith({
+      cwd: "C:\\repo",
+      prompt: "Run package validation.",
+      sessionId: "session-1",
+      tokenBudget: 200,
+    });
+    expect(JSON.parse(content)).toMatchObject({
+      id: 1,
+      result: {
+        structuredContent: {
+          requestId: "context-1",
+          status: "ok",
+        },
+      },
+    });
+  });
+
+  it("rejects caller-controlled MCP workspace and Session identity", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let content = "";
+    output.on("data", (chunk: Buffer) => {
+      content += chunk.toString("utf8");
+    });
+    const handlers = {
+      context: vi.fn(async () => ({
+        items: [],
+        latencyMs: 0,
+        renderedTokens: 0,
+        requestId: "unused",
+        status: "ok" as const,
+      })),
+      explain: vi.fn(async (request) => ({
+        explanationRef: request.explanationRef,
+        status: "not_found" as const,
+      })),
+      feedback: vi.fn(async () => ({
+        status: "not_found" as const,
+      })),
+    } satisfies McpToolHandlers;
+    const running = runMcpServer(
+      {
+        input,
+        output,
+      },
+      {
+        cwd: "C:\\trusted",
+        handlers,
+        sessionId: "trusted-session",
+      },
+    );
+    input.write(
+      `${JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: {
+          arguments: {
+            cwd: "C:\\other-repository",
+            prompt: "Retrieve context.",
+            sessionId: "other-session",
+            tokenBudget: 200,
+          },
+          name: "provenloop_context",
+        },
+      })}\n`,
+    );
+    input.end();
+    await running;
+
+    expect(handlers.context).not.toHaveBeenCalled();
+    expect(JSON.parse(content)).toMatchObject({
+      id: 1,
+      result: {
+        isError: true,
       },
     });
   });

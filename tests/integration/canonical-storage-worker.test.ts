@@ -110,7 +110,7 @@ describe("canonical SQLite storage", () => {
       busyTimeoutMs: 2_500,
       journalMode: "wal",
       quickCheck: "ok",
-      userVersion: 3,
+      userVersion: 5,
     });
 
     const result = store.ingestQueueItem(queued);
@@ -148,7 +148,7 @@ describe("canonical SQLite storage", () => {
     legacy.close();
 
     const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(3);
+    expect(upgraded.health().userVersion).toBe(5);
     upgraded.close();
 
     const verification = new DatabaseSync(databasePath);
@@ -227,7 +227,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 4,
+            version: 6,
             sql: `
               CREATE TABLE migration_probe (
                 value TEXT NOT NULL
@@ -251,7 +251,7 @@ describe("canonical SQLite storage", () => {
             AND name = 'migration_probe'`,
       )
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(3);
+    expect(Number(version.user_version)).toBe(5);
     expect(Number(probe.count)).toBe(0);
     database.close();
   });
@@ -267,7 +267,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 4,
+            version: 6,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN unexpected TEXT;
@@ -284,7 +284,7 @@ describe("canonical SQLite storage", () => {
     const columns = database
       .prepare("PRAGMA table_info(raw_events);")
       .all() as readonly Readonly<Record<string, unknown>>[];
-    expect(Number(version.user_version)).toBe(3);
+    expect(Number(version.user_version)).toBe(5);
     expect(
       columns.some((column) => column.name === "unexpected"),
     ).toBe(false);
@@ -302,7 +302,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 4,
+            version: 6,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN generated_guard TEXT
@@ -323,7 +323,7 @@ describe("canonical SQLite storage", () => {
     const version = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(3);
+    expect(Number(version.user_version)).toBe(5);
     database.close();
   });
 
@@ -337,7 +337,7 @@ describe("canonical SQLite storage", () => {
       migrations: [
         ...DEFAULT_SQLITE_MIGRATIONS,
         {
-          version: 4,
+          version: 6,
           sql: `
             CREATE TABLE recovery_probe (
               value TEXT NOT NULL
@@ -346,7 +346,7 @@ describe("canonical SQLite storage", () => {
         },
       ],
     });
-    expect(upgraded.health().userVersion).toBe(4);
+    expect(upgraded.health().userVersion).toBe(6);
     upgraded.close();
 
     const database = new DatabaseSync(databasePath);
@@ -386,7 +386,7 @@ describe("canonical SQLite storage", () => {
       ),
     ).toMatchObject({
       quickCheck: "ok",
-      userVersion: 3,
+      userVersion: 5,
     });
     const restored = new CanonicalSqliteStore(databasePath);
     expect(
@@ -454,10 +454,76 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 3,
+      userVersion: 5,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(3);
+    expect(restored.health().userVersion).toBe(5);
+    restored.close();
+  });
+
+  it("restores and upgrades a valid version-four backup", async () => {
+    const root = await createTemporaryDirectory();
+    const backupPath = join(root, "legacy-v4.db");
+    const restoredPath = join(root, "restored-v5.db");
+    const legacy = new DatabaseSync(backupPath);
+    for (const migration of DEFAULT_SQLITE_MIGRATIONS.slice(
+      0,
+      4,
+    )) {
+      legacy.exec(migration.sql);
+      legacy
+        .prepare(
+          `INSERT INTO schema_migrations(version, applied_at)
+           VALUES (?, ?)`,
+        )
+        .run(
+          migration.version,
+          `2026-08-31T0${migration.version}:00:00.000Z`,
+        );
+    }
+    const legacyMute = {
+      schemaVersion: 1,
+      evidenceRef: "legacy-muted-session",
+      feedbackId: "legacy-mute-feedback",
+      kind: "mute_session",
+      source: "user",
+      targetId: "legacy-knowledge",
+      targetType: "knowledge",
+      timestamp: "2026-08-31T05:00:00.000Z",
+    };
+    legacy
+      .prepare(
+        `INSERT INTO feedback_events (
+           feedback_id,
+           schema_version,
+           body_json,
+           source_digest,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        legacyMute.feedbackId,
+        legacyMute.schemaVersion,
+        JSON.stringify(legacyMute),
+        "a".repeat(64),
+        legacyMute.timestamp,
+      );
+    legacy.exec("PRAGMA user_version = 4;");
+    legacy.close();
+
+    await expect(
+      CanonicalSqliteStore.restoreFromBackup(
+        backupPath,
+        restoredPath,
+      ),
+    ).resolves.toMatchObject({
+      quickCheck: "ok",
+      userVersion: 5,
+    });
+    const restored = new CanonicalSqliteStore(restoredPath);
+    expect(restored.health().userVersion).toBe(5);
+    expect(restored.sessionMuted("legacy-muted-session"))
+      .toBe(true);
     restored.close();
   });
 
@@ -701,7 +767,7 @@ describe("canonical SQLite storage", () => {
     store.close();
     const invalidBackup = new DatabaseSync(invalidBackupPath);
     invalidBackup.exec(`
-      PRAGMA user_version = 3;
+      PRAGMA user_version = 5;
       CREATE TABLE schema_migrations (
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
@@ -710,7 +776,9 @@ describe("canonical SQLite storage", () => {
       VALUES
         (1, '2026-08-29T00:00:00.000Z'),
         (2, '2026-08-30T00:00:00.000Z'),
-        (3, '2026-08-31T00:00:00.000Z');
+        (3, '2026-08-31T00:00:00.000Z'),
+        (4, '2026-08-31T01:00:00.000Z'),
+        (5, '2026-08-31T02:00:00.000Z');
     `);
     invalidBackup.close();
 
@@ -749,7 +817,7 @@ describe("canonical SQLite storage", () => {
     const preserved = new CanonicalSqliteStore(databasePath);
     expect(preserved.health()).toMatchObject({
       quickCheck: "ok",
-      userVersion: 3,
+      userVersion: 5,
     });
     preserved.close();
   });

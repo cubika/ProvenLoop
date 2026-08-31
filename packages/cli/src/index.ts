@@ -6,6 +6,8 @@ export {
 export {
   runMcpServer,
   type McpServerIo,
+  type McpServerOptions,
+  type McpToolHandlers,
 } from "./run-mcp-server.js";
 export {
   runCaptureWorkerOnce,

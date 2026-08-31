@@ -772,7 +772,7 @@ copilot
 每个新任务开始时，Agent 调用：
 
 ```text
-provenloop_context(prompt, cwd)
+provenloop_context(prompt)
 ```
 
 可能返回：

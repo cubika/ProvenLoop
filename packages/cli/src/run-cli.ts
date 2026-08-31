@@ -42,7 +42,10 @@ import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
 
-import { runMcpServer } from "./run-mcp-server.js";
+import {
+  runMcpServer,
+  type McpServerOptions,
+} from "./run-mcp-server.js";
 import {
   runCaptureWorkerOnce,
   type RunCaptureWorkerOnceOptions,
@@ -57,7 +60,9 @@ export interface CliDependencies {
   readonly createAdapter: (
     dataRoot: string,
   ) => AgentAdapter;
-  readonly runMcpServer: () => Promise<void>;
+  readonly runMcpServer: (
+    options?: McpServerOptions,
+  ) => Promise<void>;
   readonly runWorker?: (
     options: RunCaptureWorkerOnceOptions,
   ) => Promise<CaptureWorkerRunResult>;
@@ -73,7 +78,8 @@ const defaultDependencies: CliDependencies = {
     new CopilotCliAdapter({
       dataRoot,
     }),
-  runMcpServer,
+  runMcpServer: (options) =>
+    runMcpServer(undefined, options),
   runWorker: runCaptureWorkerOnce,
 };
 
@@ -209,8 +215,14 @@ const runDeletionCommand = async (
         remainingIdentifiers: async (identifiers) => {
           const remaining: string[] = [];
           for (const identifier of identifiers) {
+            if (!identifier.startsWith("knowledge:")) {
+              continue;
+            }
+            const backendIdentifier = identifier.slice(
+              "knowledge:".length,
+            );
             if (
-              await knowledgeBackend?.get(identifier) !== undefined
+              await knowledgeBackend?.get(backendIdentifier) !== undefined
             ) {
               remaining.push(identifier);
             }
@@ -398,8 +410,14 @@ export const runCli = async (
     return runWorkerCommand(args, io, dependencies);
   }
   if (args[0] === "mcp" && args[1] === "serve") {
+    if (hasInvalidOptionValue(args, "--data-root")) {
+      io.error(usage);
+      return 2;
+    }
     try {
-      await dependencies.runMcpServer();
+      await dependencies.runMcpServer({
+        dataRoot: dataRoot(args),
+      });
       return 0;
     } catch (error) {
       io.error(error instanceof Error ? error.message : String(error));

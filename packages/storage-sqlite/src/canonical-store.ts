@@ -28,21 +28,25 @@ import {
   captureQueueItemSchema,
   classifyRawEvent,
   CURRENT_SCHEMA_VERSION,
+  contextUseRecordSchema,
   deletionOperationSchema,
   deletionTargetTypeSchema,
   episodeAssociationSchema,
   episodeGroupingCorrectionSchema,
+  feedbackEventSchema,
   knowledgeCandidateSchema,
   workEpisodeSchema,
   type BranchContext,
   type CaptureEnvelope,
   type CaptureQueueItem,
+  type ContextUseRecord,
   type DeletionOperation,
   type DeletionPlannedIdentity,
   type DeletionIdentityType,
   type DeletionTargetType,
   type EpisodeAssociation,
   type EpisodeGroupingCorrection,
+  type FeedbackEvent,
   type KnowledgeCandidate,
   type WorkEpisode,
 } from "@provenloop/contracts";
@@ -290,6 +294,52 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
       ) STRICT;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE context_use_records (
+        request_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX context_use_session
+        ON context_use_records(session_id, created_at);
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE session_mutes (
+        feedback_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX session_mutes_session
+        ON session_mutes(session_id, created_at);
+
+      CREATE INDEX session_mutes_target
+        ON session_mutes(target_id);
+
+      INSERT INTO session_mutes (
+        feedback_id,
+        session_id,
+        target_id,
+        created_at
+      )
+      SELECT feedback_id,
+             json_extract(body_json, '$.evidenceRef'),
+             json_extract(body_json, '$.targetId'),
+             created_at
+        FROM feedback_events
+       WHERE json_extract(body_json, '$.kind') = 'mute_session';
+    `,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 export class UnsupportedDatabaseVersionError extends Error {
@@ -330,6 +380,21 @@ const asNumber = (value: unknown): number => {
 
 const optionalText = (value: string | undefined): string | null =>
   value ?? null;
+
+const normalizedKnowledgeCandidate = (
+  input: KnowledgeCandidate,
+): KnowledgeCandidate => {
+  const parsed = knowledgeCandidateSchema.parse(input);
+  return knowledgeCandidateSchema.parse({
+    ...parsed,
+    sourceEvidenceIds: parsed.sourceEvidenceIds.map(
+      (identifier) =>
+        /^(?:event-)?[a-f0-9]{64}$/iu.test(identifier)
+          ? identifier.toLowerCase()
+          : identifier,
+    ),
+  });
+};
 
 const firstColumn = (
   row: Readonly<Record<string, unknown>>,
@@ -390,6 +455,20 @@ const bodyReferences = (
   ) {
     return true;
   }
+  if (
+    record.targetType === "knowledge" &&
+    typeof record.targetId === "string" &&
+    references.record.has(`knowledge:${record.targetId}`)
+  ) {
+    return true;
+  }
+  if (
+    record.kind === "mute_session" &&
+    typeof record.evidenceRef === "string" &&
+    references.session.has(record.evidenceRef)
+  ) {
+    return true;
+  }
   for (const [
     key,
     value,
@@ -441,6 +520,22 @@ const bodyReferences = (
                       references.event.has(id.toLowerCase()) ||
                       references.record.has(id),
                   )
+              : [
+                      "candidateknowledgeids",
+                      "conflictswith",
+                      "knowledgeid",
+                      "supersedes",
+                    ].includes(normalized)
+                  ? values.some((id) =>
+                      references.record.has(`knowledge:${id}`),
+                    )
+                  : [
+                        "appliedknowledgeids",
+                        "returnedknowledgeids",
+                      ].includes(normalized)
+                    ? values.some((id) =>
+                        references.record.has(id),
+                      )
               : false;
     if (matched || bodyReferences(value, references)) {
       return true;
@@ -605,8 +700,12 @@ const deleteDependentRows = (
     }
     const id = String(row.id);
     remove.run(id);
-    dependentIds.add(id);
-    references.record.add(id);
+    const reference =
+      table === "knowledge_candidates"
+        ? `knowledge:${id}`
+        : id;
+    dependentIds.add(reference);
+    references.record.add(reference);
     deleted += 1;
   }
   return deleted;
@@ -634,7 +733,13 @@ const deleteRebuildableProjectionRows = (
     if (!bodyReferences(parsed, references)) {
       continue;
     }
-    remove.run(String(row.id));
+    const id = String(row.id);
+    remove.run(id);
+    references.record.add(
+      table === "branch_contexts"
+        ? `branch-context:${id}`
+        : id,
+    );
     deleted += 1;
   }
   return deleted;
@@ -732,6 +837,91 @@ const deleteIdentityRows = (
   return deleted;
 };
 
+const feedbackMutatesKnowledge = (
+  event: FeedbackEvent,
+): boolean =>
+  event.targetType === "knowledge" &&
+  ![
+    "irrelevant",
+    "mute_session",
+  ].includes(event.kind);
+
+const feedbackIntentDigest = (
+  event: FeedbackEvent,
+): string => {
+  const {
+    timestamp: _timestamp,
+    ...intent
+  } = event;
+  void _timestamp;
+  return sha256(intent);
+};
+
+const deleteFeedbackRows = (
+  database: DatabaseSync,
+  references: TypedDeletionReferences,
+  dependentIds: Set<string>,
+  affectedKnowledgeIds: Set<string>,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT feedback_id, body_json
+         FROM feedback_events`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    "DELETE FROM feedback_events WHERE feedback_id = ?",
+  );
+  for (const row of rows) {
+    const parsed = JSON.parse(String(row.body_json)) as unknown;
+    if (!bodyReferences(parsed, references)) {
+      continue;
+    }
+    const id = String(row.feedback_id);
+    const event = feedbackEventSchema.parse(parsed);
+    remove.run(id);
+    dependentIds.add(id);
+    references.record.add(id);
+    if (feedbackMutatesKnowledge(event)) {
+      affectedKnowledgeIds.add(event.targetId);
+    }
+    deleted += 1;
+  }
+  return deleted;
+};
+
+const deleteSessionMuteRows = (
+  database: DatabaseSync,
+  references: TypedDeletionReferences,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT session_id, feedback_id, target_id
+         FROM session_mutes`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    "DELETE FROM session_mutes WHERE feedback_id = ?",
+  );
+  for (const row of rows) {
+    const sessionId = String(row.session_id);
+    const feedbackId = String(row.feedback_id);
+    const targetId = String(row.target_id);
+    if (
+      !references.session.has(sessionId) &&
+      !references.record.has(feedbackId) &&
+      !references.record.has(`knowledge:${targetId}`)
+    ) {
+      continue;
+    }
+    remove.run(feedbackId);
+    deleted += 1;
+  }
+  return deleted;
+};
+
 const createExpectedCanonicalObjectSql = (
   migrations: readonly SqliteMigration[],
 ): ReadonlyMap<
@@ -779,6 +969,14 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["source_digest", "TEXT", true, false],
     ["updated_at", "TEXT", true, false],
     ["expires_at", "TEXT", false, false],
+  ],
+  context_use_records: [
+    ["request_id", "TEXT", true, true],
+    ["schema_version", "INTEGER", true, false],
+    ["session_id", "TEXT", true, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
   ],
   knowledge_candidates: [
     ["knowledge_id", "TEXT", true, true],
@@ -835,6 +1033,12 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["version", "INTEGER", false, true],
     ["applied_at", "TEXT", true, false],
   ],
+  session_mutes: [
+    ["feedback_id", "TEXT", true, true],
+    ["session_id", "TEXT", true, false],
+    ["target_id", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
+  ],
 } as const satisfies Readonly<
   Record<
     string,
@@ -851,6 +1055,7 @@ interface ExpectedSqliteIndex {
   readonly columns: readonly string[];
   readonly name?: string;
   readonly origin: "c" | "pk" | "u";
+  readonly unique?: boolean;
 }
 
 const RUNTIME_SCHEMA_INDEXES = {
@@ -868,6 +1073,23 @@ const RUNTIME_SCHEMA_INDEXES = {
       ],
       name: "branch_context_scope",
       origin: "c",
+    },
+  ],
+  context_use_records: [
+    {
+      columns: [
+        "session_id",
+        "created_at",
+      ],
+      name: "context_use_session",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: [
+        "request_id",
+      ],
+      origin: "pk",
     },
   ],
   knowledge_candidates: [
@@ -964,6 +1186,31 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   schema_migrations: [],
+  session_mutes: [
+    {
+      columns: [
+        "feedback_id",
+      ],
+      origin: "pk",
+    },
+    {
+      columns: [
+        "session_id",
+        "created_at",
+      ],
+      name: "session_mutes_session",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: [
+        "target_id",
+      ],
+      name: "session_mutes_target",
+      origin: "c",
+      unique: false,
+    },
+  ],
   work_episodes: [
     {
       columns: [
@@ -1883,6 +2130,7 @@ export class CanonicalSqliteStore {
         record: new Set(dependentIds),
         session: new Set(removedSessionIds),
       };
+      const affectedKnowledgeIds = new Set<string>();
       let deletedInPass: number;
       do {
         deletedInPass =
@@ -1920,10 +2168,20 @@ export class CanonicalSqliteStore {
             dependencyReferences,
             dependentIds,
           ) +
+          deleteFeedbackRows(
+            this.#database,
+            dependencyReferences,
+            dependentIds,
+            affectedKnowledgeIds,
+          ) +
+          deleteSessionMuteRows(
+            this.#database,
+            dependencyReferences,
+          ) +
           deleteDependentRows(
             this.#database,
-            "feedback_events",
-            "feedback_id",
+            "context_use_records",
+            "request_id",
             "body_json",
             dependencyReferences,
             dependentIds,
@@ -1937,6 +2195,43 @@ export class CanonicalSqliteStore {
             dependentIds,
           );
       } while (deletedInPass > 0);
+      for (const knowledgeId of affectedKnowledgeIds) {
+        const row = this.#database
+          .prepare(
+            `SELECT body_json
+               FROM knowledge_candidates
+              WHERE knowledge_id = ?`,
+          )
+          .get(knowledgeId) as
+          | Readonly<Record<string, unknown>>
+          | undefined;
+        if (row === undefined) {
+          continue;
+        }
+        const candidate = knowledgeCandidateSchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        );
+        const deactivated = knowledgeCandidateSchema.parse({
+          ...candidate,
+          expiresAt: operation.requestedAt,
+          state: "archived",
+          validatedAt: operation.requestedAt,
+        });
+        this.#database
+          .prepare(
+            `UPDATE knowledge_candidates
+                SET body_json = ?,
+                    source_digest = ?,
+                    updated_at = ?
+              WHERE knowledge_id = ?`,
+          )
+          .run(
+            JSON.stringify(deactivated),
+            sha256(deactivated),
+            operation.requestedAt,
+            knowledgeId,
+          );
+      }
       const planned = deletionOperationSchema.parse({
         ...operation,
         plannedAffectedSessionIds: [
@@ -2091,6 +2386,18 @@ export class CanonicalSqliteStore {
         }
       }
     }
+    for (const row of this.#database
+      .prepare(
+        `SELECT session_id, feedback_id, target_id
+           FROM session_mutes`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const value of Object.values(row)) {
+        if (identifiers.has(String(value))) {
+          remaining.add(String(value));
+        }
+      }
+    }
     for (const [
       table,
       idColumn,
@@ -2102,6 +2409,7 @@ export class CanonicalSqliteStore {
       ["evidence_links", "link_id", "body_json"],
       ["process_claims", "claim_id", "body_json"],
       ["feedback_events", "feedback_id", "body_json"],
+      ["context_use_records", "request_id", "body_json"],
       ["metrics", "metric_id", "dimensions_json"],
     ] as const) {
       for (const row of this.#database
@@ -2238,6 +2546,21 @@ export class CanonicalSqliteStore {
                       )
                     : false;
         if (present) {
+          record(identity);
+        }
+      }
+    }
+    for (const row of this.#database
+      .prepare(
+        `SELECT session_id
+           FROM session_mutes`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[]) {
+      for (const identity of identities) {
+        if (
+          identity.identityType === "session" &&
+          String(row.session_id) === identity.identifier
+        ) {
           record(identity);
         }
       }
@@ -3147,18 +3470,7 @@ export class CanonicalSqliteStore {
     input: readonly KnowledgeCandidate[],
   ): number {
     this.#assertNoRestoreBarrier();
-    const candidates = input.map((candidate) => {
-      const parsed = knowledgeCandidateSchema.parse(candidate);
-      return knowledgeCandidateSchema.parse({
-        ...parsed,
-        sourceEvidenceIds: parsed.sourceEvidenceIds.map(
-          (identifier) =>
-            /^(?:event-)?[a-f0-9]{64}$/iu.test(identifier)
-              ? identifier.toLowerCase()
-              : identifier,
-        ),
-      });
-    });
+    const candidates = input.map(normalizedKnowledgeCandidate);
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
@@ -3298,6 +3610,321 @@ export class CanonicalSqliteStore {
         JSON.parse(String(row.body_json)) as unknown,
       ),
     );
+  }
+
+  public appendContextUseRecord(
+    input: ContextUseRecord,
+  ): boolean {
+    this.#assertNoRestoreBarrier();
+    const record = contextUseRecordSchema.parse(input);
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion()) {
+        throw new Error(
+          "Context use persistence is blocked by an active deletion.",
+        );
+      }
+      const result = this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO context_use_records (
+             request_id,
+             schema_version,
+             session_id,
+             body_json,
+             source_digest,
+             created_at
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          record.requestId,
+          record.schemaVersion,
+          record.sessionId,
+          JSON.stringify(record),
+          sha256(record),
+          record.createdAt,
+        );
+      this.#database.exec("COMMIT;");
+      return Number(result.changes) === 1;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public contextUseRecords(
+    sessionId?: string,
+  ): readonly ContextUseRecord[] {
+    const normalizedSessionId = sessionId?.trim();
+    const rows = this.#database
+      .prepare(
+        normalizedSessionId === undefined
+          ? `SELECT body_json
+               FROM context_use_records
+              ORDER BY created_at, request_id`
+          : `SELECT body_json
+               FROM context_use_records
+              WHERE session_id = ?
+              ORDER BY created_at, request_id`,
+      )
+      .all(...(
+        normalizedSessionId === undefined
+          ? []
+          : [
+              normalizedSessionId,
+            ]
+      )) as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) =>
+      contextUseRecordSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      ),
+    );
+  }
+
+  public recordKnowledgeFeedback(input: {
+    readonly contextRequestId?: string;
+    readonly event: FeedbackEvent;
+    readonly updateCandidate?: (
+      candidate: KnowledgeCandidate,
+    ) => KnowledgeCandidate;
+    readonly updateContextUseRecord?: (
+      record: ContextUseRecord,
+    ) => ContextUseRecord;
+  }): {
+    readonly candidate: KnowledgeCandidate;
+    readonly recorded: boolean;
+  } {
+    this.#assertNoRestoreBarrier();
+    const event = feedbackEventSchema.parse(input.event);
+    if (event.targetType !== "knowledge") {
+      throw new Error(
+        "Knowledge feedback must target Knowledge.",
+      );
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion()) {
+        throw new Error(
+          "Knowledge feedback is blocked by an active deletion.",
+        );
+      }
+      const existingRow = this.#database
+        .prepare(
+          `SELECT body_json
+             FROM knowledge_candidates
+            WHERE knowledge_id = ?`,
+        )
+        .get(event.targetId) as
+        | Readonly<Record<string, unknown>>
+        | undefined;
+      if (existingRow === undefined) {
+        throw new Error(
+          `Knowledge feedback target ${event.targetId} does not exist.`,
+        );
+      }
+      const existing = normalizedKnowledgeCandidate(
+        JSON.parse(String(existingRow.body_json)) as KnowledgeCandidate,
+      );
+      const inserted = this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO feedback_events (
+             feedback_id,
+             schema_version,
+             body_json,
+             source_digest,
+             created_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          event.feedbackId,
+          event.schemaVersion,
+          JSON.stringify(event),
+          sha256(event),
+          event.timestamp,
+        );
+      if (Number(inserted.changes) === 0) {
+        const existingEventRow = this.#database
+          .prepare(
+            `SELECT body_json
+               FROM feedback_events
+              WHERE feedback_id = ?`,
+          )
+          .get(event.feedbackId) as Readonly<Record<string, unknown>>;
+        const existingEvent = feedbackEventSchema.parse(
+          JSON.parse(String(existingEventRow.body_json)) as unknown,
+        );
+        if (
+          feedbackIntentDigest(existingEvent) !==
+          feedbackIntentDigest(event)
+        ) {
+          throw new Error(
+            "Feedback ID already exists with different content.",
+          );
+        }
+        if (existingEvent.kind === "mute_session") {
+          this.#upsertSessionMute(existingEvent);
+        }
+        this.#database.exec("COMMIT;");
+        return {
+          candidate: existing,
+          recorded: false,
+        };
+      }
+      if (event.kind === "mute_session") {
+        this.#upsertSessionMute(event);
+      }
+      const candidate =
+        input.updateCandidate === undefined
+          ? existing
+          : normalizedKnowledgeCandidate(
+              input.updateCandidate(existing),
+            );
+      if (
+        candidate.knowledgeId !== event.targetId ||
+        JSON.stringify(candidate.sourceEpisodeIds) !==
+          JSON.stringify(existing.sourceEpisodeIds) ||
+        JSON.stringify(candidate.sourceEvidenceIds) !==
+          JSON.stringify(existing.sourceEvidenceIds)
+      ) {
+        throw new Error(
+          "Knowledge feedback cannot replace identity or provenance.",
+        );
+      }
+      if (input.updateCandidate !== undefined) {
+        this.#database
+          .prepare(
+            `UPDATE knowledge_candidates
+                SET schema_version = ?,
+                    body_json = ?,
+                    source_digest = ?,
+                    updated_at = ?
+              WHERE knowledge_id = ?`,
+          )
+          .run(
+            candidate.schemaVersion,
+            JSON.stringify(candidate),
+            sha256(candidate),
+            candidate.validatedAt ?? event.timestamp,
+            candidate.knowledgeId,
+          );
+      }
+      if (input.updateContextUseRecord !== undefined) {
+        const contextRow = this.#database
+          .prepare(
+            `SELECT body_json
+               FROM context_use_records
+              WHERE request_id = ?`,
+          )
+          .get(input.contextRequestId ?? event.evidenceRef) as
+          | Readonly<Record<string, unknown>>
+          | undefined;
+        if (contextRow === undefined) {
+          throw new Error(
+            "Knowledge feedback context request does not exist.",
+          );
+        }
+        const contextUseRecord = contextUseRecordSchema.parse(
+          input.updateContextUseRecord(
+            contextUseRecordSchema.parse(
+              JSON.parse(String(contextRow.body_json)) as unknown,
+            ),
+          ),
+        );
+        const updated = this.#database
+          .prepare(
+            `UPDATE context_use_records
+                SET body_json = ?,
+                    source_digest = ?
+              WHERE request_id = ?
+                AND session_id = ?`,
+          )
+          .run(
+            JSON.stringify(contextUseRecord),
+            sha256(contextUseRecord),
+            contextUseRecord.requestId,
+            contextUseRecord.sessionId,
+          );
+        if (Number(updated.changes) !== 1) {
+          throw new Error(
+            "Knowledge feedback context request does not exist.",
+          );
+        }
+      }
+      this.#database.exec("COMMIT;");
+      return {
+        candidate,
+        recorded: true,
+      };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public feedbackEvents(
+    targetId?: string,
+  ): readonly FeedbackEvent[] {
+    const normalizedTargetId = targetId?.trim();
+    const rows = this.#database
+      .prepare(
+        normalizedTargetId === undefined
+          ? `SELECT body_json
+               FROM feedback_events
+              ORDER BY created_at, feedback_id`
+          : `SELECT body_json
+               FROM feedback_events
+              WHERE json_extract(body_json, '$.targetId') = ?
+              ORDER BY created_at, feedback_id`,
+      )
+      .all(...(
+        normalizedTargetId === undefined
+          ? []
+          : [
+              normalizedTargetId,
+            ]
+      )) as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) =>
+      feedbackEventSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      ),
+    );
+  }
+
+  public sessionMuted(sessionId: string): boolean {
+    const normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.length === 0) {
+      return false;
+    }
+    return this.#database
+      .prepare(
+        `SELECT 1
+           FROM session_mutes
+          WHERE session_id = ?`,
+      )
+      .get(normalizedSessionId) !== undefined;
+  }
+
+  #upsertSessionMute(event: FeedbackEvent): void {
+    this.#database
+      .prepare(
+        `INSERT INTO session_mutes (
+           feedback_id,
+           session_id,
+           target_id,
+           created_at
+         ) VALUES (?, ?, ?, ?)
+         ON CONFLICT(feedback_id) DO UPDATE SET
+           target_id = excluded.target_id,
+           session_id = excluded.session_id,
+           created_at = excluded.created_at`,
+      )
+      .run(
+        event.feedbackId,
+        event.evidenceRef,
+        event.targetId,
+        event.timestamp,
+      );
   }
 
   public knowledgeCandidatesWithDeletedSources(
@@ -3814,6 +4441,8 @@ export class CanonicalSqliteStore {
       const requiredTables = [
         ...(expectedVersion >= 2 ? ["branch_contexts"] : []),
         ...(expectedVersion >= 3 ? ["knowledge_candidates"] : []),
+        ...(expectedVersion >= 4 ? ["context_use_records"] : []),
+        ...(expectedVersion >= 5 ? ["session_mutes"] : []),
         "deletion_operations",
         "evaluation_runs",
         "evidence_links",
@@ -3923,6 +4552,14 @@ export class CanonicalSqliteStore {
           (
             table === "knowledge_candidates" &&
             expectedVersion < 3
+          ) ||
+          (
+            table === "context_use_records" &&
+            expectedVersion < 4
+          ) ||
+          (
+            table === "session_mutes" &&
+            expectedVersion < 5
           )
         ) {
           continue;
@@ -3941,6 +4578,14 @@ export class CanonicalSqliteStore {
           (
             table === "knowledge_candidates" &&
             expectedVersion < 3
+          ) ||
+          (
+            table === "context_use_records" &&
+            expectedVersion < 4
+          ) ||
+          (
+            table === "session_mutes" &&
+            expectedVersion < 5
           )
         ) {
           continue;
@@ -4020,7 +4665,6 @@ export class CanonicalSqliteStore {
     for (const index of indexes) {
       const name = String(index.name);
       if (
-        asNumber(index.unique) !== 1 ||
         asNumber(index.partial) !== 0
       ) {
         throw new InvalidCanonicalSchemaError(
@@ -4039,6 +4683,9 @@ export class CanonicalSqliteStore {
       const matchIndex = unmatched.findIndex(
         (expected) =>
           expected.origin === String(index.origin) &&
+          (
+            expected.unique ?? true
+          ) === (asNumber(index.unique) === 1) &&
           (
             expected.name === undefined ||
             expected.name === name

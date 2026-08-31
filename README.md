@@ -180,6 +180,12 @@ The `@provenloop/retrieval` package now defines the backend-neutral Knowledge
 boundary and a SQLite FTS5/BM25 implementation. Search hits are always
 rechecked against canonical lifecycle, evidence tier, scope, expiry, and
 deletion state before retrieval.
+The local MCP server now exposes `provenloop_context`, `provenloop_explain`,
+and deterministic `provenloop_feedback`. Context is repository-safe, limited
+to three items and 1,200 rendered tokens, deduplicated per Session, and fails
+closed when the interruptible SQLite read path exceeds its deadline or reports
+degradation. Repository, Session, and workflow identities are host-bound rather
+than accepted from model-controlled tool arguments.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

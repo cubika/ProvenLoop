@@ -1133,6 +1133,29 @@ Records deterministic actions such as helpful, irrelevant, wrong, stale,
 confirm, revoke, mute for this session, and change scope. Natural language may
 invoke these actions, but it is not the only control surface.
 
+The M1 implementation exposes all three tools over stdio JSON-RPC. Context
+returns at most three items, clamps caller budgets to a 1,200-token rendered
+ceiling, serializes requests per Session to prevent duplicate injection, and
+uses deadline-bound SQLite read workers so timeout cannot be hidden by a
+synchronous database call. Branch-scoped Knowledge uses a composite repository
+and branch scope identity; matching a branch name alone is never sufficient.
+The MCP model-facing schema does not accept repository paths, Session IDs, or
+workflow scope IDs. The host binds those identities from the MCP process and
+adapter runtime before invoking retrieval. Scope feedback may select the Scope
+kind, but non-personal Scope IDs are also derived by the host and cannot be
+provided by the model.
+Feedback events and their Knowledge state transitions commit atomically, and
+source or Session deletion removes dependent feedback and Context-use records.
+If deleting the originating Session removes a state-changing feedback event,
+the surviving Knowledge is conservatively archived until it can be rebuilt
+from remaining evidence. Context-use authorization stores kind-qualified
+references (`knowledge:<id>` or `branch-context:<id>`) so ID collisions across
+projection types cannot authorize Explain, Feedback, or deletion for the wrong
+item. Context retrieval holds the same projection lease used by deletion until
+the MCP response is queued, preventing an in-flight request from returning
+context after the deletion Gate completes. Schema upgrades rebuild the
+Session-mute projection from append-only feedback events.
+
 Administrative operations remain CLI-first and are not automatically exposed to
 the model when they carry destructive or high-impact behavior.
 

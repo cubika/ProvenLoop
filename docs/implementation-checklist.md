@@ -412,16 +412,16 @@ frozen.
 
 ### 11.3 MCP retrieval
 
-- [ ] Implement `provenloop_context`.
-- [ ] Implement `provenloop_explain`.
-- [ ] Implement deterministic `provenloop_feedback` actions.
-- [ ] Enforce repository, workflow, personal, and branch scope.
-- [ ] Rank by scope, relevance, trigger, evidence, freshness, utility, and
+- [x] Implement `provenloop_context`.
+- [x] Implement `provenloop_explain`.
+- [x] Implement deterministic `provenloop_feedback` actions.
+- [x] Enforce repository, workflow, personal, and branch scope.
+- [x] Rank by scope, relevance, trigger, evidence, freshness, utility, and
   contradiction/stale penalties.
-- [ ] Enforce the token ceiling after rendering.
-- [ ] Return zero to three items and allow an empty result.
-- [ ] Deduplicate repeated injection within a session.
-- [ ] Fail closed with no context on timeout or backend degradation.
+- [x] Enforce the token ceiling after rendering.
+- [x] Return zero to three items and allow an empty result.
+- [x] Deduplicate repeated injection within a session.
+- [x] Fail closed with no context on timeout or backend degradation.
 
 ### 11.4 User control and deletion
 

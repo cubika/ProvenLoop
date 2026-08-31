@@ -40,6 +40,11 @@ const createTemporaryDirectory = async (): Promise<string> => {
   return directory;
 };
 
+const backendIdentifier = (identifier: string): string =>
+  identifier.startsWith("knowledge:")
+    ? identifier.slice("knowledge:".length)
+    : identifier;
+
 afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
@@ -316,7 +321,11 @@ describe("SQLite FTS Knowledge backend", () => {
           remainingIdentifiers: async (identifiers) => {
             const remaining: string[] = [];
             for (const identifier of identifiers) {
-              if (await backend.get(identifier) !== undefined) {
+              if (
+                await backend.get(
+                  backendIdentifier(identifier),
+                ) !== undefined
+              ) {
                 remaining.push(identifier);
               }
             }
@@ -391,7 +400,7 @@ describe("SQLite FTS Knowledge backend", () => {
         },
       );
       expect(mutation.dependentIds).toContain(
-        episodeKnowledge.knowledgeId,
+        `knowledge:${episodeKnowledge.knowledgeId}`,
       );
       store.prepareDeletionCompletion({
         deletedDependentCount: mutation.dependentIds.length,
@@ -578,7 +587,11 @@ describe("SQLite FTS Knowledge backend", () => {
           remainingIdentifiers: async (identifiers) => {
             const remaining: string[] = [];
             for (const identifier of identifiers) {
-              if (await backend.get(identifier) !== undefined) {
+              if (
+                await backend.get(
+                  backendIdentifier(identifier),
+                ) !== undefined
+              ) {
                 remaining.push(identifier);
               }
             }
@@ -659,7 +672,11 @@ describe("SQLite FTS Knowledge backend", () => {
           remainingIdentifiers: async (identifiers) => {
             const remaining: string[] = [];
             for (const identifier of identifiers) {
-              if (await backend.get(identifier) !== undefined) {
+              if (
+                await backend.get(
+                  backendIdentifier(identifier),
+                ) !== undefined
+              ) {
                 remaining.push(identifier);
               }
             }
@@ -764,7 +781,11 @@ describe("SQLite FTS Knowledge backend", () => {
           remainingIdentifiers: async (identifiers) => {
             const remaining: string[] = [];
             for (const identifier of identifiers) {
-              if (await backend.get(identifier) !== undefined) {
+              if (
+                await backend.get(
+                  backendIdentifier(identifier),
+                ) !== undefined
+              ) {
                 remaining.push(identifier);
               }
             }
