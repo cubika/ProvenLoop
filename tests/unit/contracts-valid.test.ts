@@ -181,6 +181,9 @@ const validCases: readonly {
       sourceEpisodeIds: [
         "episode-1",
       ],
+      sourceEventIds: [
+        "event-1",
+      ],
       updatedAt: timestamp,
     },
   },

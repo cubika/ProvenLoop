@@ -22,6 +22,7 @@ export const branchContextSchema = z
     recentVerificationEvidenceIds: stringListSchema,
     repoId: identifierSchema,
     sourceEpisodeIds: stringListSchema,
+    sourceEventIds: stringListSchema.default([]),
     unfinishedItems: stringListSchema,
     updatedAt: isoTimestampSchema,
   })

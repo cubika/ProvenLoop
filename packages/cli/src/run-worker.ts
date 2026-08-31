@@ -13,8 +13,10 @@ import {
   readCopilotAdapterState,
 } from "@provenloop/copilot-adapter";
 import {
+  BranchContextProjector,
   CaptureWorker,
   CaptureWorkerCircuitBreaker,
+  WorkEpisodeProjector,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
@@ -148,6 +150,14 @@ export const runCaptureWorkerOnce = async (
       store,
       workerId,
     }).runOnce();
+    if (result.status === "completed") {
+      new WorkEpisodeProjector({
+        store,
+      }).rebuild();
+      new BranchContextProjector({
+        store,
+      }).rebuild();
+    }
     store.close();
     store = undefined;
     await writeHeartbeat(paths.heartbeat, {

@@ -173,6 +173,9 @@ and preserves local data unless uninstall is combined with `--purge`.
 The shared worker can now be enabled independently and drained on demand with
 `provenloop worker run`; each batch rechecks persisted capability state and
 writes a health heartbeat.
+M1 now starts with a rebuildable Branch Context projection. Material changes
+produce short-lived repo/branch/HEAD-bound context, while browsing-only
+Sessions produce no context and stale or mismatched HEADs fail closed.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

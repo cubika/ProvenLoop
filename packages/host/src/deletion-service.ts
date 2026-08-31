@@ -26,6 +26,10 @@ import type {
 } from "@provenloop/storage-sqlite";
 
 import {
+  BranchContextProjector,
+  type BranchContextProjectionStore,
+} from "./branch-context-projector.js";
+import {
   WorkEpisodeProjector,
   type WorkEpisodeProjectionStore,
 } from "./work-episode-projector.js";
@@ -56,7 +60,7 @@ export interface DeletionQueue {
 }
 
 export interface DeletionStore
-extends WorkEpisodeProjectionStore {
+extends WorkEpisodeProjectionStore, BranchContextProjectionStore {
   beginDeletion(
     target: CanonicalDeletionTarget,
     deletionId?: string,
@@ -167,6 +171,7 @@ const typedSourceIdentities = (
 
 export class DeletionService {
   readonly #now: () => Date;
+  readonly #branchContextProjector: BranchContextProjector;
   readonly #projector: WorkEpisodeProjector;
   readonly #queue: DeletionQueue;
   readonly #recordEvidence: (
@@ -179,6 +184,9 @@ export class DeletionService {
     this.#queue = options.queue;
     this.#recordEvidence = options.recordEvidence;
     this.#store = options.store;
+    this.#branchContextProjector = new BranchContextProjector({
+      store: options.store,
+    });
     this.#projector = new WorkEpisodeProjector({
       store: options.store,
     });
@@ -339,6 +347,9 @@ export class DeletionService {
         deletedQueue.queueItemIds,
       );
       this.#projector.rebuild(undefined, {
+        allowDuringDeletion: true,
+      });
+      this.#branchContextProjector.rebuild({
         allowDuringDeletion: true,
       });
       const checkpoint =

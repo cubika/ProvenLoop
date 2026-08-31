@@ -393,12 +393,12 @@ frozen.
 
 ### 11.1 Branch Context
 
-- [ ] Build Branch Context only after material continuation state changes.
-- [ ] Store goal, accepted decisions, constraints, implementation state,
+- [x] Build Branch Context only after material continuation state changes.
+- [x] Store goal, accepted decisions, constraints, implementation state,
   unfinished work, and recent verification evidence.
-- [ ] Verify repository, branch, and HEAD before retrieval.
-- [ ] Stop automatic recall after branch merge/deletion or context expiry.
-- [ ] Keep Branch Context a rebuildable short-lived projection.
+- [x] Verify repository, branch, and HEAD before retrieval.
+- [x] Stop automatic recall after branch merge/deletion or context expiry.
+- [x] Keep Branch Context a rebuildable short-lived projection.
 
 ### 11.2 Knowledge backend
 

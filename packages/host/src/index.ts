@@ -1,4 +1,11 @@
 export {
+  BranchContextProjector,
+  type BranchContextProjectionResult,
+  type BranchContextProjectionStore,
+  type BranchContextProjectorOptions,
+  type BranchContextRebuildOptions,
+} from "./branch-context-projector.js";
+export {
   CaptureWorker,
   InvalidCaptureWorkerConfigurationError,
   terminalQueueState,

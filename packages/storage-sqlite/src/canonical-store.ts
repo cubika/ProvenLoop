@@ -23,6 +23,7 @@ import {
 } from "node:sqlite";
 
 import {
+  branchContextSchema,
   captureEnvelopeSchema,
   captureQueueItemSchema,
   classifyRawEvent,
@@ -32,6 +33,7 @@ import {
   episodeAssociationSchema,
   episodeGroupingCorrectionSchema,
   workEpisodeSchema,
+  type BranchContext,
   type CaptureEnvelope,
   type CaptureQueueItem,
   type DeletionOperation,
@@ -253,6 +255,24 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         created_at TEXT NOT NULL,
         completed_at TEXT
       ) STRICT;
+    `,
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE branch_contexts (
+        branch_context_id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT
+      ) STRICT;
+
+      CREATE UNIQUE INDEX branch_context_scope
+        ON branch_contexts(repo_id, branch);
     `,
   },
 ] as const satisfies readonly SqliteMigration[];
@@ -568,6 +588,34 @@ const deleteDependentRows = (
   return deleted;
 };
 
+const deleteRebuildableProjectionRows = (
+  database: DatabaseSync,
+  table: string,
+  idColumn: string,
+  bodyColumn: string,
+  references: TypedDeletionReferences,
+): number => {
+  let deleted = 0;
+  const rows = database
+    .prepare(
+      `SELECT ${idColumn} AS id, ${bodyColumn} AS body
+         FROM ${table}`,
+    )
+    .all() as readonly Readonly<Record<string, unknown>>[];
+  const remove = database.prepare(
+    `DELETE FROM ${table} WHERE ${idColumn} = ?`,
+  );
+  for (const row of rows) {
+    const parsed = JSON.parse(String(row.body)) as unknown;
+    if (!bodyReferences(parsed, references)) {
+      continue;
+    }
+    remove.run(String(row.id));
+    deleted += 1;
+  }
+  return deleted;
+};
+
 const deleteEvidenceLinkRows = (
   database: DatabaseSync,
   references: TypedDeletionReferences,
@@ -698,6 +746,16 @@ interface ExpectedSqliteColumn {
 }
 
 const RUNTIME_SCHEMA_COLUMNS = {
+  branch_contexts: [
+    ["branch_context_id", "TEXT", true, true],
+    ["repo_id", "TEXT", true, false],
+    ["branch", "TEXT", true, false],
+    ["head_sha", "TEXT", true, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["updated_at", "TEXT", true, false],
+    ["expires_at", "TEXT", false, false],
+  ],
   parser_errors: [
     ["parser_error_id", "INTEGER", false, true],
     ["queue_item_id", "TEXT", true, false],
@@ -764,6 +822,22 @@ interface ExpectedSqliteIndex {
 }
 
 const RUNTIME_SCHEMA_INDEXES = {
+  branch_contexts: [
+    {
+      columns: [
+        "branch_context_id",
+      ],
+      origin: "pk",
+    },
+    {
+      columns: [
+        "repo_id",
+        "branch",
+      ],
+      name: "branch_context_scope",
+      origin: "c",
+    },
+  ],
   deletion_operations: [
     {
       columns: [
@@ -1781,6 +1855,13 @@ export class CanonicalSqliteStore {
             dependentIds,
             dependencySeedIds,
           ) +
+          deleteRebuildableProjectionRows(
+            this.#database,
+            "branch_contexts",
+            "branch_context_id",
+            "body_json",
+            dependencyReferences,
+          ) +
           deleteDependentRows(
             this.#database,
             "process_claims",
@@ -1965,6 +2046,7 @@ export class CanonicalSqliteStore {
       idColumn,
       bodyColumn,
     ] of [
+      ["branch_contexts", "branch_context_id", "body_json"],
       ["work_episodes", "episode_id", "body_json"],
       ["evidence_links", "link_id", "body_json"],
       ["process_claims", "claim_id", "body_json"],
@@ -2328,11 +2410,20 @@ export class CanonicalSqliteStore {
     identityType: DeletionIdentityType,
     identifier: string,
   ): boolean {
-    const digest = deletionIdentityDigest(
-      identityType,
-      identifier,
-      this.#deletionIdentityKey,
-    );
+    return this.#deletionIdentitiesBlocked([
+      {
+        identifier,
+        identityType,
+      },
+    ]);
+  }
+
+  #deletionIdentitiesBlocked(
+    identities: readonly DeletionPlannedIdentity[],
+  ): boolean {
+    if (identities.length === 0) {
+      return false;
+    }
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -2340,14 +2431,24 @@ export class CanonicalSqliteStore {
           WHERE status = 'completed'`,
       )
       .all() as readonly Readonly<Record<string, unknown>>[];
-    return rows.some((row) =>
-      deletionOperationSchema
-        .parse(JSON.parse(String(row.body_json)) as unknown)
-        .blockedIdentityDigests.some(
-          (tombstone) =>
-            tombstone.identityType === identityType &&
-            tombstone.digest === digest,
-        ),
+    const tombstones = new Set(
+      rows.flatMap((row) =>
+        deletionOperationSchema
+          .parse(JSON.parse(String(row.body_json)) as unknown)
+          .blockedIdentityDigests.map(
+            (tombstone) =>
+              `${tombstone.identityType}\u0000${tombstone.digest}`,
+          ),
+      ),
+    );
+    return identities.some((identity) =>
+      tombstones.has(
+        `${identity.identityType}\u0000${deletionIdentityDigest(
+          identity.identityType,
+          identity.identifier,
+          this.#deletionIdentityKey,
+        )}`,
+      ),
     );
   }
 
@@ -2722,6 +2823,7 @@ export class CanonicalSqliteStore {
           "Work Episode projection is blocked by an active deletion.",
         );
       }
+
       const projectionIdentities: DeletionPlannedIdentity[] = [
         ...episodes.flatMap((episode) => [
           {
@@ -2762,12 +2864,7 @@ export class CanonicalSqliteStore {
         ),
       ];
       if (
-        projectionIdentities.some((identity) =>
-          this.deletionIdentityBlocked(
-            identity.identityType,
-            identity.identifier,
-          ),
-        )
+        this.#deletionIdentitiesBlocked(projectionIdentities)
       ) {
         throw new Error(
           "Work Episode projection contains a deleted identity.",
@@ -2854,6 +2951,136 @@ export class CanonicalSqliteStore {
       this.#database.exec("ROLLBACK;");
       throw error;
     }
+  }
+
+  public replaceBranchContextProjection(input: {
+    readonly allowDuringDeletion?: boolean;
+    readonly contexts: readonly BranchContext[];
+  }): number {
+    this.#assertNoRestoreBarrier();
+    const contexts = input.contexts.map((context) =>
+      branchContextSchema.parse(context),
+    );
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Branch Context projection is blocked by an active deletion.",
+        );
+      }
+      if (
+        this.#deletionIdentitiesBlocked(
+          contexts.flatMap((context) => [
+            ...context.sourceEpisodeIds.map((identifier) => ({
+              identifier,
+              identityType: "episode" as const,
+            })),
+            ...context.sourceEventIds.map((identifier) => ({
+              identifier,
+              identityType: "event" as const,
+            })),
+          ]),
+        )
+      ) {
+        throw new Error(
+          "Branch Context projection contains a deleted identity.",
+        );
+      }
+      this.#database.exec("DELETE FROM branch_contexts;");
+      const insert = this.#database.prepare(
+        `INSERT INTO branch_contexts (
+           branch_context_id,
+           repo_id,
+           branch,
+           head_sha,
+           body_json,
+           source_digest,
+           updated_at,
+           expires_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const context of contexts) {
+        insert.run(
+          context.branchContextId,
+          context.repoId,
+          context.branch,
+          context.headSha,
+          JSON.stringify(context),
+          sha256(context),
+          context.updatedAt,
+          optionalText(context.expiresAt),
+        );
+      }
+      this.#database.exec("COMMIT;");
+      return contexts.length;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public branchContexts(): readonly BranchContext[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM branch_contexts
+          ORDER BY repo_id, branch`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) =>
+      branchContextSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      ),
+    );
+  }
+
+  public branchContextFor(input: {
+    readonly branch: string;
+    readonly headSha: string;
+    readonly now?: Date;
+    readonly repoId: string;
+  }): BranchContext | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM branch_contexts
+          WHERE repo_id = ?
+            AND branch = ?`,
+      )
+      .get(input.repoId, input.branch) as
+      | Readonly<Record<string, unknown>>
+      | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    const context = branchContextSchema.parse(
+      JSON.parse(String(row.body_json)) as unknown,
+    );
+    if (
+      context.headSha !== input.headSha ||
+      (
+        context.expiresAt !== undefined &&
+        Date.parse(context.expiresAt) <=
+          (input.now ?? this.#now()).getTime()
+      ) ||
+      this.#deletionIdentitiesBlocked([
+        ...context.sourceEpisodeIds.map((identifier) => ({
+          identifier,
+          identityType: "episode" as const,
+        })),
+        ...context.sourceEventIds.map((identifier) => ({
+          identifier,
+          identityType: "event" as const,
+        })),
+      ])
+    ) {
+      return undefined;
+    }
+    return context;
   }
 
   public episodeAssociations(): readonly EpisodeAssociation[] {
@@ -3047,7 +3274,7 @@ export class CanonicalSqliteStore {
   #captureEnvelopeDeletionBlocked(
     envelope: CaptureEnvelope,
   ): boolean {
-    return [
+    return this.#deletionIdentitiesBlocked([
         {
           identifier: envelope.deduplicationKey,
           identityType: "deduplication" as const,
@@ -3072,13 +3299,7 @@ export class CanonicalSqliteStore {
                 identityType: "event" as const,
               },
             ]),
-    ].some(
-          (identity) =>
-            this.deletionIdentityBlocked(
-              identity.identityType,
-              identity.identifier,
-            ),
-    );
+    ]);
   }
 
   #recordRejected(
@@ -3260,6 +3481,9 @@ export class CanonicalSqliteStore {
     migrations: readonly SqliteMigration[],
   ): void {
     try {
+      const applicableMigrations = migrations.filter(
+        (migration) => migration.version <= expectedVersion,
+      );
       const migrationRows = database
         .prepare(
           `SELECT version
@@ -3286,6 +3510,7 @@ export class CanonicalSqliteStore {
       }
 
       const requiredTables = [
+        ...(expectedVersion >= 2 ? ["branch_contexts"] : []),
         "deletion_operations",
         "evaluation_runs",
         "evidence_links",
@@ -3360,7 +3585,7 @@ export class CanonicalSqliteStore {
         ]),
       );
       const expectedObjectSql =
-        createExpectedCanonicalObjectSql(migrations);
+        createExpectedCanonicalObjectSql(applicableMigrations);
       if (declaredObjectSql.size !== expectedObjectSql.size) {
         throw new InvalidCanonicalSchemaError(
           "SQLite canonical schema contains undeclared objects.",
@@ -3390,6 +3615,9 @@ export class CanonicalSqliteStore {
       for (const [table, expectedColumns] of Object.entries(
         RUNTIME_SCHEMA_COLUMNS,
       )) {
+        if (table === "branch_contexts" && expectedVersion < 2) {
+          continue;
+        }
         CanonicalSqliteStore.#assertTableColumns(
           database,
           table,
@@ -3399,6 +3627,9 @@ export class CanonicalSqliteStore {
       for (const [table, expectedIndexes] of Object.entries(
         RUNTIME_SCHEMA_INDEXES,
       )) {
+        if (table === "branch_contexts" && expectedVersion < 2) {
+          continue;
+        }
         CanonicalSqliteStore.#assertIndexAllowlist(
           database,
           table,
@@ -3528,7 +3759,7 @@ export class CanonicalSqliteStore {
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
     const version = asNumber(versionRow.user_version);
-    if (version !== latestVersion || version === 0) {
+    if (version === 0 || version > latestVersion) {
       throw new InvalidCanonicalSchemaError(
         `SQLite backup version ${version} is not the current canonical version ${latestVersion}.`,
       );

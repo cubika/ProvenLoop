@@ -696,6 +696,7 @@ interface BranchContext {
   unfinishedItems: string[];
   recentVerificationEvidenceIds: string[];
   sourceEpisodeIds: string[];
+  sourceEventIds: string[];
   updatedAt: string;
   expiresAt?: string;
 }
@@ -704,6 +705,12 @@ interface BranchContext {
 Branch Context is a short-lived projection. Retrieval verifies repository,
 branch, and HEAD before use. It is not a replacement for raw evidence or the
 Work Episode.
+
+The first deterministic builder only accepts explicit `Decision:`,
+`Constraint:`, `Next:`, `TODO:`, or `Unfinished:` markers plus concrete file,
+commit, build, test, and error events. Browsing-only Sessions do not create a
+projection. Worker batches rebuild the complete projection from canonical
+events and Work Episodes; SQLite replaces it transactionally.
 
 ### 4.4 CorrectionKey
 

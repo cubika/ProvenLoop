@@ -1,4 +1,8 @@
 export {
+  BranchContextBuilder,
+  type BranchContextBuilderOptions,
+} from "./branch-context-builder.js";
+export {
   CommitAncestryIndex,
   commitAncestryEdgesFromEnvelopes,
   type CommitAncestryEdge,
