@@ -1,13 +1,15 @@
 import type {
-  CorrectionKey,
   KnowledgeCandidate,
 } from "@provenloop/contracts";
-import { sha256 } from "@provenloop/domain";
+import {
+  KnowledgeAdmissionPolicy,
+  sha256,
+} from "@provenloop/domain";
 
 import {
   AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS,
   scopeMatches,
-  type CanonicalKnowledgeStore,
+  type CanonicalKnowledgeAdmissionStore,
   type KnowledgeBackend,
   type KnowledgeRetrievalQuery,
   type RetrievedKnowledge,
@@ -28,42 +30,18 @@ const eligible = (
   ) &&
   scopeMatches(candidate.scope, candidate.scopeId, query);
 
-const hasVerifiedCorrectionSources = (
-  candidate: KnowledgeCandidate,
-  correctionKeys: readonly CorrectionKey[],
-  correctionSourceEventIds: ReadonlySet<string>,
-): boolean => {
-  const sourceEvidence = new Set(candidate.sourceEvidenceIds);
-  const referencedCorrectionEventIds =
-    candidate.sourceEvidenceIds.filter((eventId) =>
-      correctionSourceEventIds.has(eventId),
-    );
-  if (referencedCorrectionEventIds.length === 0) {
-    return true;
-  }
-  const referencedKeys = correctionKeys.filter((key) =>
-    key.sourceCorrectionEventIds.some((eventId) =>
-      sourceEvidence.has(eventId),
-    ),
-  );
-  const verifiedSources = new Set(
-    referencedKeys
-      .filter((key) => key.verificationEvidenceIds.length > 0)
-      .flatMap((key) => key.sourceCorrectionEventIds),
-  );
-  return referencedCorrectionEventIds.every(
-    (eventId) => verifiedSources.has(eventId),
-  );
-};
-
 export class CanonicalKnowledgeRetriever {
+  readonly #admissionPolicy: KnowledgeAdmissionPolicy;
   readonly #backend: KnowledgeBackend;
-  readonly #store: CanonicalKnowledgeStore;
+  readonly #store: CanonicalKnowledgeAdmissionStore;
 
   public constructor(options: {
+    readonly admissionPolicy?: KnowledgeAdmissionPolicy;
     readonly backend: KnowledgeBackend;
-    readonly store: CanonicalKnowledgeStore;
+    readonly store: CanonicalKnowledgeAdmissionStore;
   }) {
+    this.#admissionPolicy =
+      options.admissionPolicy ?? new KnowledgeAdmissionPolicy();
     this.#backend = options.backend;
     this.#store = options.store;
   }
@@ -91,6 +69,10 @@ export class CanonicalKnowledgeRetriever {
     const now = query.now ?? new Date();
     const pageSize = Math.max(query.limit * 5, 20);
     const retrieved: RetrievedKnowledge[] = [];
+    const admissionById = new Map<
+      string,
+      ReturnType<KnowledgeAdmissionPolicy["evaluate"]>
+    >();
     const deadline =
       options.timeoutMs === undefined
         ? undefined
@@ -137,20 +119,33 @@ export class CanonicalKnowledgeRetriever {
       );
       const deleted = this.#store
         .knowledgeCandidatesWithUnavailableSources(candidates);
-      const correctionKeys = this.#store.correctionKeys();
-      const correctionSourceEventIds =
-        this.#store.correctionSourceEventIds();
+      const unevaluatedCandidates = candidates.filter(
+        (candidate) => !admissionById.has(candidate.knowledgeId),
+      );
+      if (unevaluatedCandidates.length > 0) {
+        const evidence = this.#store.knowledgeAdmissionEvidence(
+          unevaluatedCandidates,
+        );
+        for (const admission of this.#admissionPolicy.evaluateAll({
+          candidates: unevaluatedCandidates,
+          ...evidence,
+        })) {
+          admissionById.set(admission.knowledgeId, admission);
+        }
+      }
+      if (
+        deadline !== undefined &&
+        Date.now() >= deadline
+      ) {
+        throw new Error("Knowledge retrieval timed out.");
+      }
       for (const hit of hits) {
         const candidate = byId.get(hit.knowledgeId);
         if (
           candidate === undefined ||
           deleted.has(candidate.knowledgeId) ||
           !eligible(candidate, query, now) ||
-          !hasVerifiedCorrectionSources(
-            candidate,
-            correctionKeys,
-            correctionSourceEventIds,
-          ) ||
+          admissionById.get(candidate.knowledgeId)?.admitted !== true ||
           hit.sourceDigest !== sha256(candidate)
         ) {
           continue;

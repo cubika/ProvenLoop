@@ -192,7 +192,7 @@ describe("Correction capture projection", () => {
         store,
       }).rebuild();
 
-      expect(store.health().userVersion).toBe(6);
+      expect(store.health().userVersion).toBe(7);
       expect(first).toMatchObject({
         issues: [],
         persistedCorrectionKeys: 1,

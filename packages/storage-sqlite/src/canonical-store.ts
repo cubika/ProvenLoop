@@ -129,6 +129,15 @@ export interface CorrectionProjectionWriteResult {
   readonly opportunities: number;
 }
 
+export interface CanonicalKnowledgeAdmissionEvidence {
+  readonly contextUseRecords: readonly ContextUseRecord[];
+  readonly correctionKeys: readonly CorrectionKey[];
+  readonly correctionSourceEventIds: ReadonlySet<string>;
+  readonly envelopes: readonly CaptureEnvelope[];
+  readonly feedbackEvents: readonly FeedbackEvent[];
+  readonly workEpisodes: readonly WorkEpisode[];
+}
+
 export interface CanonicalDeletionTarget {
   readonly targetId: string;
   readonly targetType: DeletionTargetType;
@@ -383,6 +392,49 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         ON correction_opportunities(episode_id);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      CREATE TABLE correction_key_sources (
+        correction_key_id TEXT NOT NULL,
+        source_event_id TEXT NOT NULL,
+        PRIMARY KEY (correction_key_id, source_event_id)
+      ) STRICT;
+
+      INSERT INTO correction_key_sources (
+        correction_key_id,
+        source_event_id
+      )
+      SELECT DISTINCT correction_keys.correction_key_id,
+                      CAST(source.value AS TEXT)
+        FROM correction_keys
+        JOIN json_each(
+          correction_keys.body_json,
+          '$.sourceCorrectionEventIds'
+        ) AS source;
+
+      CREATE INDEX correction_key_sources_event
+        ON correction_key_sources(
+          source_event_id,
+          correction_key_id
+        );
+
+      CREATE INDEX raw_events_event_id
+        ON raw_events(event_id);
+
+      CREATE INDEX context_use_episode
+        ON context_use_records(
+          json_extract(body_json, '$.episodeId'),
+          created_at
+        );
+
+      CREATE INDEX feedback_events_target
+        ON feedback_events(
+          json_extract(body_json, '$.targetId'),
+          created_at
+        );
+    `,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 export class UnsupportedDatabaseVersionError extends Error {
@@ -595,6 +647,24 @@ const placeholders = (count: number): string =>
   Array.from({
     length: count,
   }, () => "?").join(", ");
+
+const SQLITE_PARAMETER_CHUNK_SIZE = 500;
+
+const sqliteChunks = <T>(
+  values: readonly T[],
+): readonly (readonly T[])[] => {
+  const chunks: T[][] = [];
+  for (
+    let index = 0;
+    index < values.length;
+    index += SQLITE_PARAMETER_CHUNK_SIZE
+  ) {
+    chunks.push(
+      values.slice(index, index + SQLITE_PARAMETER_CHUNK_SIZE),
+    );
+  }
+  return chunks;
+};
 
 const validateDeletionTargetId = (
   targetType: DeletionTargetType,
@@ -1026,6 +1096,10 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["source_digest", "TEXT", true, false],
     ["created_at", "TEXT", true, false],
   ],
+  correction_key_sources: [
+    ["correction_key_id", "TEXT", true, true],
+    ["source_event_id", "TEXT", true, true],
+  ],
   correction_opportunities: [
     ["opportunity_id", "TEXT", true, true],
     ["schema_version", "INTEGER", true, false],
@@ -1158,6 +1232,24 @@ const RUNTIME_SCHEMA_INDEXES = {
       unique: false,
     },
   ],
+  correction_key_sources: [
+    {
+      columns: [
+        "correction_key_id",
+        "source_event_id",
+      ],
+      origin: "pk",
+    },
+    {
+      columns: [
+        "source_event_id",
+        "correction_key_id",
+      ],
+      name: "correction_key_sources_event",
+      origin: "c",
+      unique: false,
+    },
+  ],
   correction_opportunities: [
     {
       columns: [
@@ -1184,6 +1276,15 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   context_use_records: [
+    {
+      columns: [
+        "null",
+        "created_at",
+      ],
+      name: "context_use_episode",
+      origin: "c",
+      unique: false,
+    },
     {
       columns: [
         "session_id",
@@ -1233,6 +1334,15 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   feedback_events: [
+    {
+      columns: [
+        "null",
+        "created_at",
+      ],
+      name: "feedback_events_target",
+      origin: "c",
+      unique: false,
+    },
     {
       columns: [
         "feedback_id",
@@ -1285,6 +1395,14 @@ const RUNTIME_SCHEMA_INDEXES = {
       ],
       name: "raw_events_source_identity",
       origin: "c",
+    },
+    {
+      columns: [
+        "event_id",
+      ],
+      name: "raw_events_event_id",
+      origin: "c",
+      unique: false,
     },
     {
       columns: [
@@ -2343,6 +2461,13 @@ export class CanonicalSqliteStore {
             dependentIds,
           );
       } while (deletedInPass > 0);
+      this.#database.exec(
+        `DELETE FROM correction_key_sources
+          WHERE correction_key_id NOT IN (
+            SELECT correction_key_id
+              FROM correction_keys
+          );`,
+      );
       if (targetType === "knowledge") {
         const timestamp = operation.requestedAt;
         const rows = this.#database
@@ -3554,6 +3679,109 @@ export class CanonicalSqliteStore {
           episode.finishedAt ?? episode.startedAt,
         );
       }
+      const episodeWindowsBySession = new Map<
+        string,
+        {
+          readonly episodeId: string;
+          readonly finishedAt: number;
+          readonly startedAt: number;
+        }[]
+      >();
+      for (const episode of episodes) {
+        const window = {
+          episodeId: episode.episodeId,
+          finishedAt:
+            episode.finishedAt === undefined
+              ? Number.POSITIVE_INFINITY
+              : Date.parse(episode.finishedAt),
+          startedAt: Date.parse(episode.startedAt),
+        };
+        for (const sessionId of episode.sessionIds) {
+          const windows =
+            episodeWindowsBySession.get(sessionId) ?? [];
+          windows.push(window);
+          episodeWindowsBySession.set(sessionId, windows);
+        }
+      }
+      const contextRows = new Map<
+        string,
+        Readonly<Record<string, unknown>>
+      >();
+      for (const row of this.#database
+        .prepare(
+          `SELECT request_id, body_json
+             FROM context_use_records
+            WHERE json_extract(body_json, '$.episodeId') IS NOT NULL`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[]) {
+        contextRows.set(String(row.request_id), row);
+      }
+      const episodeSessionIds = [
+        ...new Set(
+          episodes.flatMap((episode) => episode.sessionIds),
+        ),
+      ];
+      if (episodeSessionIds.length > 0) {
+        for (const chunk of sqliteChunks(episodeSessionIds)) {
+          for (const row of this.#database
+            .prepare(
+              `SELECT request_id, body_json
+                 FROM context_use_records
+                WHERE session_id IN (${placeholders(
+                  chunk.length,
+                )})`,
+            )
+            .all(...chunk) as readonly Readonly<
+            Record<string, unknown>
+          >[]) {
+            contextRows.set(String(row.request_id), row);
+          }
+        }
+      }
+      const updateContextEpisode = this.#database.prepare(
+        `UPDATE context_use_records
+            SET body_json = ?,
+                source_digest = ?
+          WHERE request_id = ?`,
+      );
+      for (const row of contextRows.values()) {
+        const record = contextUseRecordSchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        );
+        const createdAt = Date.parse(record.createdAt);
+        const matchingEpisodes = (
+          episodeWindowsBySession.get(record.sessionId) ?? []
+        ).filter(
+          (episode) =>
+            createdAt >= episode.startedAt &&
+            createdAt <= episode.finishedAt,
+        );
+        const projectedEpisodeId =
+          matchingEpisodes.length === 1
+            ? matchingEpisodes[0]?.episodeId
+            : undefined;
+        if (record.episodeId === projectedEpisodeId) {
+          continue;
+        }
+        const {
+          episodeId: previousEpisodeId,
+          ...withoutEpisodeId
+        } = record;
+        void previousEpisodeId;
+        const projected = contextUseRecordSchema.parse({
+          ...withoutEpisodeId,
+          ...(projectedEpisodeId === undefined
+            ? {}
+            : {
+                episodeId: projectedEpisodeId,
+              }),
+        });
+        updateContextEpisode.run(
+          JSON.stringify(projected),
+          sha256(projected),
+          projected.requestId,
+        );
+      }
       this.#database.exec("COMMIT;");
       return {
         associations: associations.length,
@@ -3765,6 +3993,7 @@ export class CanonicalSqliteStore {
         );
       }
       this.#database.exec("DELETE FROM correction_opportunities;");
+      this.#database.exec("DELETE FROM correction_key_sources;");
       this.#database.exec("DELETE FROM correction_keys;");
       const insertKey = this.#database.prepare(
         `INSERT INTO correction_keys (
@@ -3777,6 +4006,12 @@ export class CanonicalSqliteStore {
            created_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       );
+      const insertKeySource = this.#database.prepare(
+        `INSERT INTO correction_key_sources (
+           correction_key_id,
+           source_event_id
+         ) VALUES (?, ?)`,
+      );
       for (const key of correctionKeys) {
         insertKey.run(
           key.correctionKeyId,
@@ -3787,6 +4022,15 @@ export class CanonicalSqliteStore {
           sha256(key),
           key.createdAt,
         );
+        for (
+          const sourceEventId of
+            new Set(key.sourceCorrectionEventIds)
+        ) {
+          insertKeySource.run(
+            key.correctionKeyId,
+            sourceEventId,
+          );
+        }
       }
       const insertOpportunity = this.#database.prepare(
         `INSERT INTO correction_opportunities (
@@ -4161,6 +4405,183 @@ export class CanonicalSqliteStore {
     );
   }
 
+  public knowledgeAdmissionEvidence(
+    input: readonly KnowledgeCandidate[],
+  ): CanonicalKnowledgeAdmissionEvidence {
+    const candidates = input.map((candidate) =>
+      knowledgeCandidateSchema.parse(candidate),
+    );
+    const knowledgeIds = [
+      ...new Set(
+        candidates.map((candidate) => candidate.knowledgeId),
+      ),
+    ];
+    const sourceEpisodeIds = [
+      ...new Set(
+        candidates.flatMap(
+          (candidate) => candidate.sourceEpisodeIds,
+        ),
+      ),
+    ];
+    const sourceEvidenceIds = [
+      ...new Set(
+        candidates.flatMap(
+          (candidate) => candidate.sourceEvidenceIds,
+        ),
+      ),
+    ];
+    const correctionKeyRows =
+      new Map<string, Readonly<Record<string, unknown>>>();
+    const envelopeRows =
+      new Map<string, Readonly<Record<string, unknown>>>();
+    const feedbackRows =
+      new Map<string, Readonly<Record<string, unknown>>>();
+    const contextRows =
+      new Map<string, Readonly<Record<string, unknown>>>();
+    const episodeRows =
+      new Map<string, Readonly<Record<string, unknown>>>();
+    for (const chunk of sqliteChunks(sourceEvidenceIds)) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT DISTINCT correction_keys.correction_key_id,
+                           correction_keys.body_json
+             FROM correction_key_sources
+             JOIN correction_keys
+               ON correction_keys.correction_key_id =
+                  correction_key_sources.correction_key_id
+            WHERE correction_key_sources.source_event_id IN (${placeholders(
+              chunk.length,
+            )})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        correctionKeyRows.set(
+          String(row.correction_key_id),
+          row,
+        );
+      }
+      for (const row of this.#database
+        .prepare(
+          `SELECT deduplication_key, safe_envelope_json
+             FROM raw_events
+            WHERE parse_status = 'supported'
+              AND event_id IN (${placeholders(chunk.length)})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        envelopeRows.set(String(row.deduplication_key), row);
+      }
+    }
+    for (const chunk of sqliteChunks(knowledgeIds)) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT feedback_id, body_json
+             FROM feedback_events
+            WHERE json_extract(body_json, '$.targetId') IN (${placeholders(
+              chunk.length,
+            )})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        feedbackRows.set(String(row.feedback_id), row);
+      }
+    }
+    for (const chunk of sqliteChunks(sourceEpisodeIds)) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT request_id, body_json
+             FROM context_use_records
+            WHERE json_extract(body_json, '$.episodeId') IN (${placeholders(
+              chunk.length,
+            )})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        contextRows.set(String(row.request_id), row);
+      }
+      for (const row of this.#database
+        .prepare(
+          `SELECT episode_id, body_json
+             FROM work_episodes
+            WHERE episode_id IN (${placeholders(chunk.length)})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        episodeRows.set(String(row.episode_id), row);
+      }
+    }
+    const envelopes = [...envelopeRows.values()]
+      .map((row) =>
+        captureEnvelopeSchema.parse(
+          JSON.parse(String(row.safe_envelope_json)) as unknown,
+        ),
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(left.event.timestamp) -
+            Date.parse(right.event.timestamp) ||
+          left.event.eventId.localeCompare(right.event.eventId),
+      );
+    return {
+      contextUseRecords: [...contextRows.values()]
+        .map((row) =>
+          contextUseRecordSchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          ),
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
+            left.requestId.localeCompare(right.requestId),
+        ),
+      correctionKeys: [...correctionKeyRows.values()]
+        .map((row) =>
+          correctionKeySchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          ),
+        )
+        .sort((left, right) =>
+          left.correctionKeyId.localeCompare(right.correctionKeyId),
+        ),
+      correctionSourceEventIds: new Set(
+        envelopes
+          .filter(
+            (envelope) =>
+              envelope.event.eventType === "user.corrected",
+          )
+          .map((envelope) => envelope.event.eventId),
+      ),
+      envelopes,
+      feedbackEvents: [...feedbackRows.values()]
+        .map((row) =>
+          feedbackEventSchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          ),
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(left.timestamp) - Date.parse(right.timestamp) ||
+            left.feedbackId.localeCompare(right.feedbackId),
+        ),
+      workEpisodes: [...episodeRows.values()]
+        .map((row) =>
+          workEpisodeSchema.parse(
+            JSON.parse(String(row.body_json)) as unknown,
+          ),
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(left.startedAt) - Date.parse(right.startedAt) ||
+            left.episodeId.localeCompare(right.episodeId),
+        ),
+    };
+  }
+
   public appendContextUseRecord(
     input: ContextUseRecord,
   ): boolean {
@@ -4228,6 +4649,51 @@ export class CanonicalSqliteStore {
         JSON.parse(String(row.body_json)) as unknown,
       ),
     );
+  }
+
+  public contextUseRecordsForEpisodes(
+    episodeIds: readonly string[],
+  ): readonly ContextUseRecord[] {
+    const selected = [
+      ...new Set(
+        episodeIds
+          .map((episodeId) => episodeId.trim())
+          .filter((episodeId) => episodeId.length > 0),
+      ),
+    ];
+    if (selected.length === 0) {
+      return [];
+    }
+    const rows = new Map<
+      string,
+      Readonly<Record<string, unknown>>
+    >();
+    for (const chunk of sqliteChunks(selected)) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT request_id, body_json
+             FROM context_use_records
+            WHERE json_extract(body_json, '$.episodeId') IN (${placeholders(
+              chunk.length,
+            )})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        rows.set(String(row.request_id), row);
+      }
+    }
+    return [...rows.values()]
+      .map((row) =>
+        contextUseRecordSchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        ),
+      )
+      .sort(
+        (left, right) =>
+          Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
+          left.requestId.localeCompare(right.requestId),
+      );
   }
 
   public recordKnowledgeFeedback(input: {
@@ -4534,21 +5000,20 @@ export class CanonicalSqliteStore {
     if (sourceEpisodeIds.length === 0) {
       return unavailable;
     }
-    const existing = new Set(
-      (
-        this.#database
-          .prepare(
-            `SELECT episode_id
-               FROM work_episodes
-              WHERE episode_id IN (${placeholders(
-                sourceEpisodeIds.length,
-              )})`,
-          )
-          .all(...sourceEpisodeIds) as readonly Readonly<
-          Record<string, unknown>
-        >[]
-      ).map((row) => String(row.episode_id)),
-    );
+    const existing = new Set<string>();
+    for (const chunk of sqliteChunks(sourceEpisodeIds)) {
+      for (const row of this.#database
+        .prepare(
+          `SELECT episode_id
+             FROM work_episodes
+            WHERE episode_id IN (${placeholders(chunk.length)})`,
+        )
+        .all(...chunk) as readonly Readonly<
+        Record<string, unknown>
+      >[]) {
+        existing.add(String(row.episode_id));
+      }
+    }
     for (const candidate of candidates) {
       if (
         candidate.sourceEpisodeIds.some(
@@ -4998,6 +5463,11 @@ export class CanonicalSqliteStore {
               "correction_opportunities",
             ]
           : []),
+        ...(expectedVersion >= 7
+          ? [
+              "correction_key_sources",
+            ]
+          : []),
         "deletion_operations",
         "evaluation_runs",
         "evidence_links",
@@ -5122,6 +5592,10 @@ export class CanonicalSqliteStore {
               table === "correction_opportunities"
             ) &&
             expectedVersion < 6
+          ) ||
+          (
+            table === "correction_key_sources" &&
+            expectedVersion < 7
           )
         ) {
           continue;
@@ -5155,14 +5629,32 @@ export class CanonicalSqliteStore {
               table === "correction_opportunities"
             ) &&
             expectedVersion < 6
+          ) ||
+          (
+            table === "correction_key_sources" &&
+            expectedVersion < 7
           )
         ) {
           continue;
         }
+        const versionedIndexes =
+          expectedVersion >= 7
+            ? expectedIndexes
+            : expectedIndexes.filter(
+                (index) =>
+                  !(
+                    "name" in index &&
+                    (
+                      index.name === "context_use_episode" ||
+                      index.name === "feedback_events_target" ||
+                      index.name === "raw_events_event_id"
+                    )
+                  ),
+              );
         CanonicalSqliteStore.#assertIndexAllowlist(
           database,
           table,
-          expectedIndexes,
+          versionedIndexes,
         );
       }
     } catch (error) {

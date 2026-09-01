@@ -5,6 +5,7 @@ export {
   InvalidCanonicalSchemaError,
   UnsupportedDatabaseVersionError,
   type CanonicalIngestResult,
+  type CanonicalKnowledgeAdmissionEvidence,
   type CanonicalDeletionMutationResult,
   type CanonicalDeletionTarget,
   type CorrectionProjectionWriteResult,

@@ -410,11 +410,31 @@ describe("CorrectionCaptureBuilder", () => {
         trust: "model",
       },
     );
+    const selfAssessment = event(
+      "source-verification-1",
+      "2026-09-01T00:40:00.000Z",
+      "verification.completed",
+      {
+        completionStatus: "succeeded",
+        trust: "user",
+      },
+    );
+    const simultaneousVerification = event(
+      "source-verification-simultaneous",
+      unverified.event.timestamp,
+      "test.completed",
+      {
+        completionStatus: "succeeded",
+        trust: "tool",
+      },
+    );
     const result = new CorrectionCaptureBuilder().build({
       envelopes: [
         unverified,
         malformed,
         untrusted,
+        selfAssessment,
+        simultaneousVerification,
       ],
       workEpisodes: [
         episode({
@@ -422,6 +442,8 @@ describe("CorrectionCaptureBuilder", () => {
             unverified.event.eventId,
             malformed.event.eventId,
             untrusted.event.eventId,
+            selfAssessment.event.eventId,
+            simultaneousVerification.event.eventId,
           ],
           episodeId: "episode-source",
           eventIds: [
@@ -444,6 +466,7 @@ describe("CorrectionCaptureBuilder", () => {
     if (key === undefined) {
       throw new Error("Expected an unverified Correction Key.");
     }
+    expect(key.verificationEvidenceIds).toEqual([]);
     expect(correctionKeyActivationEligible(key)).toBe(false);
   });
 });

@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   CURRENT_SCHEMA_VERSION,
+  type CaptureEnvelope,
   type CorrectionKey,
   type KnowledgeCandidate,
+  type WorkEpisode,
 } from "@provenloop/contracts";
+import { createCaptureEnvelope } from "@provenloop/domain";
 import {
   CanonicalKnowledgeRetriever,
   knowledgeProjectionFromCandidate,
@@ -62,7 +65,7 @@ const correctionKey = (
   scope: "repository",
   scopeId: "repo-1",
   sourceCorrectionEventIds: [
-    "event-correction",
+    correctionEnvelope.event.eventId,
   ],
   subsystem: "test-runner",
   taskFamily: "testing",
@@ -73,6 +76,76 @@ const correctionKey = (
   violatedConstraint:
     "Inspect package scripts before choosing a test runner.",
 });
+
+const envelope = (
+  sourceEventId: string,
+  timestamp: string,
+  eventType: string,
+  trust: "tool" | "user",
+  completionStatus?: "succeeded",
+): CaptureEnvelope =>
+  createCaptureEnvelope({
+    adapter: "copilot-cli",
+    adapterVersion: "1.0.82-0",
+    branch: "feat/testing",
+    ...(completionStatus === undefined
+      ? {}
+      : {
+          completionStatus,
+        }),
+    eventType,
+    repoId: "repo-1",
+    sessionId: "session-1",
+    sourceEventId,
+    timestamp,
+    trust,
+  });
+
+const correctionEnvelope = envelope(
+  "event-correction",
+  "2026-09-01T00:00:00.000Z",
+  "user.corrected",
+  "user",
+);
+const verificationEnvelope = envelope(
+  "event-verification",
+  "2026-09-01T00:10:00.000Z",
+  "test.completed",
+  "tool",
+  "succeeded",
+);
+const episode: WorkEpisode = {
+  schemaVersion: CURRENT_SCHEMA_VERSION,
+  associationConfidence: 1,
+  associationEvidenceIds: [],
+  branches: [
+    "feat/testing",
+  ],
+  commitIds: [],
+  correctionEventIds: [
+    correctionEnvelope.event.eventId,
+  ],
+  episodeId: "episode-1",
+  finishedAt: "2026-09-01T00:10:00.000Z",
+  goal: "Run package validation",
+  issueIds: [],
+  outcome: "success",
+  outcomeEvidenceIds: [
+    verificationEnvelope.event.eventId,
+  ],
+  outcomeQualification: "qualified",
+  outcomeQualifiedAt: "2026-09-01T00:10:00.000Z",
+  pullRequestIds: [],
+  repoId: "repo-1",
+  sessionIds: [
+    "session-1",
+  ],
+  sourceEventIds: [
+    correctionEnvelope.event.eventId,
+    verificationEnvelope.event.eventId,
+  ],
+  startedAt: "2026-09-01T00:00:00.000Z",
+};
 
 const backendFor = (
   knowledge: KnowledgeCandidate,
@@ -102,16 +175,28 @@ const backendFor = (
 describe("CanonicalKnowledgeRetriever correction admission", () => {
   it("rejects correction-based Knowledge until its key is verified", async () => {
     const knowledge = candidate([
-      "event-correction",
+      correctionEnvelope.event.eventId,
+      verificationEnvelope.event.eventId,
     ]);
     let keys: readonly CorrectionKey[] = [];
     const retriever = new CanonicalKnowledgeRetriever({
       backend: backendFor(knowledge),
       store: {
-        correctionKeys: () => keys,
-        correctionSourceEventIds: () => new Set([
-          "event-correction",
-        ]),
+        knowledgeAdmissionEvidence: () => ({
+          contextUseRecords: [],
+          correctionKeys: keys,
+          correctionSourceEventIds: new Set([
+            correctionEnvelope.event.eventId,
+          ]),
+          envelopes: [
+            correctionEnvelope,
+            verificationEnvelope,
+          ],
+          feedbackEvents: [],
+          workEpisodes: [
+            episode,
+          ],
+        }),
         knowledgeCandidates: () => [
           knowledge,
         ],
@@ -133,7 +218,7 @@ describe("CanonicalKnowledgeRetriever correction admission", () => {
 
     keys = [
       correctionKey([
-        "event-verification",
+        verificationEnvelope.event.eventId,
       ]),
     ];
     await expect(retriever.search(query)).resolves.toEqual([
@@ -151,12 +236,18 @@ describe("CanonicalKnowledgeRetriever correction admission", () => {
     const retriever = new CanonicalKnowledgeRetriever({
       backend: backendFor(knowledge),
       store: {
-        correctionKeys: () => [
-          correctionKey([]),
-        ],
-        correctionSourceEventIds: () => new Set([
-          "event-correction",
-        ]),
+        knowledgeAdmissionEvidence: () => ({
+          contextUseRecords: [],
+          correctionKeys: [
+            correctionKey([]),
+          ],
+          correctionSourceEventIds: new Set([
+            correctionEnvelope.event.eventId,
+          ]),
+          envelopes: [],
+          feedbackEvents: [],
+          workEpisodes: [],
+        }),
         knowledgeCandidates: () => [
           knowledge,
         ],

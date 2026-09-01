@@ -241,6 +241,16 @@ the applicable version before the FTS projection is rebuilt. Automatic state
 is reconstructed from canonical evidence and append-only feedback, while
 manual Knowledge remains independent and forgotten automatic Knowledge cannot
 be regenerated.
+M2 admission now requires a complete same-Episode correction and trusted
+verification proof chain before automatic activation. Model or user
+self-assessment, recalled Knowledge references, missing applicability, and
+implicit scope broadening fail closed. Admission is rechecked against canonical
+evidence at retrieval, while explicit user scope changes and the full
+applicability, conflict, and supersession explanation remain preserved.
+SQLite v7 adds indexed candidate-scoped admission lookups so retrieval does not
+scan the complete evidence and context-use history. Work Episode projection
+also binds context-use records to one unambiguous Session/time Episode, allowing
+later self-reinforcing verification to be rejected on the production path.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

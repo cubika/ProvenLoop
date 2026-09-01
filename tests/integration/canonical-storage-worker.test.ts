@@ -24,6 +24,9 @@ import {
 } from "@provenloop/copilot-adapter";
 import {
   captureQueueItemSchema,
+  CURRENT_SCHEMA_VERSION,
+  type CorrectionKey,
+  type KnowledgeCandidate,
 } from "@provenloop/contracts";
 import { createCaptureDeduplicationKey } from "@provenloop/domain";
 import {
@@ -118,7 +121,7 @@ describe("canonical SQLite storage", () => {
       busyTimeoutMs: 2_500,
       journalMode: "wal",
       quickCheck: "ok",
-      userVersion: 6,
+      userVersion: 7,
     });
 
     const result = store.ingestQueueItem(queued);
@@ -156,7 +159,7 @@ describe("canonical SQLite storage", () => {
     legacy.close();
 
     const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(6);
+    expect(upgraded.health().userVersion).toBe(7);
     upgraded.close();
 
     const verification = new DatabaseSync(databasePath);
@@ -170,6 +173,141 @@ describe("canonical SQLite storage", () => {
       .get() as Readonly<Record<string, unknown>>;
     expect(Number(table.count)).toBe(1);
     verification.close();
+  });
+
+  it("deduplicates correction source mappings during upgrade and rebuild", async () => {
+    const root = await createTemporaryDirectory();
+    const databasePath = join(root, "legacy-v6.db");
+    const legacy = new CanonicalSqliteStore(databasePath, {
+      migrations: DEFAULT_SQLITE_MIGRATIONS.slice(0, 6),
+    });
+    legacy.close();
+    const key: CorrectionKey = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      correctionKeyId: "correction-duplicate-source",
+      createdAt: timestamp,
+      expectedBehavior: "Run the targeted Vitest command",
+      scope: "repository",
+      scopeId: "repo-1",
+      sourceCorrectionEventIds: [
+        "event-duplicate",
+        "event-duplicate",
+      ],
+      trigger: "package validation",
+      verificationEvidenceIds: [],
+      violatedConstraint: "Inspect package scripts first",
+    };
+    const database = new DatabaseSync(databasePath);
+    database
+      .prepare(
+        `INSERT INTO correction_keys (
+           correction_key_id,
+           schema_version,
+           scope,
+           scope_id,
+           body_json,
+           source_digest,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        key.correctionKeyId,
+        key.schemaVersion,
+        key.scope,
+        key.scopeId ?? null,
+        JSON.stringify(key),
+        "digest",
+        key.createdAt,
+      );
+    database.close();
+
+    const upgraded = new CanonicalSqliteStore(databasePath);
+    expect(upgraded.health().userVersion).toBe(7);
+    expect(() =>
+      upgraded.replaceCorrectionProjection({
+        correctionKeys: [
+          key,
+        ],
+        opportunities: [],
+      }),
+    ).not.toThrow();
+    upgraded.close();
+
+    const verification = new DatabaseSync(databasePath);
+    const row = verification
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM correction_key_sources
+          WHERE correction_key_id = ?
+            AND source_event_id = ?`,
+      )
+      .get(
+        key.correctionKeyId,
+        "event-duplicate",
+      ) as Readonly<Record<string, unknown>>;
+    expect(Number(row.count)).toBe(1);
+    verification.close();
+  });
+
+  it("chunks admission evidence beyond the SQLite variable limit", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "provenloop.db"),
+    );
+    const ids = Array.from(
+      {
+        length: 32_767,
+      },
+      (_value, index) => `source-${index}`,
+    );
+    const candidate: KnowledgeCandidate = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      appliesWhen: [
+        "package validation",
+      ],
+      conflictsWith: [],
+      content: "Run the targeted Vitest command",
+      coverage: {
+        applicableOpportunities: 0,
+        observedOutcomes: 0,
+      },
+      createdAt: timestamp,
+      evidenceMarks: [
+        "externally_verified",
+      ],
+      evidenceTier: "externally_verified",
+      importance: 1,
+      kind: "procedural",
+      knowledgeId: "knowledge-large-proof",
+      nonApplicability: [],
+      scope: "repository",
+      scopeId: "repo-1",
+      sourceEpisodeIds: ids,
+      sourceEvidenceIds: ids,
+      state: "active",
+      topicKey: "testing:large-proof",
+      utility: {
+        applied: 0,
+        harmful: 0,
+        helpful: 0,
+      },
+      validatedAt: timestamp,
+    };
+
+    expect(() =>
+      store.knowledgeAdmissionEvidence([
+        candidate,
+      ]),
+    ).not.toThrow();
+    expect(
+      store.contextUseRecordsForEpisodes(ids),
+    ).toEqual([]);
+    expect(
+      store.knowledgeCandidatesWithUnavailableSources([
+        candidate,
+      ]),
+    ).toContain(candidate.knowledgeId);
+    store.close();
   });
 
   it("runs a second redaction pass before canonical persistence", async () => {
@@ -235,7 +373,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 7,
+            version: 8,
             sql: `
               CREATE TABLE migration_probe (
                 value TEXT NOT NULL
@@ -259,7 +397,7 @@ describe("canonical SQLite storage", () => {
             AND name = 'migration_probe'`,
       )
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(6);
+    expect(Number(version.user_version)).toBe(7);
     expect(Number(probe.count)).toBe(0);
     database.close();
   });
@@ -275,7 +413,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 7,
+            version: 8,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN unexpected TEXT;
@@ -292,7 +430,7 @@ describe("canonical SQLite storage", () => {
     const columns = database
       .prepare("PRAGMA table_info(raw_events);")
       .all() as readonly Readonly<Record<string, unknown>>[];
-    expect(Number(version.user_version)).toBe(6);
+    expect(Number(version.user_version)).toBe(7);
     expect(
       columns.some((column) => column.name === "unexpected"),
     ).toBe(false);
@@ -310,7 +448,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 7,
+            version: 8,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN generated_guard TEXT
@@ -331,7 +469,7 @@ describe("canonical SQLite storage", () => {
     const version = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(6);
+    expect(Number(version.user_version)).toBe(7);
     database.close();
   });
 
@@ -345,7 +483,7 @@ describe("canonical SQLite storage", () => {
       migrations: [
         ...DEFAULT_SQLITE_MIGRATIONS,
         {
-          version: 7,
+          version: 8,
           sql: `
             CREATE TABLE recovery_probe (
               value TEXT NOT NULL
@@ -354,7 +492,7 @@ describe("canonical SQLite storage", () => {
         },
       ],
     });
-    expect(upgraded.health().userVersion).toBe(7);
+    expect(upgraded.health().userVersion).toBe(8);
     upgraded.close();
 
     const database = new DatabaseSync(databasePath);
@@ -394,7 +532,7 @@ describe("canonical SQLite storage", () => {
       ),
     ).toMatchObject({
       quickCheck: "ok",
-      userVersion: 6,
+      userVersion: 7,
     });
     const restored = new CanonicalSqliteStore(databasePath);
     expect(
@@ -462,10 +600,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 6,
+      userVersion: 7,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(6);
+    expect(restored.health().userVersion).toBe(7);
     restored.close();
   });
 
@@ -526,10 +664,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 6,
+      userVersion: 7,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(6);
+    expect(restored.health().userVersion).toBe(7);
     expect(restored.sessionMuted("legacy-muted-session"))
       .toBe(true);
     restored.close();
@@ -825,7 +963,7 @@ describe("canonical SQLite storage", () => {
     const preserved = new CanonicalSqliteStore(databasePath);
     expect(preserved.health()).toMatchObject({
       quickCheck: "ok",
-      userVersion: 6,
+      userVersion: 7,
     });
     preserved.close();
   });

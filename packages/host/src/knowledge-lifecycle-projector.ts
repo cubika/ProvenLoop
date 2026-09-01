@@ -1,5 +1,6 @@
 import type {
   CaptureEnvelope,
+  ContextUseRecord,
   CorrectionKey,
   CorrectionOpportunity,
   FeedbackEvent,
@@ -8,9 +9,13 @@ import type {
 } from "@provenloop/contracts";
 import {
   KnowledgeLifecycleBuilder,
+  type KnowledgeAdmissionDecision,
 } from "@provenloop/domain";
 
 export interface KnowledgeLifecycleProjectionStore {
+  contextUseRecordsForEpisodes(
+    episodeIds: readonly string[],
+  ): readonly ContextUseRecord[];
   correctionKeys(): readonly CorrectionKey[];
   correctionOpportunities(): readonly CorrectionOpportunity[];
   episodeSourceEnvelopes(): readonly CaptureEnvelope[];
@@ -30,6 +35,7 @@ export interface KnowledgeLifecycleProjectorOptions {
 }
 
 export interface KnowledgeLifecycleProjectionResult {
+  readonly admissionDecisions: readonly KnowledgeAdmissionDecision[];
   readonly candidates: readonly KnowledgeCandidate[];
   readonly persistedCandidates: number;
   readonly suppressedForgottenKnowledgeIds: readonly string[];
@@ -59,13 +65,30 @@ export class KnowledgeLifecycleProjector {
         "Knowledge lifecycle projection is blocked by an active deletion.",
       );
     }
+    const correctionKeys = this.#store.correctionKeys();
+    const workEpisodes = this.#store.workEpisodes();
+    const correctionEvidenceIds = new Set(
+      correctionKeys.flatMap((key) => [
+        ...key.sourceCorrectionEventIds,
+        ...key.verificationEvidenceIds,
+      ]),
+    );
+    const sourceEpisodeIds = workEpisodes
+      .filter((episode) =>
+        episode.sourceEventIds.some((eventId) =>
+          correctionEvidenceIds.has(eventId),
+        ),
+      )
+      .map((episode) => episode.episodeId);
     const built = this.#builder.build({
-      correctionKeys: this.#store.correctionKeys(),
+      contextUseRecords:
+        this.#store.contextUseRecordsForEpisodes(sourceEpisodeIds),
+      correctionKeys,
       correctionOpportunities:
         this.#store.correctionOpportunities(),
       envelopes: this.#store.episodeSourceEnvelopes(),
       feedbackEvents: this.#store.feedbackEvents(),
-      workEpisodes: this.#store.workEpisodes(),
+      workEpisodes,
     });
     const suppressedForgottenKnowledgeIds = built.candidates
       .filter((candidate) =>
@@ -79,7 +102,13 @@ export class KnowledgeLifecycleProjector {
           candidate.knowledgeId,
         ),
     );
+    const candidateIds = new Set(
+      candidates.map((candidate) => candidate.knowledgeId),
+    );
     return {
+      admissionDecisions: built.admissionDecisions.filter(
+        (item) => candidateIds.has(item.knowledgeId),
+      ),
       candidates,
       persistedCandidates:
         this.#store.replaceCorrectionKnowledgeCandidates({

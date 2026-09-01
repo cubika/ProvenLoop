@@ -41,10 +41,19 @@ export {
   type WorkEpisodeBuildResult,
 } from "./episode-builder.js";
 export {
+  KnowledgeAdmissionPolicy,
+  refreshKnowledgeAdmissionDecision,
+  type KnowledgeAdmissionBatchInput,
+  type KnowledgeAdmissionDecision,
+  type KnowledgeAdmissionInput,
+  type KnowledgeAdmissionReason,
+} from "./knowledge-admission-policy.js";
+export {
   KnowledgeLifecycleBuilder,
   correctionKnowledgeTopicKey,
   type KnowledgeLifecycleBuildInput,
   type KnowledgeLifecycleBuildResult,
+  type KnowledgeLifecycleBuilderOptions,
 } from "./knowledge-lifecycle-builder.js";
 export {
   containsKnownSecret,

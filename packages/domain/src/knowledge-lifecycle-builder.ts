@@ -1,5 +1,6 @@
 import {
   captureEnvelopeSchema,
+  contextUseRecordSchema,
   correctionKeySchema,
   correctionOpportunitySchema,
   CURRENT_SCHEMA_VERSION,
@@ -7,6 +8,7 @@ import {
   knowledgeCandidateSchema,
   workEpisodeSchema,
   type CaptureEnvelope,
+  type ContextUseRecord,
   type CorrectionKey,
   type CorrectionOpportunity,
   type EvidenceMark,
@@ -17,8 +19,14 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import {
+  KnowledgeAdmissionPolicy,
+  refreshKnowledgeAdmissionDecision,
+  type KnowledgeAdmissionDecision,
+} from "./knowledge-admission-policy.js";
 
 export interface KnowledgeLifecycleBuildInput {
+  readonly contextUseRecords?: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
   readonly correctionOpportunities: readonly CorrectionOpportunity[];
   readonly envelopes: readonly CaptureEnvelope[];
@@ -27,7 +35,12 @@ export interface KnowledgeLifecycleBuildInput {
 }
 
 export interface KnowledgeLifecycleBuildResult {
+  readonly admissionDecisions: readonly KnowledgeAdmissionDecision[];
   readonly candidates: readonly KnowledgeCandidate[];
+}
+
+export interface KnowledgeLifecycleBuilderOptions {
+  readonly admissionPolicy?: KnowledgeAdmissionPolicy;
 }
 
 interface KnowledgeVersion {
@@ -142,21 +155,73 @@ const versionsFromKeys = (
 };
 
 const evidenceMarks = (
-  correctionEventIds: readonly string[],
-  verificationEvidenceIds: readonly string[],
+  verifiedCorrectionEventIds: readonly string[],
 ): readonly EvidenceMark[] => {
   const marks: EvidenceMark[] = [];
-  if (verificationEvidenceIds.length > 0) {
+  if (verifiedCorrectionEventIds.length > 0) {
     marks.push("externally_verified");
   }
-  if (
-    verificationEvidenceIds.length > 0 &&
-    correctionEventIds.length >= 2
-  ) {
+  if (verifiedCorrectionEventIds.length >= 2) {
     marks.push("repeated_evidence");
   }
   return marks;
 };
+
+const verifiedCorrectionEventIds = (
+  correctionEventIds: readonly string[],
+  verificationEvidenceIds: readonly string[],
+  eventsById: ReadonlyMap<string, CaptureEnvelope>,
+  workEpisodes: readonly WorkEpisode[],
+): readonly string[] =>
+  correctionEventIds.filter((correctionEventId) => {
+    const correction = eventsById.get(correctionEventId);
+    if (correction === undefined) {
+      return false;
+    }
+    return workEpisodes.some(
+      (episode) =>
+        episode.sourceEventIds.includes(correctionEventId) &&
+        verificationEvidenceIds.some((verificationEvidenceId) => {
+          if (
+            !episode.sourceEventIds.includes(verificationEvidenceId)
+          ) {
+            return false;
+          }
+          const verification = eventsById.get(
+            verificationEvidenceId,
+          );
+          if (verification === undefined) {
+            return false;
+          }
+          const event = verification.event;
+          return (
+            (
+              event.eventType === "test.completed" ||
+              event.eventType === "build.completed" ||
+              event.eventType === "verification.completed"
+            ) &&
+            (
+              event.trust === "system" ||
+              event.trust === "tool"
+            ) &&
+            (
+              event.completionStatus === "succeeded" ||
+              event.exitCode === 0
+            ) &&
+            (
+              event.completionStatus === undefined ||
+              event.completionStatus === "succeeded"
+            ) &&
+            (
+              event.exitCode === undefined ||
+              event.exitCode === 0
+            ) &&
+            Date.parse(correction.event.timestamp) <
+              Date.parse(event.timestamp)
+          );
+        }),
+    );
+  });
 
 const tierFromMarks = (
   marks: readonly EvidenceMark[],
@@ -267,10 +332,14 @@ const applyFeedback = (
       expiresAt = feedback.timestamp;
       break;
     case "set_scope":
-      if (feedback.scopeChange !== undefined) {
-        scope = feedback.scopeChange.scope;
-        scopeId = feedback.scopeChange.scopeId;
+      if (
+        feedback.source !== "user" ||
+        feedback.scopeChange === undefined
+      ) {
+        return candidate;
       }
+      scope = feedback.scopeChange.scope;
+      scopeId = feedback.scopeChange.scopeId;
       break;
     case "irrelevant":
     case "mute_session":
@@ -362,11 +431,23 @@ const reconcileTopicVersions = (
 };
 
 export class KnowledgeLifecycleBuilder {
+  readonly #admissionPolicy: KnowledgeAdmissionPolicy;
+
+  public constructor(
+    options: KnowledgeLifecycleBuilderOptions = {},
+  ) {
+    this.#admissionPolicy =
+      options.admissionPolicy ?? new KnowledgeAdmissionPolicy();
+  }
+
   public build(
     input: KnowledgeLifecycleBuildInput,
   ): KnowledgeLifecycleBuildResult {
     const correctionKeys = input.correctionKeys.map((key) =>
       correctionKeySchema.parse(key),
+    );
+    const contextUseRecords = (input.contextUseRecords ?? []).map(
+      (record) => contextUseRecordSchema.parse(record),
     );
     const opportunities = input.correctionOpportunities.map(
       (opportunity) =>
@@ -392,6 +473,14 @@ export class KnowledgeLifecycleBuilder {
         episode.episodeId,
         episode,
       ]),
+    );
+    const correctionSourceEventIds = new Set(
+      envelopes
+        .filter(
+          (envelope) =>
+            envelope.event.eventType === "user.corrected",
+        )
+        .map((envelope) => envelope.event.eventId),
     );
     const versions = versionsFromKeys(correctionKeys);
     const candidates = versions.map((version) => {
@@ -467,8 +556,12 @@ export class KnowledgeLifecycleBuilder {
         ...counterevidenceTimestamps,
       ]);
       const marks = evidenceMarks(
-        correctionEventIds,
-        verificationEvidenceIds,
+        verifiedCorrectionEventIds(
+          correctionEventIds,
+          verificationEvidenceIds,
+          eventsById,
+          workEpisodes,
+        ),
       );
       const tier = tierFromMarks(marks);
       const firstKey = version.correctionKeys[0];
@@ -546,8 +639,50 @@ export class KnowledgeLifecycleBuilder {
       }
       return candidate;
     });
+    const admissionInput = {
+      contextUseRecords,
+      correctionKeys,
+      correctionSourceEventIds,
+      envelopes,
+      feedbackEvents,
+      workEpisodes,
+    };
+    const preliminaryAdmission =
+      this.#admissionPolicy.evaluateAll({
+        ...admissionInput,
+        candidates,
+      });
+    const admittedCandidates = candidates.map((candidate, index) => {
+      const admission = preliminaryAdmission[index];
+      return candidate.state === "active" &&
+        admission?.admitted === false
+        ? knowledgeCandidateSchema.parse({
+            ...candidate,
+            state: "candidate",
+          })
+        : candidate;
+    });
+    const reconciled = reconcileTopicVersions(admittedCandidates);
+    const admissionById = new Map(
+      preliminaryAdmission.map((admission) => [
+        admission.knowledgeId,
+        admission,
+      ]),
+    );
     return {
-      candidates: reconcileTopicVersions(candidates),
+      admissionDecisions: reconciled.map((candidate) => {
+        const admission = admissionById.get(candidate.knowledgeId);
+        if (admission === undefined) {
+          throw new Error(
+            `Knowledge ${candidate.knowledgeId} has no admission decision.`,
+          );
+        }
+        return refreshKnowledgeAdmissionDecision(
+          admission,
+          candidate,
+        );
+      }),
+      candidates: reconciled,
     };
   }
 }

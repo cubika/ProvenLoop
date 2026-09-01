@@ -20,6 +20,7 @@ import {
 import { WindowsCaptureQueue } from "@provenloop/platform-windows";
 import {
   CanonicalKnowledgeRetriever,
+  ContextRetrievalService,
   KnowledgeProjectionManager,
   SqliteFtsKnowledgeBackend,
 } from "@provenloop/retrieval";
@@ -340,6 +341,75 @@ describe("Knowledge lifecycle projection", () => {
         ]),
       ).toEqual([]);
     } finally {
+      store.close();
+    }
+  });
+
+  it("fails retrieval closed after same-Episode self recall", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new CanonicalSqliteStore(
+      join(root, "canonical.db"),
+    );
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      const automatic = await seedLifecycle(root, store);
+      await new KnowledgeProjectionManager({
+        backend,
+        store,
+      }).rebuild();
+      await expect(
+        new ContextRetrievalService({
+          backend,
+          idGenerator: () => "context-self-recall",
+          now: () => new Date("2026-09-01T00:15:00.000Z"),
+          store,
+        }).context({
+          cwd: root,
+          prompt: "Run package validation with Vitest",
+          repoId: "repo-1",
+          sessionId: "session-correction",
+          tokenBudget: 1_200,
+        }),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            id: automatic.knowledgeId,
+            kind: "knowledge",
+          },
+        ],
+        status: "ok",
+      });
+      expect(
+        store.contextUseRecords("session-correction")[0]?.episodeId,
+      ).toBeUndefined();
+      store.replaceWorkEpisodeProjection({
+        associations: [],
+        corrections: [],
+        episodes: store.workEpisodes(),
+      });
+      expect(
+        store.contextUseRecords("session-correction")[0]?.episodeId,
+      ).toBe("episode-correction");
+
+      expect(
+        store.knowledgeAdmissionEvidence([
+          automatic,
+        ]).contextUseRecords,
+      ).toHaveLength(1);
+      await expect(
+        new CanonicalKnowledgeRetriever({
+          backend,
+          store,
+        }).search({
+          limit: 3,
+          repositoryScopeId: "repo-1",
+          text: "Vitest",
+        }),
+      ).resolves.toEqual([]);
+    } finally {
+      backend.close();
       store.close();
     }
   });

@@ -58,8 +58,6 @@ export interface KnowledgeBackend {
 }
 
 export interface CanonicalKnowledgeStore {
-  correctionKeys(): readonly CorrectionKey[];
-  correctionSourceEventIds(): ReadonlySet<string>;
   knowledgeCandidates(
     ids?: readonly string[],
   ): readonly KnowledgeCandidate[];
@@ -68,8 +66,24 @@ export interface CanonicalKnowledgeStore {
   ): ReadonlySet<string>;
 }
 
-export interface CanonicalContextStore
+export interface KnowledgeAdmissionEvidence {
+  readonly contextUseRecords: readonly ContextUseRecord[];
+  readonly correctionKeys: readonly CorrectionKey[];
+  readonly correctionSourceEventIds: ReadonlySet<string>;
+  readonly envelopes: readonly CaptureEnvelope[];
+  readonly feedbackEvents: readonly FeedbackEvent[];
+  readonly workEpisodes: readonly WorkEpisode[];
+}
+
+export interface CanonicalKnowledgeAdmissionStore
 extends CanonicalKnowledgeStore {
+  knowledgeAdmissionEvidence(
+    candidates: readonly KnowledgeCandidate[],
+  ): KnowledgeAdmissionEvidence;
+}
+
+export interface CanonicalContextStore
+extends CanonicalKnowledgeAdmissionStore {
   appendContextUseRecord(record: ContextUseRecord): boolean;
   branchContextFor(input: {
     readonly branch: string;

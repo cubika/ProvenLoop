@@ -443,6 +443,31 @@ disputed, uncertain, and scope-incompatible content is never silently injected.
 Numeric model scores may rank candidates for review but cannot activate,
 supersede, or broaden Knowledge.
 
+Correction Knowledge admission is deterministic and fail closed. The policy
+requires the user-trusted correction, a later successful `tool` or `system`
+test/build/verification event in the same Work Episode, matching scope and
+applicability, and a complete canonical proof chain. Context-use records and
+recalled Knowledge IDs are never accepted as supporting evidence. Automatic
+scope feedback cannot broaden Knowledge; only an explicit user `set_scope`
+event may change its scope. The same policy runs before lifecycle persistence
+and again when canonical search hits are rechecked. Its decision retains the
+applies-when and non-applicability conditions, source Episode and evidence
+references, conflicts, and supersession relation.
+
+Context retrieval records the trusted Session immediately. The deterministic
+Work Episode projection subsequently associates each context-use record only
+when exactly one Episode contains that Session and timestamp. Admission can
+then reject a verification when the same Knowledge was returned after the
+paired correction and before that verification; ambiguous Episode associations
+remain unset and cannot create a self-strengthening edge.
+
+Canonical retrieval loads admission evidence only for the current search hits.
+SQLite v7 indexes raw event identity, context-use Episode identity, and
+feedback target identity. It also maintains an indexed
+`correction_key_sources` mapping rebuilt from canonical Correction Keys, so
+admission cost does not grow as a JavaScript or JSON virtual-table scan of the
+complete local history.
+
 ### 3.7 Outcome linker
 
 The linker detects later evidence that strengthens or weakens earlier learning:

@@ -337,18 +337,35 @@ const parseCorrection = (
 
 const isVerificationSuccess = (
   envelope: CaptureEnvelope,
-): boolean =>
-  (
-    envelope.event.eventType === "test.completed" ||
-    envelope.event.eventType === "build.completed" ||
-    envelope.event.eventType === "verification.completed"
-  ) &&
-  (
-    envelope.event.completionStatus === "succeeded" ||
-    envelope.event.exitCode === 0
-  ) &&
-  envelope.event.trust !== "model" &&
-  envelope.event.trust !== "external-content";
+): boolean => {
+  const event = envelope.event;
+  if (
+    event.eventType !== "test.completed" &&
+    event.eventType !== "build.completed" &&
+    event.eventType !== "verification.completed"
+  ) {
+    return false;
+  }
+  if (
+    event.trust !== "system" &&
+    event.trust !== "tool"
+  ) {
+    return false;
+  }
+  if (
+    event.completionStatus !== undefined &&
+    event.completionStatus !== "succeeded"
+  ) {
+    return false;
+  }
+  if (event.exitCode !== undefined && event.exitCode !== 0) {
+    return false;
+  }
+  return (
+    event.completionStatus === "succeeded" ||
+    event.exitCode === 0
+  );
+};
 
 const episodeEvents = (
   episode: WorkEpisode,
@@ -380,7 +397,7 @@ const occurrenceFor = (
     episodeId: episode.episodeId,
     verification: episodeEvents(episode, eventsById).filter(
       (envelope) =>
-        Date.parse(envelope.event.timestamp) >=
+        Date.parse(envelope.event.timestamp) >
           Date.parse(parsed.event.event.timestamp) &&
         isVerificationSuccess(envelope),
     ),

@@ -131,6 +131,8 @@ const opportunity = (input: {
 const feedback = (input: {
   readonly feedbackId: string;
   readonly kind: FeedbackEvent["kind"];
+  readonly scopeChange?: FeedbackEvent["scopeChange"];
+  readonly source?: FeedbackEvent["source"];
   readonly targetId: string;
   readonly timestamp: string;
 }): FeedbackEvent => ({
@@ -138,7 +140,12 @@ const feedback = (input: {
   evidenceRef: `control:${input.feedbackId}`,
   feedbackId: input.feedbackId,
   kind: input.kind,
-  source: "user",
+  ...(input.scopeChange === undefined
+    ? {}
+    : {
+        scopeChange: input.scopeChange,
+      }),
+  source: input.source ?? "user",
   targetId: input.targetId,
   targetType: "knowledge",
   timestamp: input.timestamp,
@@ -301,6 +308,84 @@ describe("KnowledgeLifecycleBuilder", () => {
     });
   });
 
+  it("does not reuse stale verification for a later correction", () => {
+    const firstCorrection = envelope(
+      "correction-first-verified",
+      "2026-09-01T00:00:00.000Z",
+      "user.corrected",
+      {
+        trust: "user",
+      },
+    );
+    const verification = envelope(
+      "verification-before-repeat",
+      "2026-09-01T00:10:00.000Z",
+      "test.completed",
+      {
+        completionStatus: "succeeded",
+        trust: "tool",
+      },
+    );
+    const laterCorrection = envelope(
+      "correction-later-unverified",
+      "2026-09-01T00:20:00.000Z",
+      "user.corrected",
+      {
+        trust: "user",
+      },
+    );
+    const result = new KnowledgeLifecycleBuilder().build({
+      correctionKeys: [
+        key({
+          correctionEventIds: [
+            firstCorrection.event.eventId,
+            laterCorrection.event.eventId,
+          ],
+          correctionKeyId: "correction-stale-verification",
+          createdAt: firstCorrection.event.timestamp,
+          verificationEvidenceIds: [
+            verification.event.eventId,
+          ],
+        }),
+      ],
+      correctionOpportunities: [],
+      envelopes: [
+        firstCorrection,
+        verification,
+        laterCorrection,
+      ],
+      feedbackEvents: [],
+      workEpisodes: [
+        episode({
+          episodeId: "episode-first-verified",
+          sourceEventIds: [
+            firstCorrection.event.eventId,
+            verification.event.eventId,
+          ],
+          startedAt: firstCorrection.event.timestamp,
+        }),
+        episode({
+          episodeId: "episode-later-unverified",
+          sourceEventIds: [
+            laterCorrection.event.eventId,
+          ],
+          startedAt: laterCorrection.event.timestamp,
+        }),
+      ],
+    });
+
+    expect(result.candidates[0]).toMatchObject({
+      evidenceMarks: [
+        "externally_verified",
+      ],
+      evidenceTier: "externally_verified",
+      state: "candidate",
+    });
+    expect(result.admissionDecisions[0]?.reasons).toContain(
+      "unverified_correction_occurrence",
+    );
+  });
+
   it("supersedes older verified behavior within one topic", () => {
     const oldCorrection = envelope(
       "correction-old",
@@ -369,7 +454,24 @@ describe("KnowledgeLifecycleBuilder", () => {
         newVerification,
       ],
       feedbackEvents: [],
-      workEpisodes: [],
+      workEpisodes: [
+        episode({
+          episodeId: "episode-old",
+          sourceEventIds: [
+            oldCorrection.event.eventId,
+            oldVerification.event.eventId,
+          ],
+          startedAt: oldCorrection.event.timestamp,
+        }),
+        episode({
+          episodeId: "episode-new",
+          sourceEventIds: [
+            newCorrection.event.eventId,
+            newVerification.event.eventId,
+          ],
+          startedAt: newCorrection.event.timestamp,
+        }),
+      ],
     });
     const oldCandidate = result.candidates.find(
       (candidate) => candidate.content === "Run the full Jest suite",
@@ -478,5 +580,101 @@ describe("KnowledgeLifecycleBuilder", () => {
       state: "archived",
       validatedAt: "2026-09-04T00:00:00.000Z",
     });
+  });
+
+  it("only applies explicit user scope changes", () => {
+    const correction = envelope(
+      "correction-scope",
+      "2026-09-01T00:00:00.000Z",
+      "user.corrected",
+      {
+        trust: "user",
+      },
+    );
+    const verification = envelope(
+      "verification-scope",
+      "2026-09-01T00:10:00.000Z",
+      "test.completed",
+      {
+        completionStatus: "succeeded",
+        trust: "tool",
+      },
+    );
+    const correctionKey = key({
+      correctionEventIds: [
+        correction.event.eventId,
+      ],
+      correctionKeyId: "correction-scope",
+      createdAt: correction.event.timestamp,
+      verificationEvidenceIds: [
+        verification.event.eventId,
+      ],
+    });
+    const workEpisode = episode({
+      episodeId: "episode-scope",
+      sourceEventIds: [
+        correction.event.eventId,
+        verification.event.eventId,
+      ],
+      startedAt: correction.event.timestamp,
+    });
+    const builder = new KnowledgeLifecycleBuilder();
+    const baseInput = {
+      correctionKeys: [
+        correctionKey,
+      ],
+      correctionOpportunities: [],
+      envelopes: [
+        correction,
+        verification,
+      ],
+      feedbackEvents: [],
+      workEpisodes: [
+        workEpisode,
+      ],
+    };
+    const knowledgeId = builder.build(baseInput).candidates[0]?.knowledgeId;
+    if (knowledgeId === undefined) {
+      throw new Error("Expected correction Knowledge.");
+    }
+    const scopeFeedback = {
+      feedbackId: "feedback-scope",
+      kind: "set_scope" as const,
+      scopeChange: {
+        scope: "personal" as const,
+      },
+      targetId: knowledgeId,
+      timestamp: "2026-09-01T00:20:00.000Z",
+    };
+    const automated = builder.build({
+      ...baseInput,
+      feedbackEvents: [
+        feedback({
+          ...scopeFeedback,
+          source: "analyzer",
+        }),
+      ],
+    }).candidates[0];
+    const explicit = builder.build({
+      ...baseInput,
+      feedbackEvents: [
+        feedback({
+          ...scopeFeedback,
+          source: "user",
+        }),
+      ],
+    }).candidates[0];
+
+    expect(automated).toMatchObject({
+      scope: "repository",
+      scopeId: "repo-1",
+      state: "active",
+      validatedAt: verification.event.timestamp,
+    });
+    expect(explicit).toMatchObject({
+      scope: "personal",
+      state: "active",
+    });
+    expect(explicit).not.toHaveProperty("scopeId");
   });
 });

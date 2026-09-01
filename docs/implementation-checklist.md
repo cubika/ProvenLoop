@@ -470,11 +470,11 @@ frozen.
 
 ### 12.3 Admission policy
 
-- [ ] Activate only when deterministic evidence and scope rules pass.
-- [ ] Never activate from model self-assessment alone.
-- [ ] Never broaden repository Knowledge to personal scope automatically.
-- [ ] Never use recalled Knowledge as fresh supporting evidence.
-- [ ] Preserve applies-when, non-applicability, proof chain, conflicts, and
+- [x] Activate only when deterministic evidence and scope rules pass.
+- [x] Never activate from model self-assessment alone.
+- [x] Never broaden repository Knowledge to personal scope automatically.
+- [x] Never use recalled Knowledge as fresh supporting evidence.
+- [x] Preserve applies-when, non-applicability, proof chain, conflicts, and
   supersession.
 
 ### 12.4 M2 gate
