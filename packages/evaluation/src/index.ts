@@ -1,4 +1,16 @@
 export {
+  branchContinuationDatasetSchema,
+  evaluateBranchContinuationDataset,
+  loadBranchContinuationDataset,
+  renderBranchContinuationReport,
+  type BranchContinuationCaseResult,
+  type BranchContinuationDataset,
+  type BranchContinuationEvaluationOptions,
+  type BranchContinuationEvaluationReport,
+  type BranchContinuationMetrics,
+  type BranchContinuationScenario,
+} from "./branch-continuation-evaluation.js";
+export {
   createCanonicalCaptureLedgerEntry,
   evaluateCanonicalCaptureGate,
 } from "./capture-gate.js";
@@ -39,6 +51,15 @@ export {
   type RunM0ReleaseGateOptions,
   type RunM0ReleaseGateResult,
 } from "./m0-release-gate.js";
+export {
+  runM1ReleaseGate,
+  type M1ReleaseGateCheck,
+  type M1ReleaseGateStatus,
+  type M1ReleaseReport,
+  type M1ReleaseTarget,
+  type RunM1ReleaseGateOptions,
+  type RunM1ReleaseGateResult,
+} from "./m1-release-gate.js";
 export {
   loadEvaluationSuite,
 } from "./load-suite.js";

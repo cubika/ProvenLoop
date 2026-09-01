@@ -128,6 +128,15 @@ Regenerate the Markdown view from a run's stable JSON report:
 .\node_modules\.bin\provenloop.cmd eval report --run <run-id-or-directory>
 ```
 
+Run the M1 Branch Continuation research gate:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd eval m1 --out .provenloop\eval
+```
+
+Add `--stable` to enforce the 1% Wrong Injection threshold instead of the 2%
+research threshold.
+
 ## Canonical documents
 
 - [Product design](docs/product-design.md)
@@ -190,6 +199,11 @@ M1 user control now adds deterministic CLI commands for remember, correct,
 mute, forget, and purge. Forget removes canonical and projected Knowledge plus
 its usage and feedback records, while dependent Knowledge is archived instead
 of silently remaining active.
+The executable M1 gate now replays 32 frozen Branch Continuation pairs through
+the real retrieval service and canonical SQLite store. It retains JSON,
+Markdown, and replay database evidence for repeated Context Token reduction,
+TTV, Precision@3, Wrong Injection, Outcome Success, token budget, and P95
+latency decisions.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

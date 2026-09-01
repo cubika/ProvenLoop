@@ -213,6 +213,7 @@ describe("M1 context retrieval", () => {
         idGenerator: () => `request-${sequence += 1}`,
         now: () => new Date("2026-08-31T01:00:00.000Z"),
         store,
+        timeoutMs: 5_000,
       });
 
       const first = await service.context({
@@ -665,6 +666,7 @@ describe("M1 context retrieval", () => {
         backend,
         idGenerator: () => "collision",
         store,
+        timeoutMs: 5_000,
       });
       const response = await service.context({
         branch: "feat/collision",

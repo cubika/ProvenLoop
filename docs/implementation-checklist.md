@@ -1,7 +1,8 @@
 # ProvenLoop Implementation Checklist
 
 **Status:** Active  
-**Updated:** 2026-08-28  
+**Updated:** 2026-09-01
+
 **Immediate target:** M0 observation foundation, followed by the M1 + M2
 validated MVP.
 
@@ -436,14 +437,14 @@ frozen.
 
 ### 11.5 M1 gate
 
-- [ ] Evaluate at least 30 Branch Continuation pairs.
-- [ ] Repeated Context Token median decreases by at least 30%.
-- [ ] TTV median decreases by at least 15%.
-- [ ] Retrieval Precision@3 is at least 90%.
-- [ ] Wrong Injection is at most 2% for research and at most 1% for stable
+- [x] Evaluate at least 30 Branch Continuation pairs.
+- [x] Repeated Context Token median decreases by at least 30%.
+- [x] TTV median decreases by at least 15%.
+- [x] Retrieval Precision@3 is at least 90%.
+- [x] Wrong Injection is at most 2% for research and at most 1% for stable
   release.
-- [ ] Outcome Success falls by no more than two percentage points.
-- [ ] Retrieval latency P95 is at most 150 ms.
+- [x] Outcome Success falls by no more than two percentage points.
+- [x] Retrieval latency P95 is at most 150 ms.
 
 ## 12. M2: evidence-backed correction learning
 

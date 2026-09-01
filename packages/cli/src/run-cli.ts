@@ -23,6 +23,7 @@ import {
   renderEpisodeAssociationReport,
   runEvaluation,
   runM0ReleaseGate,
+  runM1ReleaseGate,
 } from "@provenloop/evaluation";
 import {
   DeletionPropagationGateError,
@@ -111,6 +112,7 @@ const usage = `Usage:
   provenloop purge [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory>
+  provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -632,6 +634,38 @@ const runEvaluationCommand = async (
       });
       io.log(
         `M0 release gate ${result.report.status}: ${result.runDirectory}`,
+      );
+      return result.report.exitCode;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 3;
+    }
+  }
+  if (args[1] === "m1") {
+    const outputRoot = option(args, "--out");
+    const datasetPath = option(args, "--dataset");
+    if (
+      !outputRoot ||
+      outputRoot.startsWith("--") ||
+      hasInvalidOptionValue(args, "--dataset")
+    ) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const result = await runM1ReleaseGate({
+        ...(datasetPath === undefined
+          ? {}
+          : {
+              datasetPath,
+            }),
+        outputRoot,
+        releaseTarget: args.includes("--stable")
+          ? "stable"
+          : "research",
+      });
+      io.log(
+        `M1 release gate ${result.report.status}: ${result.runDirectory}`,
       );
       return result.report.exitCode;
     } catch (error) {
