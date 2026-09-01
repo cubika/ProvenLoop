@@ -42,6 +42,14 @@ import {
 
 const temporaryDirectories: string[] = [];
 const timestamp = "2026-08-29T00:00:00.000Z";
+const correctionMessage = [
+  "Violated Constraint: Inspect package scripts before choosing a test runner",
+  "Expected Behavior: Run the targeted Vitest command",
+  "Trigger: package validation",
+  "Task Family: testing",
+  "Subsystem: test-runner",
+  "Scope: repository",
+].join("\n");
 
 const createTemporaryDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(
@@ -110,7 +118,7 @@ describe("canonical SQLite storage", () => {
       busyTimeoutMs: 2_500,
       journalMode: "wal",
       quickCheck: "ok",
-      userVersion: 5,
+      userVersion: 6,
     });
 
     const result = store.ingestQueueItem(queued);
@@ -148,7 +156,7 @@ describe("canonical SQLite storage", () => {
     legacy.close();
 
     const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(5);
+    expect(upgraded.health().userVersion).toBe(6);
     upgraded.close();
 
     const verification = new DatabaseSync(databasePath);
@@ -227,7 +235,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 6,
+            version: 7,
             sql: `
               CREATE TABLE migration_probe (
                 value TEXT NOT NULL
@@ -251,7 +259,7 @@ describe("canonical SQLite storage", () => {
             AND name = 'migration_probe'`,
       )
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(5);
+    expect(Number(version.user_version)).toBe(6);
     expect(Number(probe.count)).toBe(0);
     database.close();
   });
@@ -267,7 +275,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 6,
+            version: 7,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN unexpected TEXT;
@@ -284,7 +292,7 @@ describe("canonical SQLite storage", () => {
     const columns = database
       .prepare("PRAGMA table_info(raw_events);")
       .all() as readonly Readonly<Record<string, unknown>>[];
-    expect(Number(version.user_version)).toBe(5);
+    expect(Number(version.user_version)).toBe(6);
     expect(
       columns.some((column) => column.name === "unexpected"),
     ).toBe(false);
@@ -302,7 +310,7 @@ describe("canonical SQLite storage", () => {
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 6,
+            version: 7,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN generated_guard TEXT
@@ -323,7 +331,7 @@ describe("canonical SQLite storage", () => {
     const version = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(5);
+    expect(Number(version.user_version)).toBe(6);
     database.close();
   });
 
@@ -337,7 +345,7 @@ describe("canonical SQLite storage", () => {
       migrations: [
         ...DEFAULT_SQLITE_MIGRATIONS,
         {
-          version: 6,
+          version: 7,
           sql: `
             CREATE TABLE recovery_probe (
               value TEXT NOT NULL
@@ -346,7 +354,7 @@ describe("canonical SQLite storage", () => {
         },
       ],
     });
-    expect(upgraded.health().userVersion).toBe(6);
+    expect(upgraded.health().userVersion).toBe(7);
     upgraded.close();
 
     const database = new DatabaseSync(databasePath);
@@ -386,7 +394,7 @@ describe("canonical SQLite storage", () => {
       ),
     ).toMatchObject({
       quickCheck: "ok",
-      userVersion: 5,
+      userVersion: 6,
     });
     const restored = new CanonicalSqliteStore(databasePath);
     expect(
@@ -454,17 +462,17 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 5,
+      userVersion: 6,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(5);
+    expect(restored.health().userVersion).toBe(6);
     restored.close();
   });
 
   it("restores and upgrades a valid version-four backup", async () => {
     const root = await createTemporaryDirectory();
     const backupPath = join(root, "legacy-v4.db");
-    const restoredPath = join(root, "restored-v5.db");
+    const restoredPath = join(root, "restored-v6.db");
     const legacy = new DatabaseSync(backupPath);
     for (const migration of DEFAULT_SQLITE_MIGRATIONS.slice(
       0,
@@ -518,10 +526,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 5,
+      userVersion: 6,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(5);
+    expect(restored.health().userVersion).toBe(6);
     expect(restored.sessionMuted("legacy-muted-session"))
       .toBe(true);
     restored.close();
@@ -817,7 +825,7 @@ describe("canonical SQLite storage", () => {
     const preserved = new CanonicalSqliteStore(databasePath);
     expect(preserved.health()).toMatchObject({
       quickCheck: "ok",
-      userVersion: 5,
+      userVersion: 6,
     });
     preserved.close();
   });
@@ -1025,6 +1033,14 @@ describe("shared capture worker", () => {
       },
       new Date("2026-08-30T00:00:01.000Z"),
     );
+    state = setPersistedCapability(
+      state,
+      "correction_learning",
+      {
+        enabled: true,
+      },
+      new Date("2026-08-30T00:00:01.000Z"),
+    );
     await writeCopilotAdapterState(paths.adapterState, state);
     const queue = await createQueue(paths.queue);
     const headSha =
@@ -1067,6 +1083,21 @@ describe("shared capture worker", () => {
       adapterVersion: "1.0.82-0",
       branch: "feat/worker-runtime",
       commitSha: headSha,
+      content: {
+        message: correctionMessage,
+      },
+      eventType: "user.corrected",
+      repoId: "repo-1",
+      sessionId: "session-worker-runtime",
+      sourceEventId: "worker-runtime-correction",
+      timestamp: "2026-08-30T00:01:30.000Z",
+      trust: "user",
+    });
+    await queue.enqueue({
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      branch: "feat/worker-runtime",
+      commitSha: headSha,
       completionStatus: "succeeded",
       eventType: "test.completed",
       repoId: "repo-1",
@@ -1090,8 +1121,8 @@ describe("shared capture worker", () => {
       }),
     ).toMatchObject({
       status: "completed",
-      acknowledged: 3,
-      stored: 3,
+      acknowledged: 4,
+      stored: 4,
     });
     const verified = new CanonicalSqliteStore(paths.database);
     expect(
@@ -1099,6 +1130,7 @@ describe("shared capture worker", () => {
     ).toBeDefined();
     expect(verified.workEpisodes()).toHaveLength(1);
     expect(verified.branchContexts()).toHaveLength(1);
+    expect(verified.correctionKeys()).toHaveLength(1);
     verified.close();
     expect(
       JSON.parse(await readFile(paths.heartbeat, "utf8")),
@@ -1106,6 +1138,8 @@ describe("shared capture worker", () => {
       result: {
         status: "completed",
       },
+      correctionCaptureIssueCount: 0,
+      correctionCaptureIssues: [],
       timestamp: "2026-08-30T00:00:02.000Z",
       workerId: "worker-runtime",
     });

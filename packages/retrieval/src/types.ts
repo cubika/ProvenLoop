@@ -2,6 +2,7 @@ import type {
   BranchContext,
   CaptureEnvelope,
   ContextUseRecord,
+  CorrectionKey,
   EvidenceTier,
   FeedbackEvent,
   KnowledgeCandidate,
@@ -57,6 +58,8 @@ export interface KnowledgeBackend {
 }
 
 export interface CanonicalKnowledgeStore {
+  correctionKeys(): readonly CorrectionKey[];
+  correctionSourceEventIds(): ReadonlySet<string>;
   knowledgeCandidates(
     ids?: readonly string[],
   ): readonly KnowledgeCandidate[];

@@ -15,6 +15,13 @@ export {
   type CaptureWorkerStore,
 } from "./capture-worker.js";
 export {
+  CorrectionCaptureProjector,
+  type CorrectionCaptureProjectionResult,
+  type CorrectionCaptureProjectionStore,
+  type CorrectionCaptureProjectorOptions,
+  type CorrectionCaptureRebuildOptions,
+} from "./correction-capture-projector.js";
+export {
   DeletionPropagationGateError,
   DeletionService,
   type DeletionExecutionResult,

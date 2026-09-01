@@ -29,6 +29,8 @@ import {
   classifyRawEvent,
   CURRENT_SCHEMA_VERSION,
   contextUseRecordSchema,
+  correctionKeySchema,
+  correctionOpportunitySchema,
   deletionOperationSchema,
   deletionTargetTypeSchema,
   episodeAssociationSchema,
@@ -40,6 +42,8 @@ import {
   type CaptureEnvelope,
   type CaptureQueueItem,
   type ContextUseRecord,
+  type CorrectionKey,
+  type CorrectionOpportunity,
   type DeletionOperation,
   type DeletionPlannedIdentity,
   type DeletionIdentityType,
@@ -118,6 +122,11 @@ export interface WorkEpisodeProjectionWriteResult {
   readonly associations: number;
   readonly corrections: number;
   readonly episodes: number;
+}
+
+export interface CorrectionProjectionWriteResult {
+  readonly correctionKeys: number;
+  readonly opportunities: number;
 }
 
 export interface CanonicalDeletionTarget {
@@ -340,6 +349,40 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
        WHERE json_extract(body_json, '$.kind') = 'mute_session';
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE correction_keys (
+        correction_key_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        scope TEXT NOT NULL,
+        scope_id TEXT,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX correction_keys_scope
+        ON correction_keys(scope, scope_id);
+
+      CREATE TABLE correction_opportunities (
+        opportunity_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        correction_key_id TEXT NOT NULL,
+        episode_id TEXT NOT NULL,
+        applicable INTEGER NOT NULL,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX correction_opportunities_key
+        ON correction_opportunities(correction_key_id, created_at);
+
+      CREATE INDEX correction_opportunities_episode
+        ON correction_opportunities(episode_id);
+    `,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 export class UnsupportedDatabaseVersionError extends Error {
@@ -493,6 +536,7 @@ const bodyReferences = (
                 "eventid",
                 "parenteventid",
                 "sourceid",
+                "sourcecorrectioneventids",
                 "sourceeventids",
               ].includes(normalized)
             ? values.some(
@@ -509,6 +553,7 @@ const bodyReferences = (
                   "invocationids",
                   "sourceevidenceids",
                   "supportingevidenceids",
+                  "verificationevidenceids",
                 ].includes(normalized)
               ? values.some(
                   (id) =>
@@ -536,6 +581,8 @@ const bodyReferences = (
                     ? values.some((id) =>
                         references.record.has(id),
                       )
+              : normalized === "correctionkeyid"
+                ? values.some((id) => references.record.has(id))
               : false;
     if (matched || bodyReferences(value, references)) {
       return true;
@@ -970,6 +1017,25 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["updated_at", "TEXT", true, false],
     ["expires_at", "TEXT", false, false],
   ],
+  correction_keys: [
+    ["correction_key_id", "TEXT", true, true],
+    ["schema_version", "INTEGER", true, false],
+    ["scope", "TEXT", true, false],
+    ["scope_id", "TEXT", false, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
+  ],
+  correction_opportunities: [
+    ["opportunity_id", "TEXT", true, true],
+    ["schema_version", "INTEGER", true, false],
+    ["correction_key_id", "TEXT", true, false],
+    ["episode_id", "TEXT", true, false],
+    ["applicable", "INTEGER", true, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
+  ],
   context_use_records: [
     ["request_id", "TEXT", true, true],
     ["schema_version", "INTEGER", true, false],
@@ -1073,6 +1139,48 @@ const RUNTIME_SCHEMA_INDEXES = {
       ],
       name: "branch_context_scope",
       origin: "c",
+    },
+  ],
+  correction_keys: [
+    {
+      columns: [
+        "correction_key_id",
+      ],
+      origin: "pk",
+    },
+    {
+      columns: [
+        "scope",
+        "scope_id",
+      ],
+      name: "correction_keys_scope",
+      origin: "c",
+      unique: false,
+    },
+  ],
+  correction_opportunities: [
+    {
+      columns: [
+        "episode_id",
+      ],
+      name: "correction_opportunities_episode",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: [
+        "correction_key_id",
+        "created_at",
+      ],
+      name: "correction_opportunities_key",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: [
+        "opportunity_id",
+      ],
+      origin: "pk",
     },
   ],
   context_use_records: [
@@ -2172,6 +2280,22 @@ export class CanonicalSqliteStore {
             "body_json",
             dependencyReferences,
           ) +
+          deleteDependentRows(
+            this.#database,
+            "correction_keys",
+            "correction_key_id",
+            "body_json",
+            dependencyReferences,
+            dependentIds,
+          ) +
+          deleteDependentRows(
+            this.#database,
+            "correction_opportunities",
+            "opportunity_id",
+            "body_json",
+            dependencyReferences,
+            dependentIds,
+          ) +
           (
             targetType === "knowledge"
               ? 0
@@ -2482,6 +2606,12 @@ export class CanonicalSqliteStore {
       bodyColumn,
     ] of [
       ["branch_contexts", "branch_context_id", "body_json"],
+      ["correction_keys", "correction_key_id", "body_json"],
+      [
+        "correction_opportunities",
+        "opportunity_id",
+        "body_json",
+      ],
       ["knowledge_candidates", "knowledge_id", "body_json"],
       ["work_episodes", "episode_id", "body_json"],
       ["evidence_links", "link_id", "body_json"],
@@ -3566,6 +3696,185 @@ export class CanonicalSqliteStore {
     return context;
   }
 
+  public replaceCorrectionProjection(input: {
+    readonly allowDuringDeletion?: boolean;
+    readonly correctionKeys: readonly CorrectionKey[];
+    readonly opportunities: readonly CorrectionOpportunity[];
+  }): CorrectionProjectionWriteResult {
+    this.#assertNoRestoreBarrier();
+    const correctionKeys = input.correctionKeys.map((key) =>
+      correctionKeySchema.parse(key),
+    );
+    const opportunities = input.opportunities.map((opportunity) =>
+      correctionOpportunitySchema.parse(opportunity),
+    );
+    const correctionKeyIds = new Set(
+      correctionKeys.map((key) => key.correctionKeyId),
+    );
+    const missingKey = opportunities.find(
+      (opportunity) =>
+        !correctionKeyIds.has(opportunity.correctionKeyId),
+    );
+    if (missingKey !== undefined) {
+      throw new Error(
+        `Correction Opportunity ${missingKey.opportunityId} references an unknown Correction Key.`,
+      );
+    }
+    const episodeIds = new Set(
+      this.workEpisodes().map((episode) => episode.episodeId),
+    );
+    const missingEpisode = opportunities.find(
+      (opportunity) => !episodeIds.has(opportunity.episodeId),
+    );
+    if (missingEpisode !== undefined) {
+      throw new Error(
+        `Correction Opportunity ${missingEpisode.opportunityId} references an unknown Work Episode.`,
+      );
+    }
+    if (
+      this.#deletionIdentitiesBlocked([
+        ...correctionKeys.flatMap((key) => [
+          ...key.sourceCorrectionEventIds.map((identifier) => ({
+            identifier,
+            identityType: "event" as const,
+          })),
+          ...key.verificationEvidenceIds.map((identifier) => ({
+            identifier,
+            identityType: "event" as const,
+          })),
+        ]),
+        ...opportunities.map((opportunity) => ({
+          identifier: opportunity.episodeId,
+          identityType: "episode" as const,
+        })),
+      ])
+    ) {
+      throw new Error(
+        "Correction projection contains a deleted identity.",
+      );
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Correction projection is blocked by an active deletion.",
+        );
+      }
+      this.#database.exec("DELETE FROM correction_opportunities;");
+      this.#database.exec("DELETE FROM correction_keys;");
+      const insertKey = this.#database.prepare(
+        `INSERT INTO correction_keys (
+           correction_key_id,
+           schema_version,
+           scope,
+           scope_id,
+           body_json,
+           source_digest,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const key of correctionKeys) {
+        insertKey.run(
+          key.correctionKeyId,
+          key.schemaVersion,
+          key.scope,
+          optionalText(key.scopeId),
+          JSON.stringify(key),
+          sha256(key),
+          key.createdAt,
+        );
+      }
+      const insertOpportunity = this.#database.prepare(
+        `INSERT INTO correction_opportunities (
+           opportunity_id,
+           schema_version,
+           correction_key_id,
+           episode_id,
+           applicable,
+           body_json,
+           source_digest,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const opportunity of opportunities) {
+        insertOpportunity.run(
+          opportunity.opportunityId,
+          opportunity.schemaVersion,
+          opportunity.correctionKeyId,
+          opportunity.episodeId,
+          opportunity.applicable ? 1 : 0,
+          JSON.stringify(opportunity),
+          sha256(opportunity),
+          opportunity.createdAt,
+        );
+      }
+      this.#database.exec("COMMIT;");
+      return {
+        correctionKeys: correctionKeys.length,
+        opportunities: opportunities.length,
+      };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public correctionKeys(): readonly CorrectionKey[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT body_json
+           FROM correction_keys
+          ORDER BY correction_key_id`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) =>
+      correctionKeySchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      ),
+    );
+  }
+
+  public correctionSourceEventIds(): ReadonlySet<string> {
+    const rows = this.#database
+      .prepare(
+        `SELECT event_id
+           FROM raw_events
+          WHERE event_type = 'user.corrected'
+            AND parse_status = 'supported'
+          ORDER BY event_id`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return new Set(rows.map((row) => String(row.event_id)));
+  }
+
+  public correctionOpportunities(
+    correctionKeyId?: string,
+  ): readonly CorrectionOpportunity[] {
+    return (
+      this.#database
+        .prepare(
+          `SELECT body_json
+             FROM correction_opportunities
+            ORDER BY created_at, opportunity_id`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[]
+    )
+      .map((row) =>
+        correctionOpportunitySchema.parse(
+          JSON.parse(String(row.body_json)) as unknown,
+        ),
+      )
+      .filter(
+        (opportunity) =>
+          correctionKeyId === undefined ||
+          opportunity.correctionKeyId === correctionKeyId,
+      );
+  }
+
   public upsertKnowledgeCandidates(
     input: readonly KnowledgeCandidate[],
   ): number {
@@ -4551,6 +4860,12 @@ export class CanonicalSqliteStore {
         ...(expectedVersion >= 3 ? ["knowledge_candidates"] : []),
         ...(expectedVersion >= 4 ? ["context_use_records"] : []),
         ...(expectedVersion >= 5 ? ["session_mutes"] : []),
+        ...(expectedVersion >= 6
+          ? [
+              "correction_keys",
+              "correction_opportunities",
+            ]
+          : []),
         "deletion_operations",
         "evaluation_runs",
         "evidence_links",
@@ -4668,6 +4983,13 @@ export class CanonicalSqliteStore {
           (
             table === "session_mutes" &&
             expectedVersion < 5
+          ) ||
+          (
+            (
+              table === "correction_keys" ||
+              table === "correction_opportunities"
+            ) &&
+            expectedVersion < 6
           )
         ) {
           continue;
@@ -4694,6 +5016,13 @@ export class CanonicalSqliteStore {
           (
             table === "session_mutes" &&
             expectedVersion < 5
+          ) ||
+          (
+            (
+              table === "correction_keys" ||
+              table === "correction_opportunities"
+            ) &&
+            expectedVersion < 6
           )
         ) {
           continue;

@@ -137,6 +137,29 @@ Run the M1 Branch Continuation research gate:
 Add `--stable` to enforce the 1% Wrong Injection threshold instead of the 2%
 research threshold.
 
+Enable correction learning before capturing explicit corrections:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd enable correction_learning
+```
+
+An explicit correction user message requires these labels:
+
+```text
+Violated Constraint: Inspect package scripts before choosing a test runner
+Expected Behavior: Run the targeted Vitest command
+Trigger: package validation
+Task Family: testing
+Subsystem: test-runner
+Scope: repository
+```
+
+`Task Family`, `Subsystem`, and `Scope` are optional. Repository scope is used
+when trusted repository identity is available; otherwise the default is
+personal. Correction-based Knowledge remains ineligible for automatic
+retrieval until a later successful test, build, or verification event in the
+same Work Episode.
+
 ## Canonical documents
 
 - [Product design](docs/product-design.md)
@@ -204,6 +227,12 @@ the real retrieval service and canonical SQLite store. It retains JSON,
 Markdown, and replay database evidence for repeated Context Token reduction,
 TTV, Precision@3, Wrong Injection, Outcome Success, token budget, and P95
 latency decisions.
+M2 correction capture now maps explicitly structured user corrections into
+stable Correction Keys, associates later successful verification evidence,
+and records future Correction Opportunities at Episode start before their
+outcomes are known. SQLite v6 stores both projections, deletion propagation
+removes their dependencies, and canonical retrieval rejects active Knowledge
+that references an unverified Correction Key.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

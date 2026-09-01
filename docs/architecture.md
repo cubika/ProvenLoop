@@ -734,6 +734,24 @@ interface CorrectionKey {
 The key is frozen before measuring a later opportunity. It is not redefined
 after observing whether the future task succeeded.
 
+The first deterministic capture format recognizes user-trusted messages with
+`Violated Constraint:`, `Expected Behavior:`, and `Trigger:` labels.
+`Task Family:`, `Subsystem:`, and `Scope:` are optional. Repository and branch
+scope IDs come from trusted adapter identity; workflow scope additionally
+requires an explicit `Workflow:` value.
+
+Repeated messages with the same normalized semantics produce one stable key.
+Successful `test.completed`, `build.completed`, or `verification.completed`
+events later in the same Work Episode extend its verification evidence.
+Correction-based Knowledge that references a key with no verification evidence
+fails the canonical retrieval recheck even if an FTS projection still contains
+it.
+
+Correction Opportunities use the Episode start timestamp and initial prompt,
+so applicability is fixed before later correction and outcome events are
+observed. Rebuilds may update `correctionRepeated`, `outcomeKnown`, and whether
+available Knowledge was applied without redefining the original opportunity.
+
 ### 4.5 OutcomeEvidenceLink
 
 ```ts

@@ -3,7 +3,10 @@ import type {
   RawEvent,
 } from "@provenloop/contracts";
 import { isoTimestampSchema } from "@provenloop/contracts";
-import type { CaptureEventInput } from "@provenloop/domain";
+import {
+  isExplicitCorrectionMessage,
+  type CaptureEventInput,
+} from "@provenloop/domain";
 
 export interface CopilotSessionEvent {
   readonly agentId?: unknown;
@@ -592,13 +595,18 @@ export class CopilotEventMapper {
         const source = optionalString(data, "source");
         const autopilotContinuation =
           data.isAutopilotContinuation === true;
+        const trust = userMessageTrust(data);
         return this.#mappedOrMalformed(
           issues,
           eventType,
           sourceEventId,
           {
             ...common,
-            eventType: "prompt.submitted",
+            eventType:
+              trust === "user" &&
+              isExplicitCorrectionMessage(content)
+                ? "user.corrected"
+                : "prompt.submitted",
             ...(source === undefined && !autopilotContinuation
               ? {}
               : {
@@ -606,7 +614,7 @@ export class CopilotEventMapper {
                     source ??
                     "copilot-autopilot-continuation",
                 }),
-            trust: userMessageTrust(data),
+            trust,
             ...(content === undefined
               ? {}
               : {

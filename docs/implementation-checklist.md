@@ -450,11 +450,11 @@ frozen.
 
 ### 12.1 Correction capture
 
-- [ ] Normalize explicit user corrections into frozen Correction Keys.
-- [ ] Record scope, expected behavior, trigger, task family, subsystem, source
+- [x] Normalize explicit user corrections into frozen Correction Keys.
+- [x] Record scope, expected behavior, trigger, task family, subsystem, source
   corrections, and verification evidence.
-- [ ] Require a verified result before correction-based Knowledge can activate.
-- [ ] Record Correction Opportunities before observing their outcomes.
+- [x] Require a verified result before correction-based Knowledge can activate.
+- [x] Record Correction Opportunities before observing their outcomes.
 
 ### 12.2 Knowledge lifecycle
 

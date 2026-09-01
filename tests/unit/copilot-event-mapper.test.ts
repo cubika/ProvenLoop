@@ -366,6 +366,26 @@ describe("Copilot event mapping", () => {
     },
   );
 
+  it("maps an explicitly structured user correction", () => {
+    const result = createMapper().map(
+      event("user.message", {
+        content: [
+          "Violated: wrong runner",
+          "Expected: use Vitest",
+          "Trigger: package tests",
+        ].join("\n"),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: "mapped",
+      value: {
+        eventType: "user.corrected",
+        trust: "user",
+      },
+    });
+  });
+
   it("retains unknown persisted events through an unsupported path", () => {
     const result = createMapper().map(
       event("future.persisted_event", {

@@ -17,6 +17,7 @@ import {
   BranchContextProjector,
   CaptureWorker,
   CaptureWorkerCircuitBreaker,
+  CorrectionCaptureProjector,
   WorkEpisodeProjector,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
@@ -70,6 +71,9 @@ const acquireRequiredLease = async (
 const writeHeartbeat = async (
   path: string,
   input: {
+    readonly correctionCaptureIssueCount?: number;
+    readonly correctionCaptureIssues?: readonly string[];
+    readonly correctionProjectionError?: string;
     readonly knowledgeProjectionError?: string;
     readonly result: CaptureWorkerRunResult;
     readonly timestamp: string;
@@ -172,10 +176,41 @@ export const runCaptureWorkerOnce = async (
       store,
       workerId,
     }).runOnce();
+    const adapterState =
+      result.status === "completed"
+        ? await readCopilotAdapterState(
+            paths.adapterState,
+            now(),
+          )
+        : undefined;
+    let correctionCaptureIssueCount: number | undefined;
+    let correctionCaptureIssues: readonly string[] | undefined;
+    let correctionProjectionError: string | undefined;
     if (result.status === "completed") {
       new WorkEpisodeProjector({
         store,
       }).rebuild();
+      if (
+        adapterState?.capabilities.correction_learning.enabled === true
+      ) {
+        try {
+          const correctionProjection =
+            new CorrectionCaptureProjector({
+              store,
+            }).rebuild();
+          correctionCaptureIssueCount =
+            correctionProjection.issues.length;
+          correctionCaptureIssues = correctionProjection.issues
+            .slice(0, 20)
+            .map((item) =>
+              sanitizeDiagnostic(
+                `${item.eventId}: ${item.message}`,
+              ),
+            );
+        } catch (error) {
+          correctionProjectionError = sanitizeDiagnostic(error);
+        }
+      }
       new BranchContextProjector({
         store,
       }).rebuild();
@@ -183,12 +218,7 @@ export const runCaptureWorkerOnce = async (
     let knowledgeProjectionError: string | undefined;
     if (
       result.status === "completed" &&
-      (
-        await readCopilotAdapterState(
-          paths.adapterState,
-          now(),
-        )
-      ).capabilities.retrieval.enabled
+      adapterState?.capabilities.retrieval.enabled === true
     ) {
       try {
         knowledgeBackend = new SqliteFtsKnowledgeBackend(
@@ -220,6 +250,21 @@ export const runCaptureWorkerOnce = async (
     store.close();
     store = undefined;
     await writeHeartbeat(paths.heartbeat, {
+      ...(correctionCaptureIssueCount === undefined
+        ? {}
+        : {
+            correctionCaptureIssueCount,
+          }),
+      ...(correctionCaptureIssues === undefined
+        ? {}
+        : {
+            correctionCaptureIssues,
+          }),
+      ...(correctionProjectionError === undefined
+        ? {}
+        : {
+            correctionProjectionError,
+          }),
       ...(knowledgeProjectionError === undefined
         ? {}
         : {
@@ -232,6 +277,11 @@ export const runCaptureWorkerOnce = async (
     if (knowledgeProjectionError !== undefined) {
       throw new Error(
         `Knowledge projection failed: ${knowledgeProjectionError}`,
+      );
+    }
+    if (correctionProjectionError !== undefined) {
+      throw new Error(
+        `Correction projection failed: ${correctionProjectionError}`,
       );
     }
     return result;

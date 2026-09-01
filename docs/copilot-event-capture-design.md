@@ -200,7 +200,7 @@ ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。用户�
 | Copilot Session event | Canonical event | 必需字段 | 备注 |
 |---|---|---|---|
 | Extension 加入 Session | `session.started` | session、cwd、adapter version | 不是学习结果 |
-| `user.message` | `prompt.submitted` | event ID、session、timestamp、content | 先做内容限长 |
+| `user.message` | `prompt.submitted` 或 `user.corrected` | event ID、session、timestamp、content | 完整显式纠正标记映射为 `user.corrected`；否则为普通 Prompt |
 | `tool.execution_start` | `tool.started` | call ID、tool name、arguments | 表示调用，不表示完成 |
 | `tool.execution_complete` | `tool.completed` 或 `tool.failed` | call ID、success、result 或 error | 与 start 分开保存 |
 | `assistant.message` | `agent.message` | message ID、content、parent | 保存有界回复内容 |

@@ -1,4 +1,5 @@
 import type {
+  CorrectionKey,
   KnowledgeCandidate,
 } from "@provenloop/contracts";
 import { sha256 } from "@provenloop/domain";
@@ -26,6 +27,34 @@ const eligible = (
     Date.parse(candidate.expiresAt) > now.getTime()
   ) &&
   scopeMatches(candidate.scope, candidate.scopeId, query);
+
+const hasVerifiedCorrectionSources = (
+  candidate: KnowledgeCandidate,
+  correctionKeys: readonly CorrectionKey[],
+  correctionSourceEventIds: ReadonlySet<string>,
+): boolean => {
+  const sourceEvidence = new Set(candidate.sourceEvidenceIds);
+  const referencedCorrectionEventIds =
+    candidate.sourceEvidenceIds.filter((eventId) =>
+      correctionSourceEventIds.has(eventId),
+    );
+  if (referencedCorrectionEventIds.length === 0) {
+    return true;
+  }
+  const referencedKeys = correctionKeys.filter((key) =>
+    key.sourceCorrectionEventIds.some((eventId) =>
+      sourceEvidence.has(eventId),
+    ),
+  );
+  const verifiedSources = new Set(
+    referencedKeys
+      .filter((key) => key.verificationEvidenceIds.length > 0)
+      .flatMap((key) => key.sourceCorrectionEventIds),
+  );
+  return referencedCorrectionEventIds.every(
+    (eventId) => verifiedSources.has(eventId),
+  );
+};
 
 export class CanonicalKnowledgeRetriever {
   readonly #backend: KnowledgeBackend;
@@ -108,12 +137,20 @@ export class CanonicalKnowledgeRetriever {
       );
       const deleted = this.#store
         .knowledgeCandidatesWithUnavailableSources(candidates);
+      const correctionKeys = this.#store.correctionKeys();
+      const correctionSourceEventIds =
+        this.#store.correctionSourceEventIds();
       for (const hit of hits) {
         const candidate = byId.get(hit.knowledgeId);
         if (
           candidate === undefined ||
           deleted.has(candidate.knowledgeId) ||
           !eligible(candidate, query, now) ||
+          !hasVerifiedCorrectionSources(
+            candidate,
+            correctionKeys,
+            correctionSourceEventIds,
+          ) ||
           hit.sourceDigest !== sha256(candidate)
         ) {
           continue;

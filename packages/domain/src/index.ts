@@ -22,6 +22,15 @@ export {
   type RedactedCaptureEnvelopeResult,
 } from "./capture.js";
 export {
+  CorrectionCaptureBuilder,
+  correctionKeyActivationEligible,
+  isExplicitCorrectionMessage,
+  type CorrectionCaptureBuildInput,
+  type CorrectionCaptureBuildResult,
+  type CorrectionCaptureIssue,
+  type CorrectionCaptureIssueCode,
+} from "./correction-capture-builder.js";
+export {
   deletionIdentityDigest,
   sha256,
   stableJson,

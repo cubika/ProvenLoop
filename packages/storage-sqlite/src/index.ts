@@ -7,6 +7,7 @@ export {
   type CanonicalIngestResult,
   type CanonicalDeletionMutationResult,
   type CanonicalDeletionTarget,
+  type CorrectionProjectionWriteResult,
   type CanonicalParserErrorRecord,
   type CanonicalRawEventRecord,
   type CanonicalSqliteStoreOptions,
