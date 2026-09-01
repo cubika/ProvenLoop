@@ -3053,7 +3053,7 @@ export class CanonicalSqliteStore {
       .prepare(
         `SELECT body_json
            FROM deletion_operations
-          WHERE status = 'completed'`,
+          WHERE status IN ('running', 'completing', 'completed')`,
       )
       .all() as readonly Readonly<Record<string, unknown>>[];
     return rows.some((row) => {
@@ -3962,6 +3962,138 @@ export class CanonicalSqliteStore {
       this.#database.exec("ROLLBACK;");
       throw error;
     }
+  }
+
+  public replaceCorrectionKnowledgeCandidates(input: {
+    readonly allowDuringDeletion?: boolean;
+    readonly candidates: readonly KnowledgeCandidate[];
+  }): number {
+    this.#assertNoRestoreBarrier();
+    const candidates = input.candidates.map(
+      normalizedKnowledgeCandidate,
+    );
+    const invalid = candidates.find(
+      (candidate) =>
+        !candidate.knowledgeId.startsWith(
+          "correction-knowledge-",
+        ) ||
+        !candidate.topicKey.startsWith("correction:"),
+    );
+    if (invalid !== undefined) {
+      throw new Error(
+        "Correction Knowledge projection received a non-correction candidate.",
+      );
+    }
+    if (
+      this.knowledgeCandidatesWithDeletedSources(candidates)
+        .size > 0
+    ) {
+      throw new Error(
+        "Correction Knowledge contains a deleted identity.",
+      );
+    }
+    const forgotten = candidates.find((candidate) =>
+      this.#knowledgeDeletionBlocked(candidate.knowledgeId),
+    );
+    if (forgotten !== undefined) {
+      throw new Error(
+        `Knowledge ${forgotten.knowledgeId} was forgotten and cannot be restored.`,
+      );
+    }
+    const sourceEpisodeIds = new Set(
+      candidates.flatMap(
+        (candidate) => candidate.sourceEpisodeIds,
+      ),
+    );
+    if (sourceEpisodeIds.size > 0) {
+      const ids = [...sourceEpisodeIds];
+      const existing = new Set(
+        (
+          this.#database
+            .prepare(
+              `SELECT episode_id
+                 FROM work_episodes
+                WHERE episode_id IN (${placeholders(ids.length)})`,
+            )
+            .all(...ids) as readonly Readonly<
+            Record<string, unknown>
+          >[]
+        ).map((row) => String(row.episode_id)),
+      );
+      const missing = ids.find((id) => !existing.has(id));
+      if (missing !== undefined) {
+        throw new Error(
+          `Correction Knowledge references missing source Episode ${missing}.`,
+        );
+      }
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Correction Knowledge projection is blocked by an active deletion.",
+        );
+      }
+      const selected = new Set(
+        candidates.map((candidate) => candidate.knowledgeId),
+      );
+      const existing = (
+        this.#database
+          .prepare(
+            `SELECT knowledge_id
+               FROM knowledge_candidates
+              WHERE knowledge_id LIKE 'correction-knowledge-%'`,
+          )
+          .all() as readonly Readonly<Record<string, unknown>>[]
+      ).map((row) => String(row.knowledge_id));
+      const removed = existing.filter((id) => !selected.has(id));
+      if (removed.length > 0) {
+        this.#database
+          .prepare(
+            `DELETE FROM knowledge_candidates
+              WHERE knowledge_id IN (${placeholders(removed.length)})`,
+          )
+          .run(...removed);
+      }
+      const upsert = this.#database.prepare(
+        `INSERT INTO knowledge_candidates (
+           knowledge_id,
+           schema_version,
+           body_json,
+           source_digest,
+           created_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(knowledge_id) DO UPDATE SET
+           schema_version = excluded.schema_version,
+           body_json = excluded.body_json,
+           source_digest = excluded.source_digest,
+           updated_at = excluded.updated_at`,
+      );
+      for (const candidate of candidates) {
+        upsert.run(
+          candidate.knowledgeId,
+          candidate.schemaVersion,
+          JSON.stringify(candidate),
+          sha256(candidate),
+          candidate.createdAt,
+          candidate.validatedAt ?? candidate.createdAt,
+        );
+      }
+      this.#database.exec("COMMIT;");
+      return candidates.length;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public knowledgeDeletionBlocked(knowledgeId: string): boolean {
+    return this.#knowledgeDeletionBlocked(knowledgeId.trim());
   }
 
   public removeKnowledgeCandidates(

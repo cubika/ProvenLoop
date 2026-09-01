@@ -41,6 +41,12 @@ export {
   type WorkEpisodeBuildResult,
 } from "./episode-builder.js";
 export {
+  KnowledgeLifecycleBuilder,
+  correctionKnowledgeTopicKey,
+  type KnowledgeLifecycleBuildInput,
+  type KnowledgeLifecycleBuildResult,
+} from "./knowledge-lifecycle-builder.js";
+export {
   containsKnownSecret,
   containsPotentialSecret,
   DEFAULT_CAPTURE_REDACTION_LIMITS,

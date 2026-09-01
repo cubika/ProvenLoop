@@ -458,15 +458,15 @@ frozen.
 
 ### 12.2 Knowledge lifecycle
 
-- [ ] Aggregate by stable topic key instead of creating permanent duplicates.
-- [ ] Implement `candidate`, `active`, `disputed`, `superseded`, and `archived`.
-- [ ] Implement explainable Evidence Tiers.
-- [ ] Keep model relevance scores separate from lifecycle authority.
-- [ ] Prevent candidate, inferred, disputed, stale, deleted, and
+- [x] Aggregate by stable topic key instead of creating permanent duplicates.
+- [x] Implement `candidate`, `active`, `disputed`, `superseded`, and `archived`.
+- [x] Implement explainable Evidence Tiers.
+- [x] Keep model relevance scores separate from lifecycle authority.
+- [x] Prevent candidate, inferred, disputed, stale, deleted, and
   scope-incompatible items from silent injection.
-- [ ] Immediately dispute applicable Knowledge when valid counterevidence
+- [x] Immediately dispute applicable Knowledge when valid counterevidence
   appears.
-- [ ] Rebuild current state from append-only feedback and evidence events.
+- [x] Rebuild current state from append-only feedback and evidence events.
 
 ### 12.3 Admission policy
 

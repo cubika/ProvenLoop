@@ -233,6 +233,14 @@ and records future Correction Opportunities at Episode start before their
 outcomes are known. SQLite v6 stores both projections, deletion propagation
 removes their dependencies, and canonical retrieval rejects active Knowledge
 that references an unverified Correction Key.
+The M2 Knowledge lifecycle now groups correction evidence by stable topic and
+keeps distinct behavior versions only for explainable supersession. Inferred
+items remain candidates, verified items become active, repeated evidence
+raises the Evidence Tier, and direct failures or repeated corrections dispute
+the applicable version before the FTS projection is rebuilt. Automatic state
+is reconstructed from canonical evidence and append-only feedback, while
+manual Knowledge remains independent and forgotten automatic Knowledge cannot
+be regenerated.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

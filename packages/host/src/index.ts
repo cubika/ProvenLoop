@@ -31,6 +31,13 @@ export {
   type DeletionStore,
 } from "./deletion-service.js";
 export {
+  KnowledgeLifecycleProjector,
+  type KnowledgeLifecycleProjectionResult,
+  type KnowledgeLifecycleProjectionStore,
+  type KnowledgeLifecycleProjectorOptions,
+  type KnowledgeLifecycleRebuildOptions,
+} from "./knowledge-lifecycle-projector.js";
+export {
   KnowledgeControlService,
   type KnowledgeControlProjection,
   type KnowledgeControlResult,

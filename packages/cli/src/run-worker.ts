@@ -18,6 +18,7 @@ import {
   CaptureWorker,
   CaptureWorkerCircuitBreaker,
   CorrectionCaptureProjector,
+  KnowledgeLifecycleProjector,
   WorkEpisodeProjector,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
@@ -74,6 +75,7 @@ const writeHeartbeat = async (
     readonly correctionCaptureIssueCount?: number;
     readonly correctionCaptureIssues?: readonly string[];
     readonly correctionProjectionError?: string;
+    readonly knowledgeLifecycleProjectionError?: string;
     readonly knowledgeProjectionError?: string;
     readonly result: CaptureWorkerRunResult;
     readonly timestamp: string;
@@ -186,6 +188,7 @@ export const runCaptureWorkerOnce = async (
     let correctionCaptureIssueCount: number | undefined;
     let correctionCaptureIssues: readonly string[] | undefined;
     let correctionProjectionError: string | undefined;
+    let knowledgeLifecycleProjectionError: string | undefined;
     if (result.status === "completed") {
       new WorkEpisodeProjector({
         store,
@@ -209,6 +212,16 @@ export const runCaptureWorkerOnce = async (
             );
         } catch (error) {
           correctionProjectionError = sanitizeDiagnostic(error);
+        }
+        if (correctionProjectionError === undefined) {
+          try {
+            new KnowledgeLifecycleProjector({
+              store,
+            }).rebuild();
+          } catch (error) {
+            knowledgeLifecycleProjectionError =
+              sanitizeDiagnostic(error);
+          }
         }
       }
       new BranchContextProjector({
@@ -270,6 +283,11 @@ export const runCaptureWorkerOnce = async (
         : {
             knowledgeProjectionError,
           }),
+      ...(knowledgeLifecycleProjectionError === undefined
+        ? {}
+        : {
+            knowledgeLifecycleProjectionError,
+          }),
       result,
       timestamp: now().toISOString(),
       workerId,
@@ -277,6 +295,12 @@ export const runCaptureWorkerOnce = async (
     if (knowledgeProjectionError !== undefined) {
       throw new Error(
         `Knowledge projection failed: ${knowledgeProjectionError}`,
+      );
+    }
+    if (knowledgeLifecycleProjectionError !== undefined) {
+      throw new Error(
+        "Knowledge lifecycle projection failed: " +
+        knowledgeLifecycleProjectionError,
       );
     }
     if (correctionProjectionError !== undefined) {

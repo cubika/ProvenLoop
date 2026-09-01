@@ -1131,6 +1131,19 @@ describe("shared capture worker", () => {
     expect(verified.workEpisodes()).toHaveLength(1);
     expect(verified.branchContexts()).toHaveLength(1);
     expect(verified.correctionKeys()).toHaveLength(1);
+    expect(
+      verified.knowledgeCandidates().filter(
+        (candidate) =>
+          candidate.knowledgeId.startsWith(
+            "correction-knowledge-",
+          ),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        evidenceTier: "externally_verified",
+        state: "active",
+      }),
+    ]);
     verified.close();
     expect(
       JSON.parse(await readFile(paths.heartbeat, "utf8")),

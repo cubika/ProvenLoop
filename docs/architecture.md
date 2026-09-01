@@ -825,6 +825,34 @@ current explainable product behavior, not a model-provided probability.
 Relevance and other numeric ranking signals are computed for a request; they do
 not independently change `state`, `scope`, or `evidenceTier`.
 
+Correction-derived Knowledge uses a stable topic over scope, violated
+constraint, trigger, task family, and subsystem. Expected behavior identifies
+the version within that topic. Repeated evidence for the same behavior updates
+one version; a later verified behavior version supersedes the older active
+version instead of creating multiple active duplicates.
+
+The deterministic lifecycle transition order is:
+
+```text
+unverified correction -> candidate / inferred
+verified correction -> active / externally_verified
+repeated verified correction -> active / repeated_evidence
+newer verified behavior in the same topic -> older version superseded
+direct failed verification, revert, or applied repeated correction -> disputed
+stale or revoke feedback -> archived
+```
+
+Feedback events are append-only. Each worker rebuild starts from Correction
+Keys, Opportunities, canonical events, and Work Episodes, then replays feedback
+by timestamp. Numeric retrieval relevance never changes lifecycle authority.
+The canonical retrieval boundary still rechecks state, Evidence Tier, expiry,
+scope, deletion, and correction verification after any FTS hit.
+
+Automatic lifecycle replacement only owns `correction-knowledge-*` records.
+Manual Knowledge remains independent. Knowledge deletion tombstones suppress a
+matching automatic candidate during rebuild so `forget` cannot be undone by
+the remaining source evidence.
+
 ### 4.7 InsightCandidate
 
 ```ts
