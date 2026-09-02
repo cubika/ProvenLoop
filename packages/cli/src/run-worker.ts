@@ -251,12 +251,17 @@ export const runCaptureWorkerOnce = async (
             store,
           }).rebuild();
         } finally {
-          await knowledgeLease.release();
+          try {
+            await knowledgeBackend.closeAsync();
+            knowledgeBackend = undefined;
+          } finally {
+            await knowledgeLease.release();
+          }
         }
       } catch (error) {
         knowledgeProjectionError = sanitizeDiagnostic(error);
       } finally {
-        knowledgeBackend?.close();
+        await knowledgeBackend?.closeAsync();
         knowledgeBackend = undefined;
       }
     }
@@ -310,8 +315,14 @@ export const runCaptureWorkerOnce = async (
     }
     return result;
   } finally {
-    knowledgeBackend?.close();
-    store?.close();
-    await workerLease.release();
+    try {
+      await knowledgeBackend?.closeAsync();
+    } finally {
+      try {
+        store?.close();
+      } finally {
+        await workerLease.release();
+      }
+    }
   }
 };

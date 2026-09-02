@@ -479,7 +479,12 @@ const scopeMatchesEpisode = (
   }
 };
 
-const knowledgeForKey = (
+const normalizeKnowledgeReference = (value: string): string =>
+  value.startsWith("knowledge:")
+    ? value.slice("knowledge:".length)
+    : value;
+
+const knowledgeCandidatesForKey = (
   key: CorrectionKey,
   candidates: readonly KnowledgeCandidate[],
   episodeStartedAt: string,
@@ -490,7 +495,6 @@ const knowledgeForKey = (
   ]);
   return candidates.filter(
     (candidate) =>
-      candidate.state === "active" &&
       Date.parse(candidate.createdAt) <= Date.parse(episodeStartedAt) &&
       candidate.sourceEvidenceIds.some((id) => sourceIds.has(id)),
   );
@@ -662,13 +666,18 @@ export class CorrectionCaptureBuilder {
         if (!trigger.candidate && !dimensionCandidate) {
           continue;
         }
-        const availableKnowledge = knowledgeForKey(
+        const relatedKnowledge = knowledgeCandidatesForKey(
           key,
           knowledgeCandidates,
           episode.startedAt,
         );
         const availableKnowledgeIds = new Set(
-          availableKnowledge.map(
+          relatedKnowledge
+            .filter((candidate) => candidate.state === "active")
+            .map((candidate) => candidate.knowledgeId),
+        );
+        const relatedKnowledgeIds = new Set(
+          relatedKnowledge.map(
             (candidate) => candidate.knowledgeId,
           ),
         );
@@ -681,7 +690,7 @@ export class CorrectionCaptureBuilder {
           .sort(byTimestampAndId)[0]?.event.timestamp;
         const applicationDeadline =
           repeatedAt ?? episode.finishedAt;
-        const appliedBeforeCorrection = contextUseRecords.some(
+        const applicableContextUseRecords = contextUseRecords.filter(
           (record) =>
             record.episodeId === episode.episodeId &&
             Date.parse(record.createdAt) >=
@@ -690,11 +699,25 @@ export class CorrectionCaptureBuilder {
               applicationDeadline === undefined ||
               Date.parse(record.createdAt) <=
                 Date.parse(applicationDeadline)
-            ) &&
-            record.appliedKnowledgeIds.some((id) =>
-              availableKnowledgeIds.has(id),
             ),
         );
+        for (const record of applicableContextUseRecords) {
+          for (const reference of record.returnedKnowledgeIds) {
+            const knowledgeId =
+              normalizeKnowledgeReference(reference);
+            if (relatedKnowledgeIds.has(knowledgeId)) {
+              availableKnowledgeIds.add(knowledgeId);
+            }
+          }
+        }
+        const appliedBeforeCorrection =
+          applicableContextUseRecords.some((record) =>
+            record.appliedKnowledgeIds.some((reference) =>
+              availableKnowledgeIds.has(
+                normalizeKnowledgeReference(reference),
+              ),
+            ),
+          );
         opportunities.push(
           correctionOpportunitySchema.parse({
             schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -712,7 +735,7 @@ export class CorrectionCaptureBuilder {
             knowledgeAppliedBeforeCorrection:
               appliedBeforeCorrection,
             knowledgeAvailableBeforeCorrection:
-              availableKnowledge.length > 0,
+              availableKnowledgeIds.size > 0,
             opportunityId:
               `opportunity-${sha256({
                 correctionKeyId: key.correctionKeyId,

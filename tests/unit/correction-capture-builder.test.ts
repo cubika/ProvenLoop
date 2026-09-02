@@ -335,7 +335,7 @@ describe("CorrectionCaptureBuilder", () => {
     const useRecord: ContextUseRecord = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       appliedKnowledgeIds: [
-        "knowledge-package-validation",
+        "knowledge:knowledge-package-validation",
       ],
       candidateKnowledgeIds: [
         "knowledge-package-validation",
@@ -379,6 +379,119 @@ describe("CorrectionCaptureBuilder", () => {
       knowledgeAppliedBeforeCorrection: true,
       knowledgeAvailableBeforeCorrection: true,
       outcomeKnown: true,
+    });
+  });
+
+  it("retains historical application after wrong feedback disputes Knowledge", () => {
+    const first = event(
+      "source-correction-historical",
+      "2026-09-01T00:10:00.000Z",
+      "user.corrected",
+      {
+        message: correctionMessage(),
+        trust: "user",
+      },
+    );
+    const verified = event(
+      "source-test-historical",
+      "2026-09-01T00:20:00.000Z",
+      "test.completed",
+      {
+        completionStatus: "succeeded",
+        trust: "tool",
+      },
+    );
+    const nextPrompt = event(
+      "next-prompt-historical",
+      "2026-09-02T00:00:00.000Z",
+      "prompt.submitted",
+      {
+        message: [
+          "Run package validation",
+          "Task Family: testing",
+          "Subsystem: test-runner",
+        ].join("\n"),
+        trust: "user",
+      },
+    );
+    const repeated = event(
+      "next-correction-historical",
+      "2026-09-02T00:20:00.000Z",
+      "user.corrected",
+      {
+        message: correctionMessage(),
+        trust: "user",
+      },
+    );
+    const sourceEpisode = episode({
+      correctionIds: [
+        first.event.eventId,
+      ],
+      episodeId: "episode-source",
+      eventIds: [
+        first.event.eventId,
+        verified.event.eventId,
+      ],
+      startedAt: "2026-09-01T00:00:00.000Z",
+    });
+    const nextEpisode = episode({
+      correctionIds: [
+        repeated.event.eventId,
+      ],
+      episodeId: "episode-next",
+      eventIds: [
+        nextPrompt.event.eventId,
+        repeated.event.eventId,
+      ],
+      outcomeQualification: "qualified",
+      startedAt: "2026-09-02T00:00:00.000Z",
+    });
+    const disputedKnowledge: KnowledgeCandidate = {
+      ...knowledge(first.event.eventId),
+      evidenceTier: "disputed",
+      state: "disputed",
+      validatedAt: "2026-09-02T00:10:00.000Z",
+    };
+    const result = new CorrectionCaptureBuilder().build({
+      contextUseRecords: [
+        {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          appliedKnowledgeIds: [
+            `knowledge:${disputedKnowledge.knowledgeId}`,
+          ],
+          candidateKnowledgeIds: [
+            disputedKnowledge.knowledgeId,
+          ],
+          createdAt: "2026-09-02T00:10:00.000Z",
+          episodeId: nextEpisode.episodeId,
+          feedback: "wrong",
+          latencyMs: 1,
+          renderedTokens: 20,
+          requestId: "context-historical",
+          returnedKnowledgeIds: [
+            `knowledge:${disputedKnowledge.knowledgeId}`,
+          ],
+          sessionId: "session-next",
+        },
+      ],
+      envelopes: [
+        first,
+        verified,
+        nextPrompt,
+        repeated,
+      ],
+      knowledgeCandidates: [
+        disputedKnowledge,
+      ],
+      workEpisodes: [
+        sourceEpisode,
+        nextEpisode,
+      ],
+    });
+
+    expect(result.opportunities[0]).toMatchObject({
+      knowledgeAppliedBeforeCorrection: true,
+      knowledgeAvailableBeforeCorrection: true,
     });
   });
 

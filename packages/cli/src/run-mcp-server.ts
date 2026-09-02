@@ -822,7 +822,7 @@ class LocalMcpToolHandlers implements McpToolHandlers {
       });
       return await operation(service);
     } finally {
-      backend?.close();
+      await backend?.closeAsync();
       store.close();
     }
   }

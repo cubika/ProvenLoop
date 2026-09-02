@@ -479,13 +479,13 @@ frozen.
 
 ### 12.4 M2 gate
 
-- [ ] Evaluate at least 20 independent Correction Opportunities before claiming
+- [x] Evaluate at least 20 independent Correction Opportunities before claiming
   a measured percentage improvement.
-- [ ] RCR improves by at least 20% relative to baseline.
-- [ ] Knowledge provenance completeness is 100%.
-- [ ] Evidence Tier label accuracy is at least 95%.
-- [ ] Valid direct counterevidence immediately stops automatic injection.
-- [ ] Wrong Injection remains at most 2% for research and at most 1% for stable
+- [x] RCR improves by at least 20% relative to baseline.
+- [x] Knowledge provenance completeness is 100%.
+- [x] Evidence Tier label accuracy is at least 95%.
+- [x] Valid direct counterevidence immediately stops automatic injection.
+- [x] Wrong Injection remains at most 2% for research and at most 1% for stable
   release.
 
 ## 13. M1 + M2 MVP Go/No-Go

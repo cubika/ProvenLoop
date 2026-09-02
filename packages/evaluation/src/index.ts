@@ -11,6 +11,20 @@ export {
   type BranchContinuationScenario,
 } from "./branch-continuation-evaluation.js";
 export {
+  correctionRecurrenceDatasetSchema,
+  evaluateCorrectionRecurrenceDataset,
+  loadCorrectionRecurrenceDataset,
+  renderCorrectionRecurrenceReport,
+  type CorrectionNegativeCaseResult,
+  type CorrectionOpportunityCaseResult,
+  type CorrectionRecurrenceDataset,
+  type CorrectionRecurrenceEvaluationOptions,
+  type CorrectionRecurrenceEvaluationReport,
+  type CorrectionRecurrenceMetrics,
+  type CorrectionRecurrenceNegativeScenario,
+  type CorrectionRecurrenceTrace,
+} from "./correction-recurrence-evaluation.js";
+export {
   createCanonicalCaptureLedgerEntry,
   evaluateCanonicalCaptureGate,
 } from "./capture-gate.js";
@@ -60,6 +74,15 @@ export {
   type RunM1ReleaseGateOptions,
   type RunM1ReleaseGateResult,
 } from "./m1-release-gate.js";
+export {
+  runM2ReleaseGate,
+  type M2ReleaseGateCheck,
+  type M2ReleaseGateStatus,
+  type M2ReleaseReport,
+  type M2ReleaseTarget,
+  type RunM2ReleaseGateOptions,
+  type RunM2ReleaseGateResult,
+} from "./m2-release-gate.js";
 export {
   loadEvaluationSuite,
 } from "./load-suite.js";

@@ -169,8 +169,10 @@ implements KnowledgeBackend {
   readonly #path: string;
   readonly #pendingReadRequests =
     new Map<number, PendingReadRequest>();
-  readonly #readWorker: Worker | undefined;
+  #closed = false;
+  #closePromise: Promise<void> | undefined;
   #nextReadRequestId = 0;
+  #readWorker: Worker | undefined;
   #readWorkerError: Error | undefined;
 
   public constructor(
@@ -212,18 +214,67 @@ implements KnowledgeBackend {
         tokenize = 'unicode61 remove_diacritics 2'
       );
     `);
-    this.#readWorker =
-      path === ":memory:"
-        ? undefined
-        : new Worker(READ_WORKER_SOURCE, {
-            eval: true,
-            workerData: {
-              path,
-            },
-          });
-    this.#readWorker?.on(
+    this.#startReadWorker();
+  }
+
+  public close(): void {
+    if (this.#closePromise !== undefined) {
+      return;
+    }
+    this.#closed = true;
+    const worker = this.#readWorker;
+    this.#readWorker = undefined;
+    this.#failPendingReads(
+      new Error("Knowledge backend is closed."),
+    );
+    this.#database.close();
+    this.#closePromise =
+      worker === undefined
+        ? Promise.resolve()
+        : worker.terminate().then(() => undefined);
+  }
+
+  public closeAsync(): Promise<void> {
+    if (this.#closePromise !== undefined) {
+      return this.#closePromise;
+    }
+    this.#closed = true;
+    const worker = this.#readWorker;
+    this.#readWorker = undefined;
+    this.#failPendingReads(
+      new Error("Knowledge backend is closed."),
+    );
+    this.#closePromise = (async () => {
+      if (worker !== undefined) {
+        await worker.terminate();
+      }
+      this.#database.close();
+    })();
+    return this.#closePromise;
+  }
+
+  #startReadWorker(): void {
+    if (
+      this.#closed ||
+      this.#path === ":memory:" ||
+      this.#readWorker !== undefined
+    ) {
+      return;
+    }
+    this.#readWorkerError = undefined;
+    const worker = new Worker(READ_WORKER_SOURCE, {
+      eval: true,
+      workerData: {
+        path: this.#path,
+      },
+    });
+    this.#readWorker = worker;
+    worker.on(
       "message",
       (message: ReadWorkerResponse<unknown>) => {
+        if (this.#readWorker !== worker) {
+          return;
+        }
         if (message.fatal === true) {
           this.#failPendingReads(
             new Error(
@@ -256,11 +307,18 @@ implements KnowledgeBackend {
         pending.resolve(message.result);
       },
     );
-    this.#readWorker?.on("error", (error) => {
+    worker.on("error", (error) => {
+      if (this.#readWorker !== worker) {
+        return;
+      }
       this.#failPendingReads(error);
     });
-    this.#readWorker?.on("exit", (code) => {
-      if (code !== 0 && this.#readWorkerError === undefined) {
+    worker.on("exit", (code) => {
+      if (
+        this.#readWorker === worker &&
+        code !== 0 &&
+        this.#readWorkerError === undefined
+      ) {
         this.#failPendingReads(
           new Error(
             `Knowledge backend read worker exited with code ${code}.`,
@@ -270,17 +328,19 @@ implements KnowledgeBackend {
     });
   }
 
-  public close(): void {
-    if (this.#readWorker !== undefined) {
-      this.#readWorker.postMessage({
-        operation: "close",
-      });
-      void this.#readWorker.terminate();
+  async #stopReadWorker(): Promise<void> {
+    const worker = this.#readWorker;
+    if (worker === undefined) {
+      return;
     }
-    this.#failPendingReads(
-      new Error("Knowledge backend is closed."),
-    );
-    this.#database.close();
+    if (this.#pendingReadRequests.size > 0) {
+      throw new Error(
+        "Knowledge backend write attempted during an active read.",
+      );
+    }
+    this.#readWorker = undefined;
+    await worker.terminate();
+    this.#readWorkerError = undefined;
   }
 
   public get(id: string): Promise<KnowledgeRecord | undefined> {
@@ -372,18 +432,23 @@ implements KnowledgeBackend {
     };
   }
 
-  public index(
+  public async index(
     records: readonly KnowledgeProjection[],
   ): Promise<void> {
     const parsed = records.map(validateProjection);
-    this.#database.exec("BEGIN IMMEDIATE;");
+    await this.#stopReadWorker();
     try {
-      this.#indexParsed(parsed);
-      this.#database.exec("COMMIT;");
-      return Promise.resolve();
-    } catch (error) {
-      this.#database.exec("ROLLBACK;");
-      return Promise.reject(error);
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.#upsertRecords(parsed);
+        this.#rebuildFts();
+        this.#database.exec("COMMIT;");
+      } catch (error) {
+        this.#database.exec("ROLLBACK;");
+        throw error;
+      }
+    } finally {
+      this.#startReadWorker();
     }
   }
 
@@ -391,39 +456,45 @@ implements KnowledgeBackend {
     snapshot: KnowledgeProjectionSnapshot,
   ): Promise<void> {
     const parsed = snapshot.records.map(validateProjection);
-    this.#database.exec("BEGIN IMMEDIATE;");
+    await this.#stopReadWorker();
     try {
-      this.#database.exec(`
-        DELETE FROM knowledge_fts;
-        DELETE FROM knowledge_records;
-      `);
-      this.#indexParsed(parsed);
-      this.#database.exec("COMMIT;");
-    } catch (error) {
-      this.#database.exec("ROLLBACK;");
-      throw error;
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.#database.exec(`
+          DELETE FROM knowledge_records;
+        `);
+        this.#upsertRecords(parsed);
+        this.#rebuildFts();
+        this.#database.exec("COMMIT;");
+      } catch (error) {
+        this.#database.exec("ROLLBACK;");
+        throw error;
+      }
+    } finally {
+      this.#startReadWorker();
     }
   }
 
-  public remove(ids: readonly string[]): Promise<void> {
+  public async remove(ids: readonly string[]): Promise<void> {
     const selected = normalizedIds(ids);
-    this.#database.exec("BEGIN IMMEDIATE;");
+    await this.#stopReadWorker();
     try {
-      const removeFts = this.#database.prepare(
-        "DELETE FROM knowledge_fts WHERE knowledge_id = ?",
-      );
-      const removeRecord = this.#database.prepare(
-        "DELETE FROM knowledge_records WHERE knowledge_id = ?",
-      );
-      for (const id of selected) {
-        removeFts.run(id);
-        removeRecord.run(id);
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        const removeRecord = this.#database.prepare(
+          "DELETE FROM knowledge_records WHERE knowledge_id = ?",
+        );
+        for (const id of selected) {
+          removeRecord.run(id);
+        }
+        this.#rebuildFts();
+        this.#database.exec("COMMIT;");
+      } catch (error) {
+        this.#database.exec("ROLLBACK;");
+        throw error;
       }
-      this.#database.exec("COMMIT;");
-      return Promise.resolve();
-    } catch (error) {
-      this.#database.exec("ROLLBACK;");
-      return Promise.reject(error);
+    } finally {
+      this.#startReadWorker();
     }
   }
 
@@ -558,10 +629,7 @@ implements KnowledgeBackend {
     });
   }
 
-  #indexParsed(records: readonly KnowledgeProjection[]): void {
-    const removeFts = this.#database.prepare(
-      "DELETE FROM knowledge_fts WHERE knowledge_id = ?",
-    );
+  #upsertRecords(records: readonly KnowledgeProjection[]): void {
     const upsert = this.#database.prepare(
       `INSERT INTO knowledge_records (
          knowledge_id,
@@ -572,7 +640,17 @@ implements KnowledgeBackend {
          projection_json = excluded.projection_json,
          source_digest = excluded.source_digest`,
     );
-    const insertFts = this.#database.prepare(
+    for (const record of records) {
+      upsert.run(
+        record.knowledgeId,
+        JSON.stringify(record),
+        record.sourceDigest,
+      );
+    }
+  }
+
+  #rebuildFts(): void {
+    const insert = this.#database.prepare(
       `INSERT INTO knowledge_fts (
          knowledge_id,
          topic_key,
@@ -581,14 +659,24 @@ implements KnowledgeBackend {
          non_applicability
        ) VALUES (?, ?, ?, ?, ?)`,
     );
+    const records = (
+      this.#database
+        .prepare(
+          `SELECT projection_json
+             FROM knowledge_records
+            ORDER BY knowledge_id`,
+        )
+        .all() as readonly Readonly<Record<string, unknown>>[]
+    ).map((row) =>
+      validateProjection(
+        JSON.parse(
+          String(row.projection_json),
+        ) as KnowledgeProjection,
+      ),
+    );
+    this.#database.exec("DELETE FROM knowledge_fts;");
     for (const record of records) {
-      removeFts.run(record.knowledgeId);
-      upsert.run(
-        record.knowledgeId,
-        JSON.stringify(record),
-        record.sourceDigest,
-      );
-      insertFts.run(
+      insert.run(
         record.knowledgeId,
         record.topicKey,
         record.content,

@@ -24,6 +24,7 @@ import {
   runEvaluation,
   runM0ReleaseGate,
   runM1ReleaseGate,
+  runM2ReleaseGate,
 } from "@provenloop/evaluation";
 import {
   DeletionPropagationGateError,
@@ -113,6 +114,7 @@ const usage = `Usage:
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory>
   provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
+  provenloop eval m2 --out <directory> [--dataset <file>] [--stable]
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -229,7 +231,7 @@ const withKnowledgeControl = async <T>(
       }),
     );
   } finally {
-    backend?.close();
+    await backend?.closeAsync();
     store?.close();
     await outerLease.release();
   }
@@ -612,9 +614,15 @@ const runDeletionCommand = async (
     io.error(error instanceof Error ? error.message : String(error));
     return error instanceof DeletionPropagationGateError ? 1 : 3;
   } finally {
-    knowledgeBackend?.close();
-    store?.close();
-    await projectionLease?.release();
+    try {
+      await knowledgeBackend?.closeAsync();
+    } finally {
+      try {
+        store?.close();
+      } finally {
+        await projectionLease?.release();
+      }
+    }
   }
 };
 
@@ -666,6 +674,47 @@ const runEvaluationCommand = async (
       });
       io.log(
         `M1 release gate ${result.report.status}: ${result.runDirectory}`,
+      );
+      return result.report.exitCode;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 3;
+    }
+  }
+  if (args[1] === "m2") {
+    const outputRoot = option(args, "--out");
+    const datasetPath = option(args, "--dataset");
+    if (
+      !hasOnlyOptions(args, 2, {
+        flags: [
+          "--stable",
+        ],
+        values: [
+          "--dataset",
+          "--out",
+        ],
+      }) ||
+      !outputRoot ||
+      outputRoot.startsWith("--") ||
+      hasInvalidOptionValue(args, "--dataset")
+    ) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const result = await runM2ReleaseGate({
+        ...(datasetPath === undefined
+          ? {}
+          : {
+              datasetPath,
+            }),
+        outputRoot,
+        releaseTarget: args.includes("--stable")
+          ? "stable"
+          : "research",
+      });
+      io.log(
+        `M2 release gate ${result.report.status}: ${result.runDirectory}`,
       );
       return result.report.exitCode;
     } catch (error) {

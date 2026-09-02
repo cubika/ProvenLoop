@@ -137,6 +137,17 @@ Run the M1 Branch Continuation research gate:
 Add `--stable` to enforce the 1% Wrong Injection threshold instead of the 2%
 research threshold.
 
+Run the M2 Correction Recurrence gate:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd eval m2 --out .provenloop\eval
+```
+
+The gate replays 24 independent baseline/context trace pairs and derives their
+Correction Opportunities through the production builder. It also runs direct
+counterevidence, scope-mismatch, and unverified negative cases. Add `--stable`
+to enforce the 1% Wrong Injection threshold.
+
 Enable correction learning before capturing explicit corrections:
 
 ```powershell
@@ -251,6 +262,12 @@ SQLite v7 adds indexed candidate-scoped admission lookups so retrieval does not
 scan the complete evidence and context-use history. Work Episode projection
 also binds context-use records to one unambiguous Session/time Episode, allowing
 later self-reinforcing verification to be rejected on the production path.
+The executable M2 gate now replays 24 frozen baseline/context held-out traces
+through real Context use recording and the Correction builder, deriving rather
+than fixture-filling each Opportunity's recurrence and application fields. It
+retains RCR, provenance completeness, Evidence Tier accuracy,
+direct-counterevidence, all-card Wrong Injection, case-level results, and both
+replay databases for research and stable release decisions.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

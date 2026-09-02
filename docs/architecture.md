@@ -468,6 +468,22 @@ feedback target identity. It also maintains an indexed
 admission cost does not grow as a JavaScript or JSON virtual-table scan of the
 complete local history.
 
+The M2 release gate uses a frozen Correction Recurrence dataset with 24
+independent baseline/context held-out trace pairs. Each case rebuilds training
+Correction Keys and Knowledge, retrieves Context through the production
+service, records application feedback, projects the Context use into the
+held-out Episode, and lets `CorrectionCaptureBuilder` derive both Opportunities.
+RCR is computed from those generated records rather than copied from fixture
+metric fields. Separate counterevidence, scope-mismatch, and unverified cases
+measure fail-closed behavior without inflating the RCR denominator; every
+returned Knowledge ID is checked so an unexpected card is a Wrong Injection in
+positive or negative cases. The retained report contains case-level results,
+both replay databases, code provenance, research or stable thresholds, and
+explicit input/product/infrastructure exit codes. The gate writes the complete
+run into a hidden staging directory and atomically renames that directory only
+after both JSON and Markdown reports are complete, so readers never observe a
+partially published report pair.
+
 ### 3.7 Outcome linker
 
 The linker detects later evidence that strengthens or weakens earlier learning:

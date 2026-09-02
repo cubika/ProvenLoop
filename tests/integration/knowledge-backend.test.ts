@@ -186,6 +186,70 @@ describe("SQLite FTS Knowledge backend", () => {
     }
   });
 
+  it("keeps file-backed FTS healthy after updating one of many records", async () => {
+    const root = await createTemporaryDirectory();
+    const backend = new SqliteFtsKnowledgeBackend(
+      join(root, "knowledge.db"),
+    );
+    try {
+      const candidates = Array.from(
+        {
+          length: 30,
+        },
+        (_, index) =>
+          knowledgeProjectionFromCandidate(
+            candidate({
+              content:
+                `Run package validation for fixture ${index}.`,
+              id: `fixture-${index}`,
+              scopeId: `repo-${index}`,
+            }),
+          ),
+      );
+      await backend.rebuild({
+        records: candidates,
+      });
+      await expect(
+        backend.searchWithTimeout?.(
+          {
+            limit: 3,
+            text: "fixture 0",
+          },
+          1_000,
+        ),
+      ).resolves.toHaveLength(1);
+
+      const first = candidates[0];
+      if (first === undefined) {
+        throw new Error("Expected a Knowledge projection.");
+      }
+      await backend.index([
+        {
+          ...first,
+          content: "Run corrected package validation for fixture 0.",
+        },
+      ]);
+
+      await expect(
+        backend.healthWithTimeout?.(1_000),
+      ).resolves.toMatchObject({
+        quickCheck: "ok",
+        status: "healthy",
+      });
+      await expect(
+        backend.searchWithTimeout?.(
+          {
+            limit: 3,
+            text: "corrected fixture 0",
+          },
+          1_000,
+        ),
+      ).resolves.toHaveLength(1);
+    } finally {
+      backend.close();
+    }
+  });
+
   it("rechecks canonical scope, lifecycle, evidence, and deletion", async () => {
     const root = await createTemporaryDirectory();
     const store = new CanonicalSqliteStore(
