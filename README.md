@@ -202,6 +202,7 @@ same Work Episode.
 - [Copilot event capture design](docs/copilot-event-capture-design.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Executable implementation checklist](docs/implementation-checklist.md)
+- [0.1.0 Alpha release plan](docs/release-0.1-alpha-plan.md)
 - [Competitive and Copilot investigation](docs/research/competitive-analysis.md)
 - [Self-improving agent research](docs/research/self-improving-agents.md)
 
