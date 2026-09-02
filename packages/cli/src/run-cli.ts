@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterOperationResult,
@@ -19,6 +20,7 @@ import {
   EvidenceLedgerWriter,
   EvaluationReportInputError,
   loadEpisodeAssociationDataset,
+  M0AcceptanceEvidenceInputError,
   regenerateMarkdownReport,
   renderEpisodeAssociationReport,
   runEvaluation,
@@ -51,6 +53,10 @@ import {
 } from "@provenloop/storage-sqlite";
 
 import {
+  completeM0DailyAcceptance,
+  startM0DailyAcceptance,
+} from "./m0-daily-acceptance.js";
+import {
   runMcpServer,
   type McpServerOptions,
 } from "./run-mcp-server.js";
@@ -58,6 +64,10 @@ import {
   runCaptureWorkerOnce,
   type RunCaptureWorkerOnceOptions,
 } from "./run-worker.js";
+import {
+  PROVENLOOP_CODE_VERSION,
+  releaseMetadata,
+} from "./release-metadata.js";
 
 export interface CliIo {
   readonly error: (message: string) => void;
@@ -84,7 +94,12 @@ const defaultIo: CliIo = {
 const defaultDependencies: CliDependencies = {
   createAdapter: (dataRoot) =>
     new CopilotCliAdapter({
+      cliBinPath: fileURLToPath(
+        new URL("./bin.js", import.meta.url),
+      ),
       dataRoot,
+      extensionModuleUrl:
+        new URL("./extension-entry.js", import.meta.url).href,
     }),
   runMcpServer: (options) =>
     runMcpServer(undefined, options),
@@ -100,11 +115,15 @@ const option = (
 };
 
 const usage = `Usage:
-  provenloop install [--data-root <directory>]
+  provenloop install [--no-auto-collect] [--data-root <directory>]
+  provenloop version
+  provenloop runtime extension-path
+  provenloop upgrade [--data-root <directory>]
   provenloop status [--data-root <directory>]
-  provenloop doctor [--data-root <directory>]
+  provenloop doctor [--online] [--data-root <directory>]
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
+  provenloop collection <enable|disable> [--data-root <directory>]
   provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop correct <knowledge-id> [--reason <text>] [--data-root <directory>]
   provenloop mute <knowledge-id> --session <id> [--data-root <directory>]
@@ -113,8 +132,10 @@ const usage = `Usage:
   provenloop worker run [--batch-size <count>] [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
   provenloop purge [--data-root <directory>]
+  provenloop acceptance start [--session-root <directory>] [--data-root <directory>]
+  provenloop acceptance complete [--drain-timeout <seconds>] [--data-root <directory>]
   provenloop eval episodes [--dataset <file>]
-  provenloop eval m0 --out <directory>
+  provenloop eval m0 --out <directory> [--evidence <file>]
   provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
   provenloop eval m2 --out <directory> [--dataset <file>] [--stable]
   provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
@@ -635,13 +656,24 @@ const runEvaluationCommand = async (
 ): Promise<number> => {
   if (args[1] === "m0") {
     const outputRoot = option(args, "--out");
-    if (!outputRoot || outputRoot.startsWith("--")) {
+    const evidencePath = option(args, "--evidence");
+    if (
+      !outputRoot ||
+      outputRoot.startsWith("--") ||
+      hasInvalidOptionValue(args, "--evidence")
+    ) {
       io.error(usage);
       return 2;
     }
     try {
       const result = await runM0ReleaseGate({
+        ...(evidencePath === undefined
+          ? {}
+          : {
+              evidencePath,
+            }),
         outputRoot,
+        codeVersion: PROVENLOOP_CODE_VERSION,
       });
       io.log(
         `M0 release gate ${result.report.status}: ${result.runDirectory}`,
@@ -649,7 +681,9 @@ const runEvaluationCommand = async (
       return result.report.exitCode;
     } catch (error) {
       io.error(error instanceof Error ? error.message : String(error));
-      return 3;
+      return error instanceof M0AcceptanceEvidenceInputError
+        ? 2
+        : 3;
     }
   }
   if (args[1] === "m1") {
@@ -753,6 +787,7 @@ const runEvaluationCommand = async (
               evidencePath,
             }),
         outputRoot,
+        codeVersion: PROVENLOOP_CODE_VERSION,
         releaseTarget: args.includes("--stable")
           ? "stable"
           : "research",
@@ -869,13 +904,154 @@ const runWorkerCommand = async (
   }
 };
 
+const runAcceptanceCommand = async (
+  args: readonly string[],
+  io: CliIo,
+): Promise<number> => {
+  if (args[1] === "start") {
+    if (
+      hasInvalidOptionValue(args, "--session-root") ||
+      hasInvalidOptionValue(args, "--data-root") ||
+      !hasOnlyOptions(args, 2, {
+        values: [
+          "--data-root",
+          "--session-root",
+        ],
+      })
+    ) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const sessionRoot = option(args, "--session-root");
+      const result = await startM0DailyAcceptance({
+        dataRoot: dataRoot(args),
+        ...(sessionRoot === undefined
+          ? {}
+          : {
+              sessionRoot,
+            }),
+      });
+      io.log(
+        `M0 daily acceptance started: ${result.runDirectory}`,
+      );
+      return 0;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 3;
+    }
+  }
+  if (args[1] === "complete") {
+    const rawTimeout = option(args, "--drain-timeout");
+    const timeoutSeconds =
+      rawTimeout === undefined ? 30 : Number(rawTimeout);
+    if (
+      hasInvalidOptionValue(args, "--drain-timeout") ||
+      hasInvalidOptionValue(args, "--data-root") ||
+      !Number.isFinite(timeoutSeconds) ||
+      timeoutSeconds <= 0 ||
+      !hasOnlyOptions(args, 2, {
+        values: [
+          "--data-root",
+          "--drain-timeout",
+        ],
+      })
+    ) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const result = await completeM0DailyAcceptance({
+        dataRoot: dataRoot(args),
+        drainTimeoutMs: timeoutSeconds * 1_000,
+      });
+      io.log(
+        `M0 daily acceptance ${result.status}: ${result.runDirectory}`,
+      );
+      return result.status === "fail" ? 1 : 0;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return 3;
+    }
+  }
+  io.error(usage);
+  return 2;
+};
+
+const runCollectionCommand = async (
+  args: readonly string[],
+  io: CliIo,
+  dependencies: CliDependencies,
+): Promise<number> => {
+  if (
+    ![
+      "disable",
+      "enable",
+    ].includes(args[1] ?? "") ||
+    hasInvalidOptionValue(args, "--data-root") ||
+    !hasOnlyOptions(args, 2, {
+      values: [
+        "--data-root",
+      ],
+    })
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  try {
+    const adapter = dependencies.createAdapter(dataRoot(args));
+    const operation = args[1] === "enable"
+      ? adapter.enable.bind(adapter)
+      : adapter.disable.bind(adapter);
+    for (const capability of [
+      "capture",
+      "worker",
+    ] as const) {
+      const result = await operation(capability);
+      if (result.status === "incompatible") {
+        io.error(result.message);
+        return 1;
+      }
+    }
+    io.log(
+      args[1] === "enable"
+        ? "Automatic collection enabled."
+        : "Automatic collection disabled.",
+    );
+    return 0;
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return 3;
+  }
+};
+
 export const runCli = async (
   args: readonly string[],
   io: CliIo = defaultIo,
   dependencies: CliDependencies = defaultDependencies,
 ): Promise<number> => {
+  if (args[0] === "version" && args.length === 1) {
+    io.log(JSON.stringify(releaseMetadata, null, 2));
+    return 0;
+  }
+  if (
+    args[0] === "runtime" &&
+    args[1] === "extension-path" &&
+    args.length === 2
+  ) {
+    io.log(
+      fileURLToPath(new URL("./extension-entry.js", import.meta.url)),
+    );
+    return 0;
+  }
   if (args[0] === "eval") {
     return runEvaluationCommand(args, io);
+  }
+  if (args[0] === "acceptance") {
+    return runAcceptanceCommand(args, io);
+  }
+  if (args[0] === "collection") {
+    return runCollectionCommand(args, io, dependencies);
   }
   if (args[0] === "delete") {
     return runDeletionCommand(args, io);
@@ -924,6 +1100,34 @@ export const runCli = async (
     return 2;
   }
   if (
+    args[0] === "install" &&
+    !hasOnlyOptions(args, 1, {
+      flags: [
+        "--no-auto-collect",
+      ],
+      values: [
+        "--data-root",
+      ],
+    })
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  if (
+    args[0] === "doctor" &&
+    !hasOnlyOptions(args, 1, {
+      flags: [
+        "--online",
+      ],
+      values: [
+        "--data-root",
+      ],
+    })
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  if (
     args[0] === "uninstall" &&
     !hasOnlyOptions(args, 1, {
       flags: [
@@ -947,6 +1151,7 @@ export const runCli = async (
       "purge",
       "status",
       "uninstall",
+      "upgrade",
     ].includes(args[0] ?? "")
   ) {
     io.error(usage);
@@ -961,7 +1166,18 @@ export const runCli = async (
     const adapter = dependencies.createAdapter(dataRoot(args));
     switch (args[0]) {
       case "install": {
-        const result = await adapter.install();
+        const result = await adapter.install(
+          args.includes("--no-auto-collect")
+            ? {
+                autoCollect: false,
+              }
+            : undefined,
+        );
+        io.log(result.message);
+        return operationExitCode(result);
+      }
+      case "upgrade": {
+        const result = await adapter.upgrade();
         io.log(result.message);
         return operationExitCode(result);
       }
@@ -969,7 +1185,9 @@ export const runCli = async (
         io.log(JSON.stringify(await adapter.status(), null, 2));
         return 0;
       case "doctor": {
-        const health = await adapter.doctor();
+        const health = await adapter.doctor({
+          online: args.includes("--online"),
+        });
         io.log(JSON.stringify(health, null, 2));
         return health.status === "healthy"
           ? 0

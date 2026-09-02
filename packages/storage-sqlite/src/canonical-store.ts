@@ -3518,6 +3518,43 @@ export class CanonicalSqliteStore {
         };
   }
 
+  public rawEvents(): readonly CanonicalRawEventRecord[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT adapter,
+                adapter_version,
+                deduplication_key,
+                delivery_count,
+                event_id,
+                event_type,
+                parse_status,
+                safe_envelope_json,
+                session_id,
+                source_event_id
+           FROM raw_events
+          ORDER BY event_timestamp, deduplication_key`,
+      )
+      .all() as readonly Readonly<Record<string, unknown>>[];
+    return rows.map((row) => ({
+      adapter: String(row.adapter),
+      adapterVersion: String(row.adapter_version),
+      deduplicationKey: String(row.deduplication_key),
+      deliveryCount: asNumber(row.delivery_count),
+      envelope: captureEnvelopeSchema.parse(
+        JSON.parse(String(row.safe_envelope_json)) as unknown,
+      ),
+      eventId: String(row.event_id),
+      eventType: String(row.event_type),
+      parseStatus: String(row.parse_status),
+      ...(row.session_id === null
+        ? {}
+        : {
+            sessionId: String(row.session_id),
+          }),
+      sourceEventId: String(row.source_event_id),
+    }));
+  }
+
   public episodeSourceEnvelopes(): readonly CaptureEnvelope[] {
     const rows = this.#database
       .prepare(

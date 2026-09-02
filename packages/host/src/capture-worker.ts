@@ -49,6 +49,7 @@ export interface CaptureWorkerOptions {
   readonly batchSize: number;
   readonly enabled?: () => boolean | Promise<boolean>;
   readonly lease: ProcessLeaseProvider;
+  readonly onCanonicalMutationPending?: () => Promise<void>;
   readonly queue: CaptureWorkerQueue;
   readonly store: CaptureWorkerStore;
   readonly workerId: string;
@@ -113,6 +114,7 @@ export class CaptureWorker {
     | Promise<CaptureWorkerAdmission>;
   readonly #enabled: () => boolean | Promise<boolean>;
   readonly #lease: ProcessLeaseProvider;
+  readonly #onCanonicalMutationPending: () => Promise<void>;
   readonly #queue: CaptureWorkerQueue;
   readonly #store: CaptureWorkerStore;
   readonly #workerId: string;
@@ -137,6 +139,8 @@ export class CaptureWorker {
       }));
     this.#enabled = options.enabled ?? (() => true);
     this.#lease = options.lease;
+    this.#onCanonicalMutationPending =
+      options.onCanonicalMutationPending ?? (() => Promise.resolve());
     this.#queue = options.queue;
     this.#store = options.store;
     this.#workerId = options.workerId.trim();
@@ -211,6 +215,7 @@ export class CaptureWorker {
         const claim = claimFromItem(item);
         let result: CanonicalIngestResult;
         try {
+          await this.#onCanonicalMutationPending();
           result = this.#store.ingestQueueItem(item);
         } catch (error) {
           failed += 1;

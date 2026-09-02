@@ -78,6 +78,7 @@ export {
 } from "./session-file-parser.js";
 export {
   createDefaultCopilotAdapterState,
+  readInternalSessionIds,
   readCopilotAdapterState,
   setPersistedCapability,
   writeCopilotAdapterState,

@@ -1,0 +1,7 @@
+{
+  "name": "provenloop",
+  "description": "Local learning infrastructure for GitHub Copilot CLI.",
+  "version": "0.1.0-alpha.0",
+  "extensions": "extensions/",
+  "mcpServers": ".mcp.json"
+}

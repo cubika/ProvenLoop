@@ -33,6 +33,10 @@ import {
   type M0ReleaseReport,
 } from "./m0-release-gate.js";
 import {
+  m0AcceptanceEvidenceSchema,
+  type M0AcceptanceEvidence,
+} from "./m0-acceptance-evidence.js";
+import {
   runM1ReleaseGate,
   type M1ReleaseReport,
   type M1ReleaseTarget,
@@ -99,6 +103,7 @@ export interface MvpReleaseEvidence {
     readonly targetType: "design_partner" | "repository";
   };
   readonly evidenceVersion: 1;
+  readonly m0Acceptance?: M0AcceptanceEvidence;
   readonly evaluation: MvpEvaluationBinding;
   readonly guardrails: MvpGuardrailEvidence;
   readonly observationWindow: {
@@ -294,6 +299,7 @@ export const mvpReleaseEvidenceSchema = z
       ])
       .optional(),
     evidenceVersion: z.literal(1),
+    m0Acceptance: m0AcceptanceEvidenceSchema.optional(),
     evaluation: evaluationBindingSchema,
     guardrails: z
       .object({
@@ -798,8 +804,9 @@ const loadedEvidence = async (
   }
   let parsed: MvpReleaseEvidence;
   try {
+    const content = await readFile(path, "utf8");
     parsed = mvpReleaseEvidenceSchema.parse(
-      JSON.parse(await readFile(path, "utf8")) as unknown,
+      JSON.parse(content.replace(/^\uFEFF/u, "")) as unknown,
     ) as MvpReleaseEvidence;
   } catch (error) {
     throw new MvpReleaseInputError(
@@ -1524,6 +1531,11 @@ export const runMvpReleaseGate = async (
         m2,
       ] = await Promise.all([
         runM0ReleaseGate({
+          ...(evidence?.m0Acceptance === undefined
+            ? {}
+            : {
+                acceptanceEvidence: evidence.m0Acceptance,
+              }),
           codeVersion,
           cwd,
           outputRoot: subgateRoot,

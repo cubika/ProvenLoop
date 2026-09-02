@@ -304,6 +304,17 @@ describe("Copilot extension capture runtime", () => {
     const session = new FakeSession();
     runtime.attach(session);
 
+    runtime.setEnabled(false);
+    session.emit({
+      data: {
+        content: "disabled",
+      },
+      id: "disabled-user-event",
+      parentId: null,
+      timestamp,
+      type: "user.message",
+    });
+    runtime.setEnabled(true);
     session.emit({
       data: {
         content: "hello",
@@ -343,7 +354,8 @@ describe("Copilot extension capture runtime", () => {
       "session.ended",
     ]);
     expect(runtime.status()).toMatchObject({
-      callbackCount: 3,
+      callbackCount: 4,
+      disabledEventsSkipped: 1,
       malformedEvents: 0,
       runtimeErrors: 0,
       unsupportedEvents: 1,

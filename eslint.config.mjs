@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/coverage/**",
       "**/dist/**",
       "**/node_modules/**",
+      "plugins/**/extensions/**/extension.mjs",
       "spikes/**",
     ],
   },

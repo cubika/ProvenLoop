@@ -121,6 +121,10 @@ const fakeAdapter = (): AgentAdapter => ({
     message: "uninstalled",
     status: "changed" as const,
   })),
+  upgrade: vi.fn(async () => ({
+    message: "upgraded",
+    status: "changed" as const,
+  })),
 });
 
 const cliHarness = (

@@ -67,6 +67,7 @@ const fakeAdapter = (
   })),
   status: vi.fn(async () => adapterStatus()),
   uninstall: vi.fn(async () => changed("uninstalled")),
+  upgrade: vi.fn(async () => changed("upgraded")),
 });
 
 const cli = (
@@ -118,6 +119,17 @@ describe("operational CLI", () => {
     await expect(
       runCli(
         [
+          "upgrade",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      runCli(
+        [
           "disable",
           "capture",
           "--data-root",
@@ -130,13 +142,53 @@ describe("operational CLI", () => {
     expect(harness.roots).toEqual([
       "C:\\custom-data",
       "C:\\custom-data",
+      "C:\\custom-data",
     ]);
     expect(adapter.install).toHaveBeenCalledOnce();
+    expect(adapter.install).toHaveBeenCalledWith(undefined);
+    expect(adapter.upgrade).toHaveBeenCalledOnce();
     expect(adapter.disable).toHaveBeenCalledWith("capture");
     expect(harness.logs).toEqual([
       "installed",
+      "upgraded",
       "capture disabled",
     ]);
+  });
+
+  it("supports install-time opt-out and collection controls", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "install",
+          "--no-auto-collect",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(adapter.install).toHaveBeenCalledWith({
+      autoCollect: false,
+    });
+
+    await expect(
+      runCli(
+        [
+          "collection",
+          "disable",
+          "--data-root",
+          "C:\\custom-data",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(adapter.disable).toHaveBeenCalledWith("capture");
+    expect(adapter.disable).toHaveBeenCalledWith("worker");
   });
 
   it("passes the configured data root to the MCP server", async () => {
@@ -158,6 +210,22 @@ describe("operational CLI", () => {
       .toHaveBeenCalledWith({
         dataRoot: "C:\\custom-data",
       });
+  });
+
+  it("reports the installed Extension runtime path", async () => {
+    const harness = cli(fakeAdapter());
+
+    await expect(
+      runCli(
+        [
+          "runtime",
+          "extension-path",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(0);
+    expect(harness.logs[0]).toMatch(/extension-entry\.js$/u);
   });
 
   it("uses stable exit codes for invalid input and doctor failures", async () => {

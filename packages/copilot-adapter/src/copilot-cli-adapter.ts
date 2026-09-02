@@ -4,8 +4,10 @@ import {
   constants,
   mkdir,
   readFile,
+  rename,
   rm,
   statfs,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -18,12 +20,15 @@ import { fileURLToPath } from "node:url";
 
 import {
   PROVENLOOP_CAPABILITIES,
+  PROVENLOOP_VERSION,
   type AdapterCapabilityAvailability,
   type AdapterCapabilityMatrix,
   type AdapterCapabilityState,
   type AdapterCompatibility,
+  type AdapterDoctorOptions,
   type AdapterHealth,
   type AdapterHealthCheck,
+  type AdapterInstallOptions,
   type AdapterOperationResult,
   type AdapterStatus,
   type AgentAdapter,
@@ -71,12 +76,13 @@ import {
   type PersistedCopilotAdapterState,
 } from "./operational-state.js";
 
-const COPILOT_MARKETPLACE_NAME = "provenloop-local";
+const DEFAULT_COPILOT_MARKETPLACE_NAME =
+  "provenloop-marketplace";
+const DEFAULT_COPILOT_MARKETPLACE_SOURCE =
+  `cubika/ProvenLoop#v${PROVENLOOP_VERSION}`;
 const COPILOT_PLUGIN_NAME = "provenloop";
-const COPILOT_PLUGIN_REFERENCE =
-  `${COPILOT_PLUGIN_NAME}@${COPILOT_MARKETPLACE_NAME}`;
-const COPILOT_PLUGIN_VERSION = "0.0.0";
 const DATA_ROOT_MARKER_PRODUCT = "ProvenLoop";
+const RUNTIME_LOCATOR_PRODUCT = "ProvenLoopRuntime";
 const PLUGIN_CAPABILITIES = new Set<ProvenLoopCapability>([
   "capture",
   "retrieval",
@@ -91,6 +97,12 @@ export interface CopilotCliAdapterOptions {
     Record<string, string | undefined>
   >;
   readonly extensionModuleUrl?: string;
+  readonly integrationLocatorPath?: string;
+  readonly marketplace?: {
+    readonly name: string;
+    readonly source: string;
+    readonly writeLocalAssets?: boolean;
+  };
   readonly now?: () => Date;
   readonly platform?: NodeJS.Platform;
 }
@@ -116,6 +128,28 @@ const optionalText = (value: string): string | undefined => {
   return normalized.length === 0 ? undefined : normalized;
 };
 
+const marketplaceSourceMatches = (
+  actual: string | undefined,
+  expected: string,
+): boolean => {
+  if (actual === expected) {
+    return true;
+  }
+  const separator = expected.lastIndexOf("#");
+  if (separator === -1) {
+    return false;
+  }
+  const repository = expected.slice(0, separator);
+  const reference = expected.slice(separator + 1);
+  const normalized = actual?.replaceAll(/\s+/gu, " ").trim();
+  return [
+    `${repository}#${reference}`,
+    `${repository}@${reference}`,
+    `${repository}, ref: ${reference}`,
+    `${repository} ref: ${reference}`,
+  ].includes(normalized ?? "");
+};
+
 const compatibilityForVersion = (
   version: string | undefined,
 ): AdapterCompatibility => {
@@ -134,7 +168,11 @@ const capabilityAvailability = (
   if (capability === "worker") {
     return "available";
   }
-  if (capability === "capture") {
+  if (
+    capability === "capture" ||
+    capability === "retrieval" ||
+    capability === "correction_learning"
+  ) {
     return compatibility === "supported"
       ? "available"
       : compatibility;
@@ -194,8 +232,10 @@ const sectionLines = (
 
 interface CopilotRegistrationStatus {
   readonly marketplaceRegistered: boolean;
+  readonly marketplaceSource?: string;
   readonly pluginEnabled: boolean;
   readonly pluginInstalled: boolean;
+  readonly pluginVersion?: string;
   readonly registrationError?: string;
 }
 
@@ -248,9 +288,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
     Record<string, string | undefined>
   >;
   readonly #extensionModuleUrl: string;
+  readonly #integrationLocatorPath: string;
+  readonly #marketplaceName: string;
+  readonly #marketplaceSource: string;
   readonly #now: () => Date;
   readonly #paths: WindowsProvenLoopPaths;
   readonly #platform: NodeJS.Platform;
+  readonly #writeLocalMarketplaceAssets: boolean;
 
   public constructor(options: CopilotCliAdapterOptions) {
     this.#paths = resolveWindowsProvenLoopPaths(options.dataRoot);
@@ -264,12 +308,35 @@ implements AgentAdapter<CopilotEventMappingResult> {
     );
     this.#now = options.now ?? (() => new Date());
     this.#platform = options.platform ?? process.platform;
+    this.#marketplaceName =
+      options.marketplace?.name ??
+      DEFAULT_COPILOT_MARKETPLACE_NAME;
+    this.#marketplaceSource =
+      options.marketplace?.source ??
+      DEFAULT_COPILOT_MARKETPLACE_SOURCE;
+    this.#writeLocalMarketplaceAssets =
+      options.marketplace?.writeLocalAssets ?? false;
     this.#extensionModuleUrl =
       options.extensionModuleUrl ??
       new URL("./extension-entry.js", import.meta.url).href;
     this.#cliBinPath =
       options.cliBinPath ??
       fileURLToPath(new URL("../../cli/dist/bin.js", import.meta.url));
+    const localAppData =
+      options.environment === undefined
+        ? process.env.LOCALAPPDATA?.trim()
+        : options.environment.LOCALAPPDATA?.trim();
+    this.#integrationLocatorPath =
+      options.integrationLocatorPath ??
+      (
+        localAppData
+          ? resolve(
+              localAppData,
+              "ProvenLoopIntegration",
+              "runtime.json",
+            )
+          : join(this.#paths.integration, "runtime.json")
+      );
   }
 
   public async capabilities(): Promise<AdapterCapabilityMatrix> {
@@ -295,8 +362,19 @@ implements AgentAdapter<CopilotEventMappingResult> {
           persisted.enabled
             ? registration.registrationError ??
               (
-                !registration.pluginInstalled
+                !marketplaceSourceMatches(
+                  registration.marketplaceSource,
+                  this.#marketplaceSource,
+                )
+                  ? `The ProvenLoop marketplace source ${
+                      registration.marketplaceSource ?? "unknown"
+                    } does not match ${this.#marketplaceSource}.`
+                : !registration.pluginInstalled
                   ? "The ProvenLoop Copilot plugin is not installed."
+                  : registration.pluginVersion !== PROVENLOOP_VERSION
+                    ? `The ProvenLoop Copilot plugin version ${
+                        registration.pluginVersion ?? "unknown"
+                      } does not match runtime ${PROVENLOOP_VERSION}.`
                   : !registration.pluginEnabled
                     ? "The ProvenLoop Copilot plugin is disabled."
                     : undefined
@@ -347,14 +425,112 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public install(): Promise<AdapterOperationResult> {
-    return this.#withStateLease(() => this.#install());
+  public install(
+    options: AdapterInstallOptions = {},
+  ): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#install(options));
   }
 
-  async #install(): Promise<AdapterOperationResult> {
+  public upgrade(): Promise<AdapterOperationResult> {
+    return this.#withStateLease(() => this.#upgrade());
+  }
+
+  async #upgrade(): Promise<AdapterOperationResult> {
     await this.#initializeCoreStorage();
+    await this.#writeRuntimeLocator();
+    const version = await this.#detectCopilotVersion();
+    if (
+      version === undefined ||
+      getCopilotCaptureCapability(version) === undefined
+    ) {
+      return {
+        message:
+          version === undefined
+            ? "GitHub Copilot CLI is unavailable."
+            : `GitHub Copilot CLI ${version} is not supported.`,
+        status: "incompatible",
+      };
+    }
+    await this.#prepareMarketplaceSource();
+    const registration = await this.#requireRegistrationStatus();
+    if (
+      !registration.marketplaceRegistered ||
+      !registration.pluginInstalled
+    ) {
+      return this.#install();
+    }
+    if (
+      marketplaceSourceMatches(
+        registration.marketplaceSource,
+        this.#marketplaceSource,
+      )
+    ) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "marketplace",
+          "update",
+          this.#marketplaceName,
+        ],
+        "marketplace update",
+      );
+    }
+    if (registration.pluginInstalled) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "uninstall",
+          this.#pluginReference(),
+        ],
+        "plugin uninstall before upgrade",
+      );
+    }
+    await this.#runRequired(
+      [
+        "plugin",
+        "marketplace",
+        "remove",
+        this.#marketplaceName,
+      ],
+      "marketplace replacement before upgrade",
+    );
+    await this.#ensureMarketplaceRegistered();
+    await this.#runRequired(
+      [
+        "plugin",
+        "install",
+        this.#pluginReference(),
+      ],
+      "plugin installation after marketplace upgrade",
+    );
+    await this.#assertInstalledPluginVersion();
+    await this.#ensurePluginEnabled();
+    let state = await this.#readState();
+    state = stateWith(state, this.#now(), {
+      detectedCopilotVersion: version,
+      installed: true,
+      marketplaceRegistered: true,
+      pluginEnabled: true,
+      pluginInstalled: true,
+    });
+    await this.#writeState(state);
+    return {
+      message: "ProvenLoop Copilot integration upgraded.",
+      status: "changed",
+    };
+  }
+
+  async #install(
+    options: AdapterInstallOptions = {},
+  ): Promise<AdapterOperationResult> {
+    await this.#initializeCoreStorage();
+    await this.#writeRuntimeLocator();
     let state = await this.#readState();
     const stateWasInstalled = state.installed;
+    const collectionBefore = {
+      capture: state.capabilities.capture.enabled,
+      worker: state.capabilities.worker.enabled,
+    };
     const version = await this.#detectCopilotVersion();
     const capability =
       version === undefined
@@ -391,7 +567,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     await this.#writeState(state);
     const before = await this.#requireRegistrationStatus();
     try {
-      await this.#writePluginAssets();
+      await this.#prepareMarketplaceSource();
       const experimentalSetting = await ensureExperimentalSetting(
         this.#settingsPath(),
         state.experimentalSetting,
@@ -402,15 +578,25 @@ implements AgentAdapter<CopilotEventMappingResult> {
       await this.#writeState(state);
       await this.#ensureMarketplaceRegistered();
       await this.#ensurePluginInstalled();
+      await this.#assertInstalledPluginVersion();
       await this.#ensurePluginEnabled();
-      state = setPersistedCapability(
-        state,
-        "capture",
-        {
-          enabled: true,
-        },
-        this.#now(),
-      );
+      const requestedAutoCollect =
+        options.autoCollect ?? (stateWasInstalled ? undefined : true);
+      if (requestedAutoCollect !== undefined) {
+        for (const capability of [
+          "capture",
+          "worker",
+        ] as const) {
+          state = setPersistedCapability(
+            state,
+            capability,
+            {
+              enabled: requestedAutoCollect,
+            },
+            this.#now(),
+          );
+        }
+      }
       state = stateWith(state, this.#now(), {
         installed: true,
         marketplaceRegistered: true,
@@ -422,11 +608,22 @@ implements AgentAdapter<CopilotEventMappingResult> {
         !before.marketplaceRegistered ||
         !before.pluginInstalled ||
         !before.pluginEnabled ||
-        !stateWasInstalled;
+        !stateWasInstalled ||
+        collectionBefore.capture !==
+          state.capabilities.capture.enabled ||
+        collectionBefore.worker !==
+          state.capabilities.worker.enabled;
+      const autoCollectEnabled =
+        state.capabilities.capture.enabled &&
+        state.capabilities.worker.enabled;
       return {
         message: changed
-          ? "ProvenLoop Copilot integration installed."
-          : "ProvenLoop Copilot integration is already installed.",
+          ? autoCollectEnabled
+            ? "ProvenLoop Copilot integration installed with automatic collection enabled."
+            : "ProvenLoop Copilot integration installed with automatic collection disabled."
+          : autoCollectEnabled
+            ? "ProvenLoop Copilot integration is already installed with automatic collection enabled."
+            : "ProvenLoop Copilot integration is already installed with automatic collection disabled.",
         status: changed ? "changed" : "unchanged",
       };
     } catch (error) {
@@ -453,10 +650,25 @@ implements AgentAdapter<CopilotEventMappingResult> {
       installed:
         state.installed &&
         registration.marketplaceRegistered &&
-        registration.pluginInstalled,
+        marketplaceSourceMatches(
+          registration.marketplaceSource,
+          this.#marketplaceSource,
+        ) &&
+        registration.pluginInstalled &&
+        registration.pluginVersion === PROVENLOOP_VERSION,
       marketplaceRegistered: registration.marketplaceRegistered,
+      ...(registration.marketplaceSource === undefined
+        ? {}
+        : {
+            marketplaceSource: registration.marketplaceSource,
+          }),
       pluginEnabled: registration.pluginEnabled,
       pluginInstalled: registration.pluginInstalled,
+      ...(registration.pluginVersion === undefined
+        ? {}
+        : {
+            pluginVersion: registration.pluginVersion,
+          }),
       ...(registration.registrationError === undefined
         ? {}
         : {
@@ -526,9 +738,11 @@ implements AgentAdapter<CopilotEventMappingResult> {
           experimentalSetting,
         });
         await this.#writeState(state);
-        await this.#writePluginAssets();
+        await this.#writeRuntimeLocator();
+        await this.#prepareMarketplaceSource();
         await this.#ensureMarketplaceRegistered();
         await this.#ensurePluginInstalled();
+        await this.#assertInstalledPluginVersion();
         await this.#ensurePluginEnabled();
         state = stateWith(state, this.#now(), {
           installed: true,
@@ -559,6 +773,15 @@ implements AgentAdapter<CopilotEventMappingResult> {
       this.#now(),
     );
     await this.#writeState(state);
+    if (
+      !alreadyEnabled &&
+      (
+        capability === "retrieval" ||
+        capability === "correction_learning"
+      )
+    ) {
+      await this.#markProjectionDirty();
+    }
     return {
       message: alreadyEnabled
         ? `Capability ${capability} is already enabled.`
@@ -686,7 +909,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         [
           "plugin",
           "uninstall",
-          COPILOT_PLUGIN_REFERENCE,
+          this.#pluginReference(),
         ],
         "plugin uninstall",
       );
@@ -697,7 +920,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
           "plugin",
           "marketplace",
           "remove",
-          COPILOT_MARKETPLACE_NAME,
+          this.#marketplaceName,
         ],
         "marketplace removal",
       );
@@ -724,6 +947,12 @@ implements AgentAdapter<CopilotEventMappingResult> {
       pluginInstalled: false,
     });
     await this.#writeState(state);
+    if (options.purge) {
+      await new Promise<void>((resolveDelay) => {
+        setTimeout(resolveDelay, 1_200);
+      });
+    }
+    await this.#removeRuntimeLocator();
     await rm(this.#paths.integration, {
       force: true,
       recursive: true,
@@ -775,9 +1004,11 @@ implements AgentAdapter<CopilotEventMappingResult> {
       };
     }
     const before = await this.#requireRegistrationStatus();
-    await this.#writePluginAssets();
+    await this.#writeRuntimeLocator();
+    await this.#prepareMarketplaceSource();
     await this.#ensureMarketplaceRegistered();
     await this.#ensurePluginInstalled();
+    await this.#assertInstalledPluginVersion();
     await this.#ensurePluginEnabled();
     const state = stateWith(await this.#readState(), this.#now(), {
       detectedCopilotVersion: version,
@@ -927,7 +1158,9 @@ implements AgentAdapter<CopilotEventMappingResult> {
     };
   }
 
-  public async doctor(): Promise<AdapterHealth> {
+  public async doctor(
+    options: AdapterDoctorOptions = {},
+  ): Promise<AdapterHealth> {
     const checks: AdapterHealthCheck[] = [];
     checks.push(this.#nodeCheck());
     checks.push(this.#windowsCheck());
@@ -937,24 +1170,38 @@ implements AgentAdapter<CopilotEventMappingResult> {
     checks.push(await this.#workerCheck());
     const status = await this.status();
     checks.push(this.#copilotVersionCheck(status.capabilities));
-    checks.push({
-      id: "copilot.signin",
-      message:
-        "Copilot CLI has no non-interactive credential-status command; sign-in availability is unverified.",
-      status: "warn",
-    });
+    const provider = options.online === true
+      ? await this.#onlineProviderCheck(
+          options.onlineTimeoutMs ?? 15_000,
+        )
+      : {
+          check: {
+            id: "copilot.provider",
+            message:
+              "Provider availability is unverified; use doctor --online for an explicit bounded probe.",
+            status: "warn" as const,
+          },
+          status: "unverified" as const,
+        };
+    checks.push(provider.check);
     checks.push({
       id: "copilot.extension",
       message:
         status.registrationError ??
         (
-          status.pluginInstalled
-            ? "Copilot Extension plugin registration is present."
+          status.pluginInstalled &&
+          status.pluginVersion === PROVENLOOP_VERSION
+            ? "Copilot Extension plugin registration is present and version-matched."
+            : status.pluginInstalled
+              ? `Copilot Extension plugin version ${
+                  status.pluginVersion ?? "unknown"
+                } does not match runtime ${PROVENLOOP_VERSION}.`
             : "Copilot Extension plugin registration is missing."
         ),
       status:
         status.registrationError === undefined &&
-        status.pluginInstalled
+        status.pluginInstalled &&
+        status.pluginVersion === PROVENLOOP_VERSION
           ? "pass"
           : "fail",
     });
@@ -963,13 +1210,19 @@ implements AgentAdapter<CopilotEventMappingResult> {
       message:
         status.registrationError ??
         (
-          status.pluginInstalled
-            ? "Local MCP registration is present in the installed plugin."
+          status.pluginInstalled &&
+          status.pluginVersion === PROVENLOOP_VERSION
+            ? "Local MCP registration is present in the version-matched plugin."
+            : status.pluginInstalled
+              ? `Local MCP plugin version ${
+                  status.pluginVersion ?? "unknown"
+                } does not match runtime ${PROVENLOOP_VERSION}.`
             : "Local MCP registration is missing."
         ),
       status:
         status.registrationError === undefined &&
-        status.pluginInstalled
+        status.pluginInstalled &&
+        status.pluginVersion === PROVENLOOP_VERSION
           ? "pass"
           : "fail",
     });
@@ -994,7 +1247,93 @@ implements AgentAdapter<CopilotEventMappingResult> {
       adapter: "copilot-cli",
       checkedAt: this.#now().toISOString(),
       checks,
+      providerStatus: provider.status,
       status: healthStatus(checks),
+    };
+  }
+
+  async #onlineProviderCheck(
+    timeoutMs: number,
+  ): Promise<{
+    readonly check: AdapterHealthCheck;
+    readonly status:
+      | "available"
+      | "incompatible"
+      | "rate_limited"
+      | "signed_out"
+      | "unavailable";
+  }> {
+    const version = await this.#detectCopilotVersion();
+    if (
+      version === undefined ||
+      getCopilotCaptureCapability(version) === undefined
+    ) {
+      return {
+        check: {
+          id: "copilot.provider-online",
+          message:
+            version === undefined
+              ? "Copilot CLI is unavailable."
+              : `Copilot CLI ${version} is incompatible.`,
+          status: "warn",
+        },
+        status: version === undefined
+          ? "unavailable"
+          : "incompatible",
+      };
+    }
+    const result = await this.#commandRunner.run(
+      "copilot",
+      [
+        "--prompt",
+        "Reply with exactly PROVENLOOP_OK and no other text.",
+        "--silent",
+        "--no-custom-instructions",
+        "--disable-builtin-mcps",
+        "--available-tools=",
+        "--no-auto-update",
+        "--no-remote",
+        "--no-remote-export",
+      ],
+      {
+        environment: {
+          COPILOT_HOME: this.#copilotHome,
+          PROVENLOOP_INTERNAL: "1",
+        },
+        timeoutMs,
+      },
+    );
+    const output = `${result.stdout}\n${result.stderr}`.trim();
+    let status:
+      | "available"
+      | "rate_limited"
+      | "signed_out"
+      | "unavailable";
+    if (
+      result.exitCode === 0 &&
+      result.stdout.trim() === "PROVENLOOP_OK"
+    ) {
+      status = "available";
+    } else if (
+      /rate.?limit|quota|too many requests|exceeded/iu.test(output)
+    ) {
+      status = "rate_limited";
+    } else if (
+      /sign.?in|log.?in|authenticate|authentication|unauthorized/iu.test(
+        output,
+      )
+    ) {
+      status = "signed_out";
+    } else {
+      status = "unavailable";
+    }
+    return {
+      check: {
+        id: "copilot.provider-online",
+        message: `Bounded online provider probe classified ${status}.`,
+        status: status === "available" ? "pass" : "warn",
+      },
+      status,
     };
   }
 
@@ -1032,6 +1371,69 @@ implements AgentAdapter<CopilotEventMappingResult> {
   ): Promise<void> {
     await assertCopilotAdapterDataRoot(this.#paths);
     await writeCopilotAdapterState(this.#paths.adapterState, state);
+  }
+
+  async #writeRuntimeLocator(): Promise<void> {
+    const temporaryPath =
+      `${this.#integrationLocatorPath}.${randomUUID()}.tmp`;
+    await mkdir(
+      parsePath(this.#integrationLocatorPath).dir,
+      {
+        recursive: true,
+      },
+    );
+    try {
+      await writeFile(
+        temporaryPath,
+        `${JSON.stringify({
+          cliBinPath: this.#cliBinPath,
+          dataRoot: this.#paths.root,
+          extensionModuleUrl: this.#extensionModuleUrl,
+          nodeExecutable: process.execPath,
+          product: RUNTIME_LOCATOR_PRODUCT,
+          schemaVersion: 1,
+          version: PROVENLOOP_VERSION,
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      await rename(
+        temporaryPath,
+        this.#integrationLocatorPath,
+      );
+    } finally {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
+  }
+
+  async #removeRuntimeLocator(): Promise<void> {
+    try {
+      const parsed = JSON.parse(
+        await readFile(this.#integrationLocatorPath, "utf8"),
+      ) as unknown;
+      if (
+        isRecord(parsed) &&
+        parsed.product === RUNTIME_LOCATOR_PRODUCT &&
+        parsed.schemaVersion === 1 &&
+        parsed.dataRoot === this.#paths.root
+      ) {
+        await unlink(this.#integrationLocatorPath);
+      }
+    } catch (error) {
+      if (errnoCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  async #markProjectionDirty(): Promise<void> {
+    await writeFile(
+      this.#paths.projectionDirty,
+      `${JSON.stringify({
+        markedAt: this.#now().toISOString(),
+        schemaVersion: 1,
+      })}\n`,
+      "utf8",
+    );
   }
 
   async #initializeCoreStorage(): Promise<void> {
@@ -1117,8 +1519,10 @@ implements AgentAdapter<CopilotEventMappingResult> {
 
   async #registrationStatus(): Promise<{
     readonly marketplaceRegistered: boolean;
+    readonly marketplaceSource?: string;
     readonly pluginEnabled: boolean;
     readonly pluginInstalled: boolean;
+    readonly pluginVersion?: string;
     readonly registrationError?: string;
   }> {
     const [
@@ -1153,7 +1557,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     ].filter((error): error is string => error !== undefined);
     const marketplacePattern = new RegExp(
       `^\\s*[•◆]?\\s*${escapedPattern(
-        COPILOT_MARKETPLACE_NAME,
+        this.#marketplaceName,
       )}(?:\\s|\\(|$)`,
       "iu",
     );
@@ -1161,7 +1565,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       `^\\s*•?\\s*${escapedPattern(
         COPILOT_PLUGIN_NAME,
       )}@${escapedPattern(
-        COPILOT_MARKETPLACE_NAME,
+        this.#marketplaceName,
       )}(?:\\s|\\(|$)`,
       "iu",
     );
@@ -1169,17 +1573,31 @@ implements AgentAdapter<CopilotEventMappingResult> {
       marketplaces.stdout,
       "Registered marketplaces:",
     ).find((line) => marketplacePattern.test(line));
+    const marketplaceSource =
+      marketplaceLine?.match(/\([^:]+:\s*([^)]+)\)/u)?.[1]?.trim();
     const pluginLine = plugins.stdout
       .split(/\r?\n/u)
       .find((line) => pluginPattern.test(line));
     const pluginInstalled = pluginLine !== undefined;
+    const pluginVersion =
+      pluginLine?.match(/\(v([^)\s]+)\)/iu)?.[1];
     const pluginDisabled =
       pluginLine !== undefined &&
       /\bdisabled\b/iu.test(pluginLine);
     return {
       marketplaceRegistered: marketplaceLine !== undefined,
+      ...(marketplaceSource === undefined
+        ? {}
+        : {
+            marketplaceSource,
+          }),
       pluginEnabled: pluginInstalled && !pluginDisabled,
       pluginInstalled,
+      ...(pluginVersion === undefined
+        ? {}
+        : {
+            pluginVersion,
+          }),
       ...(errors.length === 0
         ? {}
         : {
@@ -1200,15 +1618,42 @@ implements AgentAdapter<CopilotEventMappingResult> {
 
   async #ensureMarketplaceRegistered(): Promise<void> {
     const status = await this.#requireRegistrationStatus();
-    if (status.marketplaceRegistered) {
+    if (
+      status.marketplaceRegistered &&
+      marketplaceSourceMatches(
+        status.marketplaceSource,
+        this.#marketplaceSource,
+      )
+    ) {
       return;
+    }
+    if (status.pluginInstalled) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "uninstall",
+          this.#pluginReference(),
+        ],
+        "plugin uninstall before marketplace replacement",
+      );
+    }
+    if (status.marketplaceRegistered) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "marketplace",
+          "remove",
+          this.#marketplaceName,
+        ],
+        "marketplace replacement",
+      );
     }
     await this.#runRequired(
       [
         "plugin",
         "marketplace",
         "add",
-        this.#marketplaceRoot(),
+        this.#marketplaceSource,
       ],
       "marketplace registration",
     );
@@ -1223,10 +1668,26 @@ implements AgentAdapter<CopilotEventMappingResult> {
       [
         "plugin",
         "install",
-        COPILOT_PLUGIN_REFERENCE,
+        this.#pluginReference(),
       ],
       "plugin installation",
     );
+  }
+
+  async #assertInstalledPluginVersion(): Promise<void> {
+    const status = await this.#requireRegistrationStatus();
+    if (!status.pluginInstalled) {
+      throw new Error(
+        "The ProvenLoop Copilot plugin is not installed.",
+      );
+    }
+    if (status.pluginVersion !== PROVENLOOP_VERSION) {
+      throw new Error(
+        `Installed ProvenLoop plugin version ${
+          status.pluginVersion ?? "unknown"
+        } does not match runtime ${PROVENLOOP_VERSION}.`,
+      );
+    }
   }
 
   async #ensurePluginEnabled(): Promise<void> {
@@ -1238,7 +1699,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       [
         "plugins",
         "enable",
-        COPILOT_PLUGIN_REFERENCE,
+        this.#pluginReference(),
         "--plugin",
       ],
       "plugin enable",
@@ -1254,7 +1715,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       [
         "plugins",
         "disable",
-        COPILOT_PLUGIN_REFERENCE,
+        this.#pluginReference(),
         "--plugin",
       ],
       "plugin disable",
@@ -1267,6 +1728,16 @@ implements AgentAdapter<CopilotEventMappingResult> {
 
   #settingsPath(): string {
     return join(this.#copilotHome, "settings.json");
+  }
+
+  #pluginReference(): string {
+    return `${COPILOT_PLUGIN_NAME}@${this.#marketplaceName}`;
+  }
+
+  async #prepareMarketplaceSource(): Promise<void> {
+    if (this.#writeLocalMarketplaceAssets) {
+      await this.#writePluginAssets();
+    }
   }
 
   async #writePluginAssets(): Promise<void> {
@@ -1291,10 +1762,10 @@ implements AgentAdapter<CopilotEventMappingResult> {
     ]);
     const marketplace = {
       metadata: {
-        description: "Local ProvenLoop integration marketplace.",
-        version: COPILOT_PLUGIN_VERSION,
+        description: "ProvenLoop integration marketplace.",
+        version: PROVENLOOP_VERSION,
       },
-      name: COPILOT_MARKETPLACE_NAME,
+      name: this.#marketplaceName,
       owner: {
         name: "ProvenLoop",
       },
@@ -1303,7 +1774,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
           description: "Local learning infrastructure for Copilot CLI.",
           name: COPILOT_PLUGIN_NAME,
           source: `./plugins/${COPILOT_PLUGIN_NAME}`,
-          version: COPILOT_PLUGIN_VERSION,
+          version: PROVENLOOP_VERSION,
         },
       ],
     };
@@ -1312,7 +1783,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       extensions: "extensions/",
       mcpServers: ".mcp.json",
       name: COPILOT_PLUGIN_NAME,
-      version: COPILOT_PLUGIN_VERSION,
+      version: PROVENLOOP_VERSION,
     };
     const mcp = {
       mcpServers: {

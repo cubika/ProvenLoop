@@ -104,6 +104,22 @@ npm run test:integration
 npm run build
 ```
 
+Build and smoke-test the self-contained Alpha package from its tarball:
+
+```powershell
+npm run package:verify
+```
+
+Create the publishable `@provenloop/cli` tarball:
+
+```powershell
+npm run package:pack
+```
+
+See [Alpha installation and operations](docs/alpha-installation.md) for the
+supported environment, installation, upgrade, Doctor, capability controls,
+acceptance evidence, uninstall, purge, and rollback procedures.
+
 Run a built-in evaluation fixture:
 
 ```powershell

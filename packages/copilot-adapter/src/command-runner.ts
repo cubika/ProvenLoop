@@ -11,6 +11,7 @@ export interface CommandRunOptions {
   readonly environment?: Readonly<
     Record<string, string | undefined>
   >;
+  readonly timeoutMs?: number;
 }
 
 export interface CommandRunner {
@@ -47,6 +48,14 @@ export class SpawnCommandRunner implements CommandRunner {
         shell: false,
         windowsHide: true,
       });
+      let timedOut = false;
+      const timeout =
+        options.timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              timedOut = true;
+              child.kill();
+            }, options.timeoutMs);
       child.stdout.on("data", (chunk: Buffer | string) => {
         stdout = appendBounded(stdout, chunk);
       });
@@ -54,6 +63,9 @@ export class SpawnCommandRunner implements CommandRunner {
         stderr = appendBounded(stderr, chunk);
       });
       child.once("error", (error) => {
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+        }
         resolve({
           exitCode: 127,
           stderr: error.message,
@@ -61,9 +73,14 @@ export class SpawnCommandRunner implements CommandRunner {
         });
       });
       child.once("close", (exitCode) => {
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+        }
         resolve({
-          exitCode: exitCode ?? 1,
-          stderr,
+          exitCode: timedOut ? 124 : exitCode ?? 1,
+          stderr: timedOut
+            ? "Copilot command timed out."
+            : stderr,
           stdout,
         });
       });

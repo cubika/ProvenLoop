@@ -56,6 +56,12 @@ export {
   UnsafeLedgerIdentifierError,
 } from "./ledger.js";
 export {
+  loadM0AcceptanceEvidence,
+  m0AcceptanceEvidenceSchema,
+  M0AcceptanceEvidenceInputError,
+  type M0AcceptanceEvidence,
+} from "./m0-acceptance-evidence.js";
+export {
   runM0ReleaseGate,
   verifyM0SuiteEvidence,
   type M0ReleaseGateCheck,

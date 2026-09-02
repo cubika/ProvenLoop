@@ -50,7 +50,10 @@ export type CopilotEventMappingResult =
   | {
       readonly status: "ignored";
       readonly eventType?: string;
-      readonly reason: "ephemeral" | "internal_session";
+      readonly reason:
+        | "capability_disabled"
+        | "ephemeral"
+        | "internal_session";
       readonly sourceEventId?: string;
     }
   | {

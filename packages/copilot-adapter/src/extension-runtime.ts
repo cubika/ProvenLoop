@@ -30,7 +30,9 @@ export interface CopilotExtensionCaptureOptions {
 export interface CopilotExtensionCaptureStatus {
   readonly callbackCount: number;
   readonly callbackDurationMaxMs: number;
+  readonly callbackDurationSamplesMs: readonly number[];
   readonly callbackDurationTotalMs: number;
+  readonly disabledEventsSkipped: number;
   readonly ignoredEvents: number;
   readonly internalEventsSkipped: number;
   readonly malformedEvents: number;
@@ -62,7 +64,10 @@ const asPendingGitContext = (data: unknown): boolean | undefined => {
 export class CopilotExtensionCapture {
   #callbackCount = 0;
   #callbackDurationMaxMs = 0;
+  readonly #callbackDurationSamplesMs: number[] = [];
   #callbackDurationTotalMs = 0;
+  #disabledEventsSkipped = 0;
+  #enabled = true;
   #ignoredEvents = 0;
   readonly #internalSession: boolean;
   #internalEventsSkipped = 0;
@@ -130,6 +135,13 @@ export class CopilotExtensionCapture {
   public handle(event: CopilotSessionEvent): CopilotEventMappingResult {
     const startedAt = performance.now();
     try {
+      if (!this.#enabled) {
+        this.#disabledEventsSkipped += 1;
+        return {
+          status: "ignored",
+          reason: "capability_disabled",
+        };
+      }
       if (this.#internalSession) {
         this.#internalEventsSkipped += 1;
         return {
@@ -184,6 +196,14 @@ export class CopilotExtensionCapture {
         this.#callbackDurationMaxMs,
         duration,
       );
+      if (this.#callbackDurationSamplesMs.length < 10_000) {
+        this.#callbackDurationSamplesMs.push(duration);
+      } else {
+        this.#callbackDurationSamplesMs[
+          (this.#callbackCount - 1) %
+            this.#callbackDurationSamplesMs.length
+        ] = duration;
+      }
     }
   }
 
@@ -193,6 +213,10 @@ export class CopilotExtensionCapture {
     if (commitEvent !== undefined) {
       this.#writer.submit(commitEvent);
     }
+  }
+
+  public setEnabled(enabled: boolean): void {
+    this.#enabled = enabled;
   }
 
   public refreshWorkspace(): void {
@@ -211,7 +235,11 @@ export class CopilotExtensionCapture {
     return {
       callbackCount: this.#callbackCount,
       callbackDurationMaxMs: this.#callbackDurationMaxMs,
+      callbackDurationSamplesMs: [
+        ...this.#callbackDurationSamplesMs,
+      ],
       callbackDurationTotalMs: this.#callbackDurationTotalMs,
+      disabledEventsSkipped: this.#disabledEventsSkipped,
       ignoredEvents: this.#ignoredEvents,
       internalEventsSkipped: this.#internalEventsSkipped,
       malformedEvents: this.#malformedEvents,

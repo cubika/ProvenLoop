@@ -51,8 +51,15 @@ afterEach(async () => {
 class FakeCommandRunner implements CommandRunner {
   public readonly calls: string[] = [];
   public marketplaceRegistered = false;
+  public marketplaceSource: string | undefined;
   public pluginEnabled = false;
   public pluginInstalled = false;
+  public pluginVersion = "0.1.0-alpha.0";
+  public providerResult: CommandResult = {
+    exitCode: 0,
+    stderr: "",
+    stdout: "PROVENLOOP_OK\n",
+  };
   public registrationProbeFailure = false;
   public version: string | undefined = "1.0.82-0";
   public gitRoot = "C:\\repo\\worktree";
@@ -69,17 +76,20 @@ class FakeCommandRunner implements CommandRunner {
     if (args.length === 1 && args[0] === "--version") {
       return Promise.resolve(
         this.version === undefined
-          ? {
-              exitCode: 127,
-              stderr: "copilot was not found",
-              stdout: "",
-            }
+          ?           {
+            exitCode: 127,
+            stderr: "copilot was not found",
+            stdout: "",
+          }
           : {
               exitCode: 0,
               stderr: "",
               stdout: `GitHub Copilot CLI ${this.version}.\n`,
             },
       );
+    }
+    if (args[0] === "--prompt") {
+      return Promise.resolve(this.providerResult);
     }
     if (
       args.join(" ") === "plugin marketplace list"
@@ -95,7 +105,8 @@ class FakeCommandRunner implements CommandRunner {
         exitCode: 0,
         stderr: "",
         stdout: this.marketplaceRegistered
-          ? "Registered marketplaces:\n  • provenloop-local\n"
+          ? "Registered marketplaces:\n  • provenloop-marketplace " +
+            `(GitHub: ${this.marketplaceSource ?? "unknown"})\n`
           : "Registered marketplaces:\n",
       });
     }
@@ -111,7 +122,7 @@ class FakeCommandRunner implements CommandRunner {
         exitCode: 0,
         stderr: "",
         stdout: this.pluginInstalled
-          ? `Live Plugins:\n  • provenloop@provenloop-local (v0.0.0) (${
+          ? `Live Plugins:\n  • provenloop@provenloop-marketplace (v${this.pluginVersion}) (${
               this.pluginEnabled ? "enabled" : "disabled"
             })\n`
           : "Live Plugins:\n",
@@ -123,20 +134,22 @@ class FakeCommandRunner implements CommandRunner {
       args[2] === "add"
     ) {
       this.marketplaceRegistered = true;
+      this.marketplaceSource = args[3];
       return Promise.resolve(this.#success());
     }
     if (
       args.join(" ") ===
-      "plugin marketplace remove provenloop-local"
+      "plugin marketplace remove provenloop-marketplace"
     ) {
       this.marketplaceRegistered = false;
+      this.marketplaceSource = undefined;
       this.pluginEnabled = false;
       this.pluginInstalled = false;
       return Promise.resolve(this.#success());
     }
     if (
       args.join(" ") ===
-      "plugin install provenloop@provenloop-local"
+      "plugin install provenloop@provenloop-marketplace"
     ) {
       this.pluginInstalled = true;
       this.pluginEnabled = true;
@@ -144,7 +157,7 @@ class FakeCommandRunner implements CommandRunner {
     }
     if (
       args.join(" ") ===
-      "plugin uninstall provenloop@provenloop-local"
+      "plugin uninstall provenloop@provenloop-marketplace"
     ) {
       this.pluginEnabled = false;
       this.pluginInstalled = false;
@@ -152,14 +165,22 @@ class FakeCommandRunner implements CommandRunner {
     }
     if (
       args.join(" ") ===
-      "plugins enable provenloop@provenloop-local --plugin"
+        "plugin marketplace update provenloop-marketplace" ||
+      args.join(" ") ===
+        "plugin update provenloop@provenloop-marketplace"
+    ) {
+      return Promise.resolve(this.#success());
+    }
+    if (
+      args.join(" ") ===
+      "plugins enable provenloop@provenloop-marketplace --plugin"
     ) {
       this.pluginEnabled = true;
       return Promise.resolve(this.#success());
     }
     if (
       args.join(" ") ===
-      "plugins disable provenloop@provenloop-local --plugin"
+      "plugins disable provenloop@provenloop-marketplace --plugin"
     ) {
       this.pluginEnabled = false;
       return Promise.resolve(this.#success());
@@ -224,6 +245,11 @@ describe("Copilot operational adapter", () => {
       "utf8",
     );
     const runner = new FakeCommandRunner();
+    const marketplaceRoot = join(
+      dataRoot,
+      "integration",
+      "copilot-marketplace",
+    );
     const adapter = new CopilotCliAdapter({
       cliBinPath: "C:\\tools\\provenloop\\bin.js",
       commandRunner: runner,
@@ -232,6 +258,11 @@ describe("Copilot operational adapter", () => {
       environment: {},
       extensionModuleUrl:
         "file:///C:/tools/provenloop/extension-entry.js",
+      marketplace: {
+        name: "provenloop-marketplace",
+        source: marketplaceRoot,
+        writeLocalAssets: true,
+      },
       platform: "win32",
     });
 
@@ -241,15 +272,19 @@ describe("Copilot operational adapter", () => {
     await expect(adapter.install()).resolves.toMatchObject({
       status: "unchanged",
     });
+    await expect(adapter.upgrade()).resolves.toMatchObject({
+      status: "changed",
+    });
+    expect(runner.calls).toContain(
+      "copilot plugin marketplace update provenloop-marketplace",
+    );
+    expect(runner.calls).toContain(
+      `copilot plugin marketplace add ${marketplaceRoot}`,
+    );
 
     const settings = await readFile(settingsPath, "utf8");
     expect(settings).toContain("// Preserve this user setting.");
     expect(settings).toContain('"experimental": true');
-    const marketplaceRoot = join(
-      dataRoot,
-      "integration",
-      "copilot-marketplace",
-    );
     const plugin = JSON.parse(
       await readFile(
         join(marketplaceRoot, "plugins", "provenloop", "plugin.json"),
@@ -300,10 +335,10 @@ describe("Copilot operational adapter", () => {
         expect.objectContaining({
           availability: "available",
           capability: "worker",
-          enabled: false,
+          enabled: true,
         }),
         expect.objectContaining({
-          availability: "unavailable",
+          availability: "available",
           capability: "retrieval",
           enabled: false,
         }),
@@ -323,6 +358,7 @@ describe("Copilot operational adapter", () => {
       environment: {},
       platform: "win32",
     });
+
     await adapter.install();
     const retainedPath = join(dataRoot, "data", "retained.txt");
     await writeFile(retainedPath, "retain", "utf8");
@@ -339,7 +375,7 @@ describe("Copilot operational adapter", () => {
     });
     expect(runner.pluginEnabled).toBe(true);
     await expect(adapter.enable("worker")).resolves.toMatchObject({
-      status: "changed",
+      status: "unchanged",
     });
     await expect(adapter.disable("worker")).resolves.toMatchObject({
       status: "changed",
@@ -391,6 +427,70 @@ describe("Copilot operational adapter", () => {
     await expect(access(dataRoot)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("supports installation with automatic collection disabled", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+
+    await expect(
+      adapter.install({
+        autoCollect: false,
+      }),
+    ).resolves.toMatchObject({
+      status: "changed",
+    });
+    expect(runner.calls).toContain(
+      "copilot plugin marketplace add " +
+        "cubika/ProvenLoop#v0.1.0-alpha.0",
+    );
+    const status = await adapter.status();
+    expect(status.pluginInstalled).toBe(true);
+    expect(
+      status.capabilities.capabilities.filter((capability) =>
+        [
+          "capture",
+          "worker",
+        ].includes(capability.capability),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        capability: "capture",
+        enabled: false,
+      }),
+      expect.objectContaining({
+        capability: "worker",
+        enabled: false,
+      }),
+    ]);
+    await expect(adapter.install()).resolves.toMatchObject({
+      status: "unchanged",
+    });
+    const repeated = await adapter.status();
+    expect(
+      repeated.capabilities.capabilities.filter((capability) =>
+        [
+          "capture",
+          "worker",
+        ].includes(capability.capability),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        capability: "capture",
+        enabled: false,
+      }),
+      expect.objectContaining({
+        capability: "worker",
+        enabled: false,
+      }),
+    ]);
   });
 
   it("serializes concurrent capability changes", async () => {
@@ -481,6 +581,7 @@ describe("Copilot operational adapter", () => {
       dataRoot,
       platform: "win32",
     });
+
     await adapter.install();
     const provider = new WindowsNamedPipeLeaseProvider(
       await resolveWindowsProvenLoopLeaseName(
@@ -521,6 +622,60 @@ describe("Copilot operational adapter", () => {
       status: "changed",
     });
     await expect(access(dataRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("stops active Extension capture before purging the data root", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const localAppData = join(root, "local-app-data");
+    const environment = {
+      LOCALAPPDATA: localAppData,
+      SESSION_ID: "active-purge-session",
+    };
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      environment,
+      platform: "win32",
+    });
+    await adapter.install();
+    await expect(
+      runInstalledCopilotExtension({
+        commandRunner: runner,
+        copilotHome: join(root, "copilot-home"),
+        dataRoot,
+        environment,
+        joinSession: async () => ({
+          on: () => undefined,
+        }),
+      }),
+    ).resolves.toEqual({
+      status: "started",
+    });
+
+    await adapter.uninstall({
+      purge: true,
+    });
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, 1_200);
+    });
+
+    await expect(access(dataRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      access(
+        join(
+          localAppData,
+          "ProvenLoopIntegration",
+          "runtime.json",
+        ),
+      ),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
@@ -671,6 +826,7 @@ describe("Copilot operational adapter", () => {
       environment: {},
       platform: "win32",
     });
+
     await adapter.install();
     runner.pluginEnabled = false;
 
@@ -687,6 +843,58 @@ describe("Copilot operational adapter", () => {
       status: "changed",
     });
     expect(runner.pluginEnabled).toBe(true);
+  });
+
+  it("fails closed when the marketplace plugin version differs from the runtime", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    runner.marketplaceRegistered = true;
+    runner.pluginEnabled = true;
+    runner.pluginInstalled = true;
+    runner.pluginVersion = "0.1.0-alpha.1";
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+
+    await expect(adapter.install()).rejects.toThrow(
+      "does not match runtime 0.1.0-alpha.0",
+    );
+    await expect(adapter.status()).resolves.toMatchObject({
+      installed: false,
+      pluginVersion: "0.1.0-alpha.1",
+    });
+  });
+
+  it("replaces a same-name marketplace from an untrusted source", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    runner.marketplaceRegistered = true;
+    runner.marketplaceSource = "attacker/untrusted";
+    runner.pluginEnabled = true;
+    runner.pluginInstalled = true;
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+
+    await expect(adapter.install()).resolves.toMatchObject({
+      status: "changed",
+    });
+    expect(runner.calls).toEqual(
+      expect.arrayContaining([
+        "copilot plugin uninstall provenloop@provenloop-marketplace",
+        "copilot plugin marketplace remove provenloop-marketplace",
+        "copilot plugin marketplace add " +
+          "cubika/ProvenLoop#v0.1.0-alpha.0",
+      ]),
+    );
   });
 
   it("does not report uninstall success when registration probes fail", async () => {
@@ -709,7 +917,7 @@ describe("Copilot operational adapter", () => {
       }),
     ).rejects.toThrow("Copilot registration probe failed");
     await expect(
-      access(join(dataRoot, "integration")),
+      access(dataRoot),
     ).resolves.toBeUndefined();
   });
 
@@ -847,10 +1055,81 @@ describe("Copilot operational adapter", () => {
           status: "pass",
         }),
         expect.objectContaining({
-          id: "copilot.signin",
+          id: "copilot.provider",
           status: "warn",
         }),
       ]),
     );
+  });
+
+  it("classifies opt-in online provider degradation without persisting output", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+    await adapter.install();
+
+    await expect(
+      adapter.doctor({
+        online: true,
+      }),
+    ).resolves.toMatchObject({
+      providerStatus: "available",
+    });
+
+    runner.providerResult = {
+      exitCode: 1,
+      stderr: "Authentication required. Sign in first.",
+      stdout: "",
+    };
+    const signedOut = await adapter.doctor({
+      online: true,
+    });
+    expect(signedOut).toMatchObject({
+      providerStatus: "signed_out",
+    });
+    expect(JSON.stringify(signedOut)).not.toContain(
+      "Authentication required",
+    );
+
+    runner.providerResult = {
+      exitCode: 1,
+      stderr: "Rate limit exceeded.",
+      stdout: "",
+    };
+    await expect(
+      adapter.doctor({
+        online: true,
+      }),
+    ).resolves.toMatchObject({
+      providerStatus: "rate_limited",
+    });
+
+    runner.providerResult = {
+      exitCode: 124,
+      stderr: "Copilot command timed out.",
+      stdout: "",
+    };
+    await expect(
+      adapter.doctor({
+        online: true,
+      }),
+    ).resolves.toMatchObject({
+      providerStatus: "unavailable",
+    });
+
+    runner.version = "1.0.81-0";
+    await expect(
+      adapter.doctor({
+        online: true,
+      }),
+    ).resolves.toMatchObject({
+      providerStatus: "incompatible",
+    });
   });
 });

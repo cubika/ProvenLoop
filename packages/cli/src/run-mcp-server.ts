@@ -15,8 +15,9 @@ import {
   assertCopilotAdapterDataRoot,
   readCopilotAdapterState,
 } from "@provenloop/copilot-adapter";
-import type {
-  Scope,
+import {
+  PROVENLOOP_VERSION,
+  type Scope,
 } from "@provenloop/contracts";
 import {
   sanitizeDiagnostic,
@@ -508,7 +509,7 @@ const toolError = (
 
 const MCP_WRITE_RESERVE_MS = 25;
 
-class LocalMcpToolHandlers implements McpToolHandlers {
+export class LocalMcpToolHandlers implements McpToolHandlers {
   readonly #adapter: CopilotCliAdapter;
   readonly #cwd: string;
   readonly #dataRoot: string;
@@ -941,7 +942,7 @@ export const runMcpServer = async (
                 protocolVersion: MCP_PROTOCOL_VERSION,
                 serverInfo: {
                   name: "provenloop",
-                  version: "0.0.0",
+                  version: PROVENLOOP_VERSION,
                 },
               });
             }

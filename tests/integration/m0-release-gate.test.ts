@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  type M0AcceptanceEvidence,
   runEvaluation,
   runM0ReleaseGate,
   verifyM0SuiteEvidence,
@@ -26,6 +27,106 @@ const createTemporaryDirectory = async (): Promise<string> => {
   temporaryDirectories.push(directory);
   return directory;
 };
+
+const digest = (suffix: string): string =>
+  `${"0".repeat(63)}${suffix}`;
+
+const passingEvidence = (
+  codeVersion: string,
+  runtimeDigest: string,
+): M0AcceptanceEvidence => ({
+  binding: {
+    captureRunIds: [
+      "capture-run-1",
+    ],
+    codeVersion,
+    copilotCliVersion: "1.0.82-0",
+    fixtureVersion: 1,
+    operatingSystemVersions: [
+      "Windows-10",
+      "Windows-11",
+    ],
+    pluginVersion: "0.1.0-alpha.0",
+    probeVersion: 1,
+    reportDigests: [
+      digest("1"),
+      digest("2"),
+      digest("3"),
+      digest("4"),
+      digest("5"),
+    ],
+    runtimeDigest,
+  },
+  capabilityIsolation: {
+    automatedTestPassed: true,
+    captureDisabledPassed: true,
+    correctionLearningDisabledPassed: true,
+    installedProbePassed: true,
+    reportDigest: digest("1"),
+    retrievalDisabledPassed: true,
+    status: "pass",
+    workerDisabledPassed: true,
+  },
+  capture: {
+    callbackWorkDurationP95Ms: 1,
+    duplicateCanonicalFactCount: 0,
+    foregroundAddedLatencyP95Ms: 10,
+    foregroundBlockingFailureCount: 0,
+    internalSessionPersistenceCount: 0,
+    missingRequiredEventCount: 0,
+    reportDigest: digest("2"),
+    seededSecretPersistenceCount: 0,
+    status: "pass",
+    windows10RepresentativeEventCount: 500,
+    windows11RepresentativeEventCount: 500,
+  },
+  doctor: {
+    onlineClassifications: [
+      "available",
+      "signed_out",
+      "rate_limited",
+      "incompatible",
+      "unavailable",
+    ],
+    passiveCredentialInspection: false,
+    passiveModelRequestCount: 0,
+    passiveStatus: "unverified",
+    reportDigest: digest("3"),
+    status: "pass",
+  },
+  evidenceVersion: 1,
+  marketplaceUpgrade: {
+    disableEnablePassed: true,
+    fromVersion: "0.0.0",
+    knowledgeDataPreserved: true,
+    queueDataPreserved: true,
+    repeatedInstallPassed: true,
+    reportDigest: digest("4"),
+    settingsRestoredExactly: true,
+    source: "cubika/ProvenLoop",
+    status: "pass",
+    toVersion: "0.1.0-alpha.0",
+    uninstallPreservedData: true,
+  },
+  observedGuardrails: {
+    crossRepositoryLeakageCount: 0,
+    deletionPropagationFailureCount: 0,
+    foregroundBlockingFailureCount: 0,
+    internalSessionPersistenceCount: 0,
+    secretPersistenceCount: 0,
+  },
+  providerDegradation: {
+    backlogDurable: true,
+    boundedRetry: true,
+    foregroundUsable: true,
+    incompatible: "pass",
+    rateLimited: "pass",
+    reportDigest: digest("5"),
+    signedOut: "pass",
+    status: "pass",
+    unavailable: "pass",
+  },
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -104,6 +205,7 @@ describe("M0 aggregate release gate", () => {
       outputRoot,
       runId: "m0-stable-run",
     });
+
     const original = await readFile(
       join(first.runDirectory, "m0-report.json"),
       "utf8",
@@ -124,6 +226,166 @@ describe("M0 aggregate release gate", () => {
         "utf8",
       ),
     ).toBe(original);
+  });
+
+  it("passes when version-bound acceptance evidence meets every threshold", async () => {
+    const outputRoot = await createTemporaryDirectory();
+    const baseline = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      outputRoot,
+      runId: "m0-evidence-baseline",
+    });
+    const evidencePath = join(outputRoot, "m0-evidence.json");
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify(
+        passingEvidence(
+          baseline.report.codeVersion,
+          baseline.report.runtimeDigest,
+        ),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const result = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      evidencePath,
+      outputRoot,
+      runId: "m0-evidence-pass",
+    });
+
+    expect(result.report).toMatchObject({
+      exitCode: 0,
+      status: "pass",
+    });
+    expect(
+      result.report.checks.every((check) => check.status === "pass"),
+    ).toBe(true);
+  });
+
+  it("uses invalid-input exit code 2 for mismatched evidence bindings", async () => {
+    const outputRoot = await createTemporaryDirectory();
+    const baseline = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      outputRoot,
+      runId: "m0-mismatch-baseline",
+    });
+
+    const evidencePath = join(outputRoot, "m0-mismatch.json");
+    await writeFile(
+      evidencePath,
+      `${JSON.stringify(
+        passingEvidence(
+          "another-code-version",
+          baseline.report.runtimeDigest,
+        ),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const result = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      evidencePath,
+      outputRoot,
+      runId: "m0-mismatch",
+    });
+
+    expect(result.report).toMatchObject({
+      exitCode: 2,
+      status: "fail",
+    });
+    expect(result.report.checks[0]).toMatchObject({
+      checkId: "m0-input",
+    });
+  });
+
+  it("accepts PowerShell 5.1 BOM-prefixed acceptance evidence", async () => {
+    const outputRoot = await createTemporaryDirectory();
+    const baseline = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      outputRoot,
+      runId: "m0-bom-baseline",
+    });
+    const evidencePath = join(outputRoot, "m0-bom.json");
+    await writeFile(
+      evidencePath,
+      `\uFEFF${JSON.stringify(
+        passingEvidence(
+          baseline.report.codeVersion,
+          baseline.report.runtimeDigest,
+        ),
+      )}\n`,
+      "utf8",
+    );
+
+    const result = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      evidencePath,
+      outputRoot,
+      runId: "m0-bom-pass",
+    });
+
+    expect(result.report).toMatchObject({
+      exitCode: 0,
+      status: "pass",
+    });
+  });
+
+  it("rejects incomplete and secret-bearing acceptance evidence", async () => {
+    const outputRoot = await createTemporaryDirectory();
+    const incompletePath = join(outputRoot, "incomplete.json");
+    await writeFile(incompletePath, "{}\n", "utf8");
+
+    const incomplete = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      evidencePath: incompletePath,
+      outputRoot,
+      runId: "m0-incomplete",
+    });
+    expect(incomplete.report.exitCode).toBe(2);
+
+    const baseline = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      outputRoot,
+      runId: "m0-secret-baseline",
+    });
+    const secret = "ghp_1234567890abcdefghijklmnopqrst";
+    const secretPath = join(outputRoot, "secret.json");
+    await writeFile(
+      secretPath,
+      `${JSON.stringify({
+        ...passingEvidence(
+          baseline.report.codeVersion,
+          baseline.report.runtimeDigest,
+        ),
+        binding: {
+          ...passingEvidence(
+            baseline.report.codeVersion,
+            baseline.report.runtimeDigest,
+          ).binding,
+          copilotCliVersion: secret,
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const secretResult = await runM0ReleaseGate({
+      codeVersion: "test-code-version",
+      evidencePath: secretPath,
+      outputRoot,
+      runId: "m0-secret",
+    });
+    expect(secretResult.report.exitCode).toBe(2);
+    expect(
+      await readFile(
+        join(secretResult.runDirectory, "m0-report.json"),
+        "utf8",
+      ),
+    ).not.toContain(secret);
   });
 
   it("retains coherent failure reports when the Episode dataset is unavailable", async () => {

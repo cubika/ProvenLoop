@@ -12,9 +12,11 @@ export {
   type AdapterCapabilityMatrix,
   type AdapterCapabilityState,
   type AdapterCompatibility,
+  type AdapterDoctorOptions,
   type AdapterHealth,
   type AdapterHealthCheck,
   type AdapterHealthCheckStatus,
+  type AdapterInstallOptions,
   type AdapterOperationResult,
   type AdapterStatus,
   type AgentAdapter,
@@ -149,6 +151,9 @@ export {
   type SupportedEventType,
   type SupportedRawEvent,
 } from "./raw-event.js";
+export {
+  PROVENLOOP_VERSION,
+} from "./release.js";
 export {
   CURRENT_SCHEMA_VERSIONS,
   schemaNameSchema,

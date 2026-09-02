@@ -127,6 +127,26 @@ export const runCaptureWorkerOnce = async (
   try {
     await queue.initialize();
     store = new CanonicalSqliteStore(paths.database);
+    let projectionMarked = await access(
+      paths.projectionDirty,
+    ).then(
+      () => true,
+      () => false,
+    );
+    const markProjectionDirty = async (): Promise<void> => {
+      if (projectionMarked) {
+        return;
+      }
+      await writeFile(
+        paths.projectionDirty,
+        `${JSON.stringify({
+          markedAt: now().toISOString(),
+          schemaVersion: 1,
+        })}\n`,
+        "utf8",
+      );
+      projectionMarked = true;
+    };
     const result = await new CaptureWorker({
       admission: async () => {
         const currentCpuAt = process.hrtime.bigint();
@@ -174,6 +194,7 @@ export const runCaptureWorkerOnce = async (
           release: async () => undefined,
         }),
       },
+      onCanonicalMutationPending: markProjectionDirty,
       queue,
       store,
       workerId,
@@ -185,11 +206,14 @@ export const runCaptureWorkerOnce = async (
             now(),
           )
         : undefined;
+    const projectionRequired =
+      result.status === "completed" &&
+      (result.stored > 0 || projectionMarked);
     let correctionCaptureIssueCount: number | undefined;
     let correctionCaptureIssues: readonly string[] | undefined;
     let correctionProjectionError: string | undefined;
     let knowledgeLifecycleProjectionError: string | undefined;
-    if (result.status === "completed") {
+    if (projectionRequired) {
       new WorkEpisodeProjector({
         store,
       }).rebuild();
@@ -230,7 +254,7 @@ export const runCaptureWorkerOnce = async (
     }
     let knowledgeProjectionError: string | undefined;
     if (
-      result.status === "completed" &&
+      projectionRequired &&
       adapterState?.capabilities.retrieval.enabled === true
     ) {
       try {
@@ -264,6 +288,24 @@ export const runCaptureWorkerOnce = async (
         await knowledgeBackend?.closeAsync();
         knowledgeBackend = undefined;
       }
+    }
+    if (
+      projectionRequired &&
+      correctionProjectionError === undefined &&
+      knowledgeLifecycleProjectionError === undefined &&
+      knowledgeProjectionError === undefined
+    ) {
+      await unlink(paths.projectionDirty).catch((error: unknown) => {
+        if (
+          !(
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ENOENT"
+          )
+        ) {
+          throw error;
+        }
+      });
     }
     store.close();
     store = undefined;

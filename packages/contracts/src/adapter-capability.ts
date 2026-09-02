@@ -90,7 +90,23 @@ export interface AdapterHealth {
   readonly adapter: string;
   readonly checkedAt: string;
   readonly checks: readonly AdapterHealthCheck[];
+  readonly providerStatus?:
+    | "available"
+    | "incompatible"
+    | "rate_limited"
+    | "signed_out"
+    | "unavailable"
+    | "unverified";
   readonly status: "degraded" | "healthy" | "unhealthy";
+}
+
+export interface AdapterDoctorOptions {
+  readonly online?: boolean;
+  readonly onlineTimeoutMs?: number;
+}
+
+export interface AdapterInstallOptions {
+  readonly autoCollect?: boolean;
 }
 
 export interface AdapterOperationResult {
@@ -103,8 +119,10 @@ export interface AdapterStatus {
   readonly dataRoot: string;
   readonly installed: boolean;
   readonly marketplaceRegistered: boolean;
+  readonly marketplaceSource?: string;
   readonly pluginEnabled: boolean;
   readonly pluginInstalled: boolean;
+  readonly pluginVersion?: string;
   readonly registrationError?: string;
 }
 
@@ -134,11 +152,11 @@ export interface AgentAdapter<TNormalizedEventResult = unknown> {
   disable(
     capability: ProvenLoopCapability,
   ): Promise<AdapterOperationResult>;
-  doctor(): Promise<AdapterHealth>;
+  doctor(options?: AdapterDoctorOptions): Promise<AdapterHealth>;
   enable(
     capability: ProvenLoopCapability,
   ): Promise<AdapterOperationResult>;
-  install(): Promise<AdapterOperationResult>;
+  install(options?: AdapterInstallOptions): Promise<AdapterOperationResult>;
   normalizeEvent(
     input: unknown,
     context: RuntimeContext,
@@ -152,4 +170,5 @@ export interface AgentAdapter<TNormalizedEventResult = unknown> {
       readonly purge: boolean;
     },
   ): Promise<AdapterOperationResult>;
+  upgrade(): Promise<AdapterOperationResult>;
 }

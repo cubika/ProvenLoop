@@ -14,6 +14,7 @@ export interface WindowsProvenLoopPaths {
   readonly internalSessions: string;
   readonly knowledgeDatabase: string;
   readonly logs: string;
+  readonly projectionDirty: string;
   readonly queue: string;
   readonly root: string;
   readonly rootMarker: string;
@@ -61,6 +62,7 @@ export const resolveWindowsProvenLoopPaths = (
       "knowledge.db",
     ),
     logs: resolve(resolvedRoot, "logs"),
+    projectionDirty: resolve(data, "projection-dirty.json"),
     queue: resolve(resolvedRoot, "queue"),
     root: resolvedRoot,
     rootMarker: resolve(resolvedRoot, ".provenloop-root.json"),

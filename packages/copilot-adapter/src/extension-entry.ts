@@ -1,4 +1,11 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  appendFile,
+  mkdir,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import {
   dirname,
   join,
@@ -56,13 +63,37 @@ const appendDiagnostic = async (
   );
 };
 
+const writeCaptureMetrics = async (
+  path: string,
+  value: unknown,
+): Promise<void> => {
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  await mkdir(dirname(path), {
+    recursive: true,
+  });
+  try {
+    await writeFile(
+      temporaryPath,
+      `${JSON.stringify(value)}\n`,
+      "utf8",
+    );
+    await rename(temporaryPath, path);
+  } finally {
+    await unlink(temporaryPath).catch(() => undefined);
+  }
+};
+
 export const runInstalledCopilotExtension = async (
   options: InstalledCopilotExtensionOptions,
 ): Promise<InstalledCopilotExtensionResult> => {
   const now = options.now ?? (() => new Date());
   const environment = options.environment ?? process.env;
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
+  let runtimeActive = true;
   const diagnostic = (message: string): void => {
+    if (!runtimeActive) {
+      return;
+    }
     void appendDiagnostic(
       join(paths.logs, "extension.jsonl"),
       message,
@@ -124,7 +155,7 @@ export const runInstalledCopilotExtension = async (
     }
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
-    await startCopilotExtensionCapture({
+    const capture = await startCopilotExtensionCapture({
       adapterVersion,
       buffer: {
         maxBytes: 1024 * 1024,
@@ -209,6 +240,83 @@ export const runInstalledCopilotExtension = async (
             }),
       },
     });
+    const sessionDigest = createHash("sha256")
+      .update(sessionId)
+      .digest("hex")
+      .slice(0, 24);
+    const metricsPath = join(
+      paths.evaluation,
+      "capture-metrics",
+      `${sessionDigest}.json`,
+    );
+    let metricsFlushRunning = false;
+    const flushMetrics = async (): Promise<void> => {
+      if (metricsFlushRunning) {
+        return;
+      }
+      metricsFlushRunning = true;
+      let latest: Awaited<
+        ReturnType<typeof readCopilotAdapterState>
+      >;
+      try {
+        latest = await readCopilotAdapterState(
+          paths.adapterState,
+          now(),
+        );
+      } catch (error) {
+        if (
+          !(
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ENOENT"
+          )
+        ) {
+          diagnostic(
+            `Capture capability refresh failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        runtimeActive = false;
+        capture.setEnabled(false);
+        clearInterval(metricsTimer);
+        await capture.shutdown().catch(() => false);
+        metricsFlushRunning = false;
+        return;
+      }
+      if (!latest.capabilities.capture.enabled) {
+        runtimeActive = false;
+        capture.setEnabled(false);
+        clearInterval(metricsTimer);
+        await capture.shutdown().catch(() => false);
+        metricsFlushRunning = false;
+        return;
+      }
+      capture.setEnabled(true);
+      try {
+        await writeCaptureMetrics(metricsPath, {
+          schemaVersion: 1,
+          sessionIdDigest: sessionDigest,
+          status: capture.status(),
+          timestamp: now().toISOString(),
+        });
+      } catch (error) {
+        if (runtimeActive) {
+          diagnostic(
+            `Capture metrics write failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      } finally {
+        metricsFlushRunning = false;
+      }
+    };
+    const metricsTimer = setInterval(() => {
+      void flushMetrics();
+    }, 1_000);
+    metricsTimer.unref();
+    void flushMetrics();
     return {
       status: "started",
     };

@@ -6,13 +6,18 @@ import { spawnSync } from "node:child_process";
 import {
   mkdir,
   readFile,
+  rename,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import {
+  isAbsolute,
   join,
   relative,
   resolve,
+  sep,
 } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   evidenceLedgerEntrySchema,
@@ -23,6 +28,12 @@ import {
   loadEpisodeAssociationDataset,
   type EpisodeAssociationEvaluationReport,
 } from "./episode-association-evaluation.js";
+import {
+  loadM0AcceptanceEvidence,
+  m0AcceptanceEvidenceSchema,
+  M0AcceptanceEvidenceInputError,
+  type M0AcceptanceEvidence,
+} from "./m0-acceptance-evidence.js";
 import { runEvaluation } from "./runner.js";
 import {
   containsKnownSecret,
@@ -65,22 +76,26 @@ export interface M0SuiteResult {
 }
 
 export interface M0ReleaseReport {
+  readonly acceptanceEvidence?: M0AcceptanceEvidence;
   readonly checks: readonly M0ReleaseGateCheck[];
   readonly codeVersion: string;
   readonly completedAt: string;
   readonly episodeAssociation?: EpisodeAssociationEvaluationReport;
-  readonly exitCode: 0 | 1 | 3;
+  readonly exitCode: 0 | 1 | 2 | 3;
   readonly limitations: readonly string[];
   readonly reportVersion: 1;
   readonly runId: string;
+  readonly runtimeDigest: string;
   readonly startedAt: string;
   readonly status: M0ReleaseGateStatus;
   readonly suites: readonly M0SuiteResult[];
 }
 
 export interface RunM0ReleaseGateOptions {
+  readonly acceptanceEvidence?: M0AcceptanceEvidence;
   readonly codeVersion?: string;
   readonly cwd?: string;
+  readonly evidencePath?: string;
   readonly episodeDatasetPath?: string;
   readonly now?: () => Date;
   readonly outputRoot: string;
@@ -97,6 +112,7 @@ export interface RunM0ReleaseGateResult {
 
 const m0ReleaseReportSchema = z
   .object({
+    acceptanceEvidence: m0AcceptanceEvidenceSchema.optional(),
     checks: z.array(
       z
         .object({
@@ -118,11 +134,15 @@ const m0ReleaseReportSchema = z
     exitCode: z.union([
       z.literal(0),
       z.literal(1),
+      z.literal(2),
       z.literal(3),
     ]),
     limitations: z.array(z.string()),
     reportVersion: z.literal(1),
     runId: z.string().min(1),
+    runtimeDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u),
     startedAt: z.string().datetime({
       offset: true,
     }),
@@ -377,6 +397,7 @@ const renderM0ReleaseReport = (
 |---|---|
 | Run ID | \`${report.runId}\` |
 | Code version | \`${report.codeVersion}\` |
+| Runtime digest | \`${report.runtimeDigest}\` |
 | Status | **${report.status.toUpperCase()}** |
 | Exit code | ${report.exitCode} |
 | Started | ${report.startedAt} |
@@ -404,7 +425,7 @@ ${report.limitations.map((item) => `- ${item}`).join("\n")}
 `;
 };
 
-const knownBlockedChecks = (): readonly M0ReleaseGateCheck[] => [
+const missingEvidenceChecks = (): readonly M0ReleaseGateCheck[] => [
   {
     checkId: "capture-latency-windows",
     message:
@@ -426,16 +447,173 @@ const knownBlockedChecks = (): readonly M0ReleaseGateCheck[] => [
   {
     checkId: "doctor-signin",
     message:
-      "Copilot CLI exposes no non-interactive sign-in status probe.",
+      "Online Doctor classification evidence has not been supplied.",
     status: "blocked",
   },
   {
     checkId: "capability-isolation",
     message:
-      "The retrieval operational switch remains unavailable.",
+      "Installed capability-isolation evidence has not been supplied.",
+    status: "blocked",
+  },
+  {
+    checkId: "observed-guardrails",
+    message:
+      "Observed privacy, isolation, and foreground safety evidence has not been supplied.",
     status: "blocked",
   },
 ];
+
+const evidenceReportDigests = (
+  evidence: M0AcceptanceEvidence,
+): readonly string[] => [
+  evidence.capabilityIsolation.reportDigest,
+  evidence.capture.reportDigest,
+  evidence.doctor.reportDigest,
+  evidence.marketplaceUpgrade.reportDigest,
+  evidence.providerDegradation.reportDigest,
+];
+
+const validateEvidenceBinding = (
+  evidence: M0AcceptanceEvidence,
+  codeVersion: string,
+  runtimeDigest: string,
+): void => {
+  if (evidence.binding.codeVersion !== codeVersion) {
+    throw new M0AcceptanceEvidenceInputError(
+      "M0 acceptance evidence code version does not match the evaluated code.",
+    );
+  }
+  if (evidence.binding.runtimeDigest !== runtimeDigest) {
+    throw new M0AcceptanceEvidenceInputError(
+      "M0 acceptance evidence runtime digest does not match the evaluated runtime.",
+    );
+  }
+  const retained = new Set(evidence.binding.reportDigests);
+  if (
+    evidenceReportDigests(evidence).some(
+      (digest) => !retained.has(digest),
+    )
+  ) {
+    throw new M0AcceptanceEvidenceInputError(
+      "M0 acceptance evidence references an unretained report digest.",
+    );
+  }
+};
+
+const acceptanceEvidenceChecks = (
+  evidence: M0AcceptanceEvidence | undefined,
+): readonly M0ReleaseGateCheck[] => {
+  if (evidence === undefined) {
+    return missingEvidenceChecks();
+  }
+  const capturePass =
+    evidence.capture.status === "pass" &&
+    evidence.binding.operatingSystemVersions.some((version) =>
+      /windows[-_. ]?10/iu.test(version),
+    ) &&
+    evidence.binding.operatingSystemVersions.some((version) =>
+      /windows[-_. ]?11/iu.test(version),
+    ) &&
+    evidence.capture.foregroundAddedLatencyP95Ms <= 10 &&
+    evidence.capture.callbackWorkDurationP95Ms <= 1 &&
+    evidence.capture.missingRequiredEventCount === 0 &&
+    evidence.capture.duplicateCanonicalFactCount === 0 &&
+    evidence.capture.seededSecretPersistenceCount === 0 &&
+    evidence.capture.internalSessionPersistenceCount === 0 &&
+    evidence.capture.foregroundBlockingFailureCount === 0 &&
+    evidence.capture.windows10RepresentativeEventCount >= 500 &&
+    evidence.capture.windows11RepresentativeEventCount >= 500;
+  const providerPass =
+    evidence.providerDegradation.status === "pass" &&
+    evidence.providerDegradation.signedOut === "pass" &&
+    evidence.providerDegradation.rateLimited === "pass" &&
+    evidence.providerDegradation.unavailable === "pass" &&
+    evidence.providerDegradation.incompatible === "pass" &&
+    evidence.providerDegradation.backlogDurable &&
+    evidence.providerDegradation.boundedRetry &&
+    evidence.providerDegradation.foregroundUsable;
+  const marketplacePass =
+    evidence.marketplaceUpgrade.status === "pass" &&
+    evidence.marketplaceUpgrade.disableEnablePassed &&
+    evidence.marketplaceUpgrade.repeatedInstallPassed &&
+    evidence.marketplaceUpgrade.knowledgeDataPreserved &&
+    evidence.marketplaceUpgrade.queueDataPreserved &&
+    evidence.marketplaceUpgrade.uninstallPreservedData &&
+    evidence.marketplaceUpgrade.settingsRestoredExactly &&
+    evidence.marketplaceUpgrade.fromVersion !==
+      evidence.marketplaceUpgrade.toVersion;
+  const requiredDoctorClassifications = [
+    "incompatible",
+    "rate_limited",
+    "signed_out",
+    "unavailable",
+  ] as const;
+  const doctorPass =
+    evidence.doctor.status === "pass" &&
+    requiredDoctorClassifications.every((classification) =>
+      evidence.doctor.onlineClassifications.includes(classification),
+    );
+  const isolationPass =
+    evidence.capabilityIsolation.status === "pass" &&
+    evidence.capabilityIsolation.automatedTestPassed &&
+    evidence.capabilityIsolation.installedProbePassed &&
+    evidence.capabilityIsolation.retrievalDisabledPassed &&
+    evidence.capabilityIsolation.captureDisabledPassed &&
+    evidence.capabilityIsolation.workerDisabledPassed &&
+    evidence.capabilityIsolation.correctionLearningDisabledPassed;
+  const guardrails = evidence.observedGuardrails;
+  const guardrailsPass =
+    guardrails.secretPersistenceCount === 0 &&
+    guardrails.internalSessionPersistenceCount === 0 &&
+    guardrails.foregroundBlockingFailureCount === 0 &&
+    guardrails.crossRepositoryLeakageCount === 0 &&
+    guardrails.deletionPropagationFailureCount === 0;
+  return [
+    {
+      checkId: "capture-latency-windows",
+      message: capturePass
+        ? "Windows capture correctness, privacy, and latency thresholds passed."
+        : "Windows capture evidence failed one or more hard thresholds.",
+      status: capturePass ? "pass" : "fail",
+    },
+    {
+      checkId: "provider-degradation",
+      message: providerPass
+        ? "Provider degradation scenarios preserved backlog and foreground usability."
+        : "Provider degradation evidence is incomplete or failed.",
+      status: providerPass ? "pass" : "fail",
+    },
+    {
+      checkId: "remote-marketplace-upgrade",
+      message: marketplacePass
+        ? "Two-version remote marketplace upgrade and lifecycle checks passed."
+        : "Remote marketplace upgrade evidence is incomplete or failed.",
+      status: marketplacePass ? "pass" : "fail",
+    },
+    {
+      checkId: "doctor-signin",
+      message: doctorPass
+        ? "Passive and online Doctor behavior passed all required classifications."
+        : "Doctor evidence is incomplete or failed.",
+      status: doctorPass ? "pass" : "fail",
+    },
+    {
+      checkId: "capability-isolation",
+      message: isolationPass
+        ? "Automated and installed capability-isolation matrices passed."
+        : "Capability-isolation evidence is incomplete or failed.",
+      status: isolationPass ? "pass" : "fail",
+    },
+    {
+      checkId: "observed-guardrails",
+      message: guardrailsPass
+        ? "Observed privacy, scope, deletion, and foreground guardrails remained at zero failures."
+        : "One or more observed guardrail counts are non-zero.",
+      status: guardrailsPass ? "pass" : "fail",
+    },
+  ];
+};
 
 const safeRunIdPattern =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
@@ -448,6 +626,27 @@ const validateRunId = (runId: string): string => {
     throw new Error("M0 runId must be a safe non-secret path segment.");
   }
   return runId;
+};
+
+const assertPathAvailable = async (path: string): Promise<void> => {
+  try {
+    await stat(path);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return;
+    }
+    throw error;
+  }
+  const error = new Error(`M0 release run already exists: ${path}`);
+  Object.assign(error, {
+    code: "EEXIST",
+    path,
+  });
+  throw error;
 };
 
 const gitOutput = (
@@ -470,6 +669,74 @@ const gitOutput = (
     );
   }
   return result.stdout;
+};
+
+const validateArtifactLocation = (
+  path: string | undefined,
+  cwd: string,
+  label: string,
+): void => {
+  if (path === undefined) {
+    return;
+  }
+  const repositoryProbe = spawnSync(
+    "git",
+    [
+      "rev-parse",
+      "--show-toplevel",
+    ],
+    {
+      cwd,
+      encoding: "utf8",
+      windowsHide: true,
+    },
+  );
+  if (repositoryProbe.status !== 0) {
+    return;
+  }
+  const repositoryRoot = repositoryProbe.stdout.trim();
+  const relativePath = relative(repositoryRoot, path);
+  const insideRepository =
+    relativePath === "" ||
+    (
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath)
+    );
+  if (!insideRepository) {
+    return;
+  }
+  const ignored = spawnSync(
+    "git",
+    [
+      "check-ignore",
+      "--quiet",
+      "--",
+      relativePath,
+    ],
+    {
+      cwd: repositoryRoot,
+      windowsHide: true,
+    },
+  );
+  if (ignored.status !== 0) {
+    throw new M0AcceptanceEvidenceInputError(
+      `${label} must be outside the repository or ignored by Git.`,
+    );
+  }
+};
+
+const runtimeModulePath = fileURLToPath(import.meta.url);
+
+const resolveRuntimeDigest = async (): Promise<string> => {
+  if (!runtimeModulePath.includes(`${sep}dist${sep}`)) {
+    return createHash("sha256")
+      .update("provenloop-source-typescript-v1", "utf8")
+      .digest("hex");
+  }
+  return createHash("sha256")
+    .update(await readFile(runtimeModulePath))
+    .digest("hex");
 };
 
 const resolveCodeVersion = async (
@@ -604,6 +871,20 @@ export const runM0ReleaseGate = async (
   );
   const cwd = resolve(options.cwd ?? process.cwd());
   const outputRoot = resolve(options.outputRoot);
+  const evidencePath =
+    options.evidencePath === undefined
+      ? undefined
+      : resolve(options.evidencePath);
+  validateArtifactLocation(
+    outputRoot,
+    cwd,
+    "M0 output directory",
+  );
+  validateArtifactLocation(
+    evidencePath,
+    cwd,
+    "M0 acceptance evidence",
+  );
   await mkdir(outputRoot, {
     recursive: true,
   });
@@ -614,15 +895,61 @@ export const runM0ReleaseGate = async (
   ) {
     throw new Error("M0 run directory escaped the output root.");
   }
-  await mkdir(runDirectory);
-  const suiteRoot = join(runDirectory, "suites");
+  const stagingDirectory = resolve(
+    outputRoot,
+    `.${runId}.staging`,
+  );
+  await Promise.all([
+    assertPathAvailable(runDirectory),
+    assertPathAvailable(stagingDirectory),
+  ]);
+  await mkdir(stagingDirectory);
+  const suiteRoot = join(stagingDirectory, "suites");
   await mkdir(suiteRoot);
   let codeVersion = options.codeVersion ?? "unavailable";
+  let runtimeDigest = createHash("sha256")
+    .update("provenloop-runtime-unavailable", "utf8")
+    .digest("hex");
+  let acceptanceEvidence: M0AcceptanceEvidence | undefined;
   try {
     codeVersion =
       options.codeVersion ?? await resolveCodeVersion(cwd);
     if (containsKnownSecret(codeVersion)) {
       throw new Error("M0 codeVersion cannot contain a known secret.");
+    }
+    runtimeDigest = await resolveRuntimeDigest();
+    if (
+      options.acceptanceEvidence !== undefined &&
+      evidencePath !== undefined
+    ) {
+      throw new M0AcceptanceEvidenceInputError(
+        "Provide M0 acceptance evidence by value or path, not both.",
+      );
+    }
+    if (options.acceptanceEvidence !== undefined) {
+      const parsed = m0AcceptanceEvidenceSchema.safeParse(
+        options.acceptanceEvidence,
+      );
+      if (!parsed.success) {
+        throw new M0AcceptanceEvidenceInputError(
+          "M0 acceptance evidence schema is invalid.",
+          {
+            cause: parsed.error,
+          },
+        );
+      }
+      acceptanceEvidence = parsed.data;
+    } else {
+      acceptanceEvidence = await loadM0AcceptanceEvidence(
+        evidencePath,
+      );
+    }
+    if (acceptanceEvidence !== undefined) {
+      validateEvidenceBinding(
+        acceptanceEvidence,
+        codeVersion,
+        runtimeDigest,
+      );
     }
     const runSuite = options.runSuite ?? runEvaluation;
     const suiteRuns = await Promise.all(
@@ -648,7 +975,7 @@ export const runM0ReleaseGate = async (
           result,
         }): Promise<M0SuiteResult> => ({
           reportPath: relative(
-            runDirectory,
+            stagingDirectory,
             join(result.runDirectory, "report.json"),
           ).replaceAll("\\", "/"),
           status: result.report.status,
@@ -714,7 +1041,7 @@ export const runM0ReleaseGate = async (
           "M0 persists evidence and Episode projections without activating long-term Knowledge.",
         status: "pass",
       },
-      ...knownBlockedChecks(),
+      ...acceptanceEvidenceChecks(acceptanceEvidence),
     ];
     const status: M0ReleaseGateStatus =
       checks.some((check) => check.status === "fail")
@@ -723,6 +1050,11 @@ export const runM0ReleaseGate = async (
           ? "blocked"
           : "pass";
     const report: M0ReleaseReport = {
+      ...(acceptanceEvidence === undefined
+        ? {}
+        : {
+            acceptanceEvidence,
+          }),
       checks,
       codeVersion,
       completedAt: now().toISOString(),
@@ -738,44 +1070,50 @@ export const runM0ReleaseGate = async (
         .map((check) => check.message),
       reportVersion: 1,
       runId,
+      runtimeDigest,
       startedAt: startedAt.toISOString(),
       status,
       suites,
     };
     const persistedReport = await writeM0Reports(
-      runDirectory,
+      stagingDirectory,
       report,
     );
+    await rename(stagingDirectory, runDirectory);
     return {
       report: persistedReport,
       runDirectory,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const invalidInput =
+      error instanceof M0AcceptanceEvidenceInputError;
     const report: M0ReleaseReport = {
       checks: [
         {
-          checkId: "m0-infrastructure",
+          checkId: invalidInput ? "m0-input" : "m0-infrastructure",
           message,
           status: "fail",
         },
       ],
       codeVersion,
       completedAt: now().toISOString(),
-      exitCode: 3,
+      exitCode: invalidInput ? 2 : 3,
       limitations: [
         "The M0 aggregate gate could not complete.",
       ],
       reportVersion: 1,
       runId,
+      runtimeDigest,
       startedAt: startedAt.toISOString(),
       status: "fail",
       suites: [],
     };
     const persistedReport = await writeM0Reports(
-      runDirectory,
+      stagingDirectory,
       report,
     );
+    await rename(stagingDirectory, runDirectory);
     return {
       report: persistedReport,
       runDirectory,

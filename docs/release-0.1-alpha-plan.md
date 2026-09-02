@@ -5,6 +5,11 @@
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-02
 
+**Evidence candidate:** `0.1.0-alpha.0` is published first to collect the real
+Windows, provider-degradation, and remote-upgrade evidence required to approve
+the target `0.1.0-alpha.1`. It is a prerelease and must not be described as
+M0-approved.
+
 ## 1. Goal
 
 The first release is a Windows and GitHub Copilot CLI Design Partner Preview.
@@ -114,20 +119,21 @@ merged before the dependent branch starts.
 
 ## 5. Workstream A: publishable runtime package
 
-- [ ] Set the root and publishable package version to `0.1.0-alpha.1`.
-- [ ] Keep internal-only packages private or bundle them into the public CLI.
-- [ ] Produce one publishable `@provenloop/cli` package.
-- [ ] Bundle the CLI, MCP server, worker, and Extension runtime.
-- [ ] Include required schemas, migrations, and built-in evaluation fixtures.
-- [ ] Remove runtime references to `packages\*\dist` in the source checkout.
-- [ ] Resolve installed assets from the package installation directory.
-- [ ] Verify `npm pack` contains every runtime file and no test/private data.
-- [ ] Install the packed tarball into a clean temporary user environment.
-- [ ] Run `install`, `status`, `doctor`, `worker run`, and `uninstall` from the
+- [ ] Set the final root and publishable package version to `0.1.0-alpha.1`
+  after the `0.1.0-alpha.0` evidence period.
+- [x] Keep internal-only packages private or bundle them into the public CLI.
+- [x] Produce one publishable `@provenloop/cli` package.
+- [x] Bundle the CLI, MCP server, worker, and Extension runtime.
+- [x] Include required schemas, migrations, and built-in evaluation fixtures.
+- [x] Remove runtime references to `packages\*\dist` in the source checkout.
+- [x] Resolve installed assets from the package installation directory.
+- [x] Verify `npm pack` contains every runtime file and no test/private data.
+- [x] Install the packed tarball into a clean temporary user environment.
+- [x] Run `install`, `status`, `doctor`, `worker run`, and `uninstall` from the
   packed artifact.
-- [ ] Verify uninstall preserves `%LOCALAPPDATA%\ProvenLoop` unless `--purge`
+- [x] Verify uninstall preserves `%LOCALAPPDATA%\ProvenLoop` unless `--purge`
   is supplied.
-- [ ] Verify purge refuses an unowned or ambiguous data root.
+- [x] Verify purge refuses an unowned or ambiguous data root.
 
 Package smoke testing must use the tarball, not workspace module resolution.
 
@@ -148,12 +154,12 @@ plugins\
         extension.mjs
 ```
 
-- [ ] Add the official marketplace metadata to this repository.
-- [ ] Give the marketplace and plugin stable, non-local names.
-- [ ] Make `.mcp.json` launch the installed ProvenLoop CLI/runtime.
-- [ ] Make the Extension import only bundled or plugin-local assets.
-- [ ] Replace the generated `provenloop-local` production path.
-- [ ] Retain the local marketplace only for isolated development tests.
+- [x] Add the official marketplace metadata to this repository.
+- [x] Give the marketplace and plugin stable, non-local names.
+- [x] Make `.mcp.json` launch the installed ProvenLoop CLI/runtime.
+- [x] Make the Extension import only bundled or plugin-local assets.
+- [x] Replace the generated `provenloop-local` production path.
+- [x] Retain the local marketplace only for isolated development tests.
 - [ ] Publish two test versions.
 - [ ] Install the first version from the Git repository.
 - [ ] Refresh the marketplace and upgrade to the second version.
@@ -205,16 +211,16 @@ Required sections:
 }
 ```
 
-- [ ] Add strict schema validation and safe identifier rules.
-- [ ] Reject secret-bearing evidence and unsafe paths.
-- [ ] Require evidence files and output below an ignored directory or outside
+- [x] Add strict schema validation and safe identifier rules.
+- [x] Reject secret-bearing evidence and unsafe paths.
+- [x] Require evidence files and output below an ignored directory or outside
   the repository.
-- [ ] Reject evidence from another code, runtime, plugin, or probe version.
-- [ ] Replace `knownBlockedChecks()` with evidence-driven checks.
-- [ ] Preserve `blocked` for missing evidence, `fail` for failed thresholds,
+- [x] Reject evidence from another code, runtime, plugin, or probe version.
+- [x] Replace `knownBlockedChecks()` with evidence-driven checks.
+- [x] Preserve `blocked` for missing evidence, `fail` for failed thresholds,
   `2` for invalid evidence, and `3` for infrastructure failure.
-- [ ] Publish the complete run through an atomic staging directory.
-- [ ] Add tests for stale, forged, incomplete, and mismatched evidence.
+- [x] Publish the complete run through an atomic staging directory.
+- [x] Add tests for stale, forged, incomplete, and mismatched evidence.
 
 ## 8. Workstream D: daily acceptance scripts
 
@@ -241,26 +247,26 @@ Optional controlled probes:
 
 ### Start script
 
-- [ ] Record the run ID, UTC start time, OS version, Copilot version, plugin
+- [x] Record the run ID, UTC start time, OS version, Copilot version, plugin
   version, code version, and runtime digest.
-- [ ] Capture initial queue, worker, database, and capability health.
-- [ ] Record canonical high-water marks without copying Prompt or code text.
-- [ ] Refuse to start when another acceptance run is active.
-- [ ] Store state below `%LOCALAPPDATA%\ProvenLoop\evaluation\m0-daily`.
+- [x] Capture initial queue, worker, database, and capability health.
+- [x] Record canonical high-water marks without copying Prompt or code text.
+- [x] Refuse to start when another acceptance run is active.
+- [x] Store state below `%LOCALAPPDATA%\ProvenLoop\evaluation\m0-daily`.
 
 ### Completion script
 
-- [ ] Record the end time and final health snapshot.
-- [ ] Drain the worker with a bounded timeout.
-- [ ] Run Session-file reconciliation.
-- [ ] Compare queue and canonical high-water marks.
-- [ ] Calculate event counts by supported event type.
-- [ ] Calculate callback work duration and delivery-latency distributions.
-- [ ] Detect capture gaps, missing events, duplicate facts, retry items, and
+- [x] Record the end time and final health snapshot.
+- [x] Drain the worker with a bounded timeout.
+- [x] Run Session-file reconciliation.
+- [x] Compare queue and canonical high-water marks.
+- [x] Calculate event counts by supported event type.
+- [x] Calculate callback work duration and delivery-latency distributions.
+- [x] Detect capture gaps, missing events, duplicate facts, retry items, and
   dead letters.
-- [ ] Run seeded-secret and internal-Session persistence checks.
-- [ ] Write stable JSON and Markdown reports.
-- [ ] Never include raw Prompt, code, tool arguments, or tool results in the
+- [x] Run seeded-secret and internal-Session persistence checks.
+- [x] Write stable JSON and Markdown reports.
+- [x] Never include raw Prompt, code, tool arguments, or tool results in the
   acceptance report.
 
 Planned output:
@@ -330,19 +336,19 @@ Add an explicit online mode:
 provenloop doctor --online
 ```
 
-- [ ] Add an opt-in, bounded Copilot availability probe.
-- [ ] Give the probe no tool permissions and require a fixed response.
-- [ ] Apply a strict timeout and classify errors without persisting provider
+- [x] Add an opt-in, bounded Copilot availability probe.
+- [x] Give the probe no tool permissions and require a fixed response.
+- [x] Apply a strict timeout and classify errors without persisting provider
   output.
-- [ ] Report `available`, `signed_out`, `rate_limited`, `incompatible`, or
+- [x] Report `available`, `signed_out`, `rate_limited`, `incompatible`, or
   `unavailable`.
-- [ ] Keep passive Doctor status as `unverified` when no supported credential
+- [x] Keep passive Doctor status as `unverified` when no supported credential
   status API exists.
-- [ ] Use an isolated `COPILOT_HOME` or test account.
-- [ ] Test signed-out behavior.
-- [ ] Test rate limiting.
-- [ ] Test provider unavailability.
-- [ ] Test an unsupported Copilot version.
+- [x] Use an isolated `COPILOT_HOME` or test account.
+- [x] Test signed-out behavior.
+- [x] Test rate limiting.
+- [x] Test provider unavailability.
+- [x] Test an unsupported Copilot version.
 - [ ] Verify backlog remains durable and retry remains bounded.
 - [ ] Verify foreground Copilot remains usable.
 
@@ -355,35 +361,35 @@ Required capability checks:
 
 ### Retrieval disabled
 
-- [ ] Context returns no Knowledge.
-- [ ] Feedback fails explicitly.
-- [ ] Capture remains operational.
-- [ ] Worker continues canonical ingestion.
+- [x] Context returns no Knowledge.
+- [x] Feedback fails explicitly.
+- [x] Capture remains operational.
+- [x] Worker continues canonical ingestion.
 
 ### Capture disabled
 
-- [ ] New Extension events stop.
-- [ ] Existing Knowledge remains retrievable.
-- [ ] Worker and deletion remain usable.
-- [ ] Copilot remains usable.
+- [x] New Extension events stop.
+- [x] Existing Knowledge remains retrievable.
+- [x] Worker and deletion remain usable.
+- [x] Copilot remains usable.
 
 ### Worker disabled
 
-- [ ] Durable queue backlog is preserved.
-- [ ] No consumer side effects occur.
-- [ ] Existing projected Knowledge remains retrievable.
-- [ ] Re-enabling the worker drains backlog without duplicates.
+- [x] Durable queue backlog is preserved.
+- [x] No consumer side effects occur.
+- [x] Existing projected Knowledge remains retrievable.
+- [x] Re-enabling the worker drains backlog without duplicates.
 
 ### Correction learning disabled
 
-- [ ] Correction events may remain observable.
-- [ ] Correction Knowledge lifecycle side effects stop.
-- [ ] Existing manually remembered Knowledge remains independent.
+- [x] Correction events may remain observable.
+- [x] Correction Knowledge lifecycle side effects stop.
+- [x] Existing manually remembered Knowledge remains independent.
 
-- [ ] Add one end-to-end isolation matrix test.
-- [ ] Add a real installed-plugin probe.
-- [ ] Bind the result into M0 evidence.
-- [ ] Remove the hard-coded M0 capability-isolation blocker only after both
+- [x] Add one end-to-end isolation matrix test.
+- [x] Add a real installed-plugin probe.
+- [x] Bind the result into M0 evidence.
+- [x] Remove the hard-coded M0 capability-isolation blocker only after both
   tests pass.
 
 ## 12. Daily-use evidence period
@@ -456,15 +462,15 @@ reporting or evidence integrity
 
 ## 14. Release engineering
 
-- [ ] Add `LICENSE`.
-- [ ] Add `CHANGELOG.md`.
-- [ ] Add `SECURITY.md`.
-- [ ] Document supported Windows, Node.js, and Copilot versions.
-- [ ] Add installation, upgrade, disable, uninstall, and purge documentation.
-- [ ] Add a tag-triggered release workflow.
+- [x] Add `LICENSE`.
+- [x] Add `CHANGELOG.md`.
+- [x] Add `SECURITY.md`.
+- [x] Document supported Windows, Node.js, and Copilot versions.
+- [x] Add installation, upgrade, disable, uninstall, and purge documentation.
+- [x] Add a tag-triggered release workflow.
 - [ ] Run clean checkout validation.
-- [ ] Run packed-artifact validation.
-- [ ] Generate checksums for published artifacts.
+- [x] Run packed-artifact validation.
+- [x] Generate checksums for published artifacts.
 - [ ] Publish GitHub Release notes with known limitations.
 - [ ] Retain the M0 and MVP reports used for the decision.
 - [ ] Verify the Git tag resolves to the evaluated code version.

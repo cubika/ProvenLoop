@@ -27,3 +27,5 @@ jobs:
       - run: npm test
       - run: npm run test:integration
       - run: npm run build
+      - run: npm run package:verify
+      - run: git --no-pager diff --exit-code
