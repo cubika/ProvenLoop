@@ -1,0 +1,54 @@
+{
+  "evidenceVersion": 1,
+  "evaluation": {
+    "codeVersion": "replace-with-evaluated-code-version",
+    "datasets": {
+      "branchContinuation": {
+        "datasetId": "replace-with-dataset-id",
+        "datasetVersion": 1
+      },
+      "correctionRecurrence": {
+        "datasetId": "replace-with-dataset-id",
+        "datasetVersion": 1
+      },
+      "workEpisodeAssociation": {
+        "datasetId": "replace-with-dataset-id",
+        "datasetVersion": 1
+      }
+    },
+    "executableDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "subgateDigests": {
+      "m0": "0000000000000000000000000000000000000000000000000000000000000000",
+      "m1": "0000000000000000000000000000000000000000000000000000000000000000",
+      "m2": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "reviewId": "replace-with-review-id",
+  "owner": "unassigned",
+  "reviewedAt": "2026-09-02T00:00:00.000Z",
+  "worstCaseReview": {
+    "completed": false,
+    "reviewedCaseIds": [],
+    "allHarmReviewed": false,
+    "allWrongInjectionsReviewed": false
+  },
+  "guardrails": {
+    "severeHarmCount": 0,
+    "secretLeakageCount": 0,
+    "crossRepositoryLeakageCount": 0,
+    "deletionPropagationFailureCount": 0,
+    "unsupportedCompletionClaimCount": 0
+  },
+  "shadow": {
+    "status": "not_run"
+  },
+  "observationWindow": {
+    "endsAt": "2026-09-16T00:00:00.000Z",
+    "observedThrough": "2026-09-02T00:00:00.000Z"
+  },
+  "rollback": {
+    "target": "replace-with-rollback-target",
+    "resolvedCommitSha": "0000000000000000000000000000000000000000",
+    "verified": false
+  }
+}

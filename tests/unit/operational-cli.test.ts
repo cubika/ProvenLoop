@@ -435,6 +435,28 @@ describe("operational CLI", () => {
     expect(harness.logs).toEqual([]);
     expect(harness.errors).toHaveLength(1);
   });
+
+  it("rejects unknown MVP gate options", async () => {
+    const adapter = fakeAdapter();
+    const harness = cli(adapter);
+
+    await expect(
+      runCli(
+        [
+          "eval",
+          "mvp",
+          "--out",
+          "C:\\unused",
+          "--evidnce",
+          "review.json",
+        ],
+        harness.io,
+        harness.dependencies,
+      ),
+    ).resolves.toBe(2);
+    expect(harness.logs).toEqual([]);
+    expect(harness.errors).toHaveLength(1);
+  });
 });
 
 describe("local MCP registration target", () => {

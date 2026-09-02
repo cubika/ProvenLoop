@@ -973,6 +973,19 @@ Go / Conditional Go / No-Go
 
 报告必须列出失败和限制。只展示通过项的报告无法用于发布决策。
 
+实现中的聚合命令为：
+
+```powershell
+provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
+```
+
+该命令固定同一代码版本并运行 M0、M1、M2，保留所有子报告，再读取显式发布证据。
+发布证据必须匹配该代码版本、三个数据集版本和三个稳定子门禁摘要；旧报告不能批准新代码。
+没有证据、Shadow 未通过、观察窗口未结束、回滚未验证或任一安全计数非零时，只能输出
+`No-Go`。回滚目标必须能解析为当前 Git 仓库中存在且不同于当前版本的 Commit。研究
+门槛即使全部通过，也只能在提供未过期、明确列出 Repository 或 Design Partner
+目标的 Canary Scope 时输出 `Conditional Go`；`Go` 只属于稳定门槛。
+
 ---
 
 ## 13. 落地顺序

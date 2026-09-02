@@ -298,7 +298,7 @@ describe("Knowledge lifecycle projection", () => {
         }),
       ).resolves.toEqual([]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -409,7 +409,7 @@ describe("Knowledge lifecycle projection", () => {
         }),
       ).resolves.toEqual([]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });

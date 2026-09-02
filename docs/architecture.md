@@ -484,6 +484,24 @@ run into a hidden staging directory and atomically renames that directory only
 after both JSON and Markdown reports are complete, so readers never observe a
 partially published report pair.
 
+The MVP aggregate release gate runs M0, M1, and M2 in parallel against one
+frozen code version and retains their complete reports under one staged run
+directory. Automated replay cannot manufacture release approval: a Go decision
+also requires retained evidence that the worst cases were reviewed, safety
+counts are zero, Shadow passed, the configured outcome window completed, and a
+Git rollback target was verified to exist and differ from the evaluated commit.
+The evidence is bound to the exact code version, dataset versions, and stable
+M0/M1/M2 evidence digests. When the built CLI is running, the binding also
+hashes every executed package `dist` JavaScript artifact so stale compiled code
+cannot inherit a source-only approval. Research thresholds can produce only an
+expiring Conditional Go restricted to named repository or design-partner targets.
+Missing or stale evidence, any blocked subgate, or any safety/data-correctness
+failure produces No-Go.
+The output and evidence locations must be outside the repository or ignored by
+Git. Provenance is recomputed after the subgates and immediately before atomic
+publication; a concurrent worktree mutation invalidates the run with
+infrastructure exit code 3.
+
 ### 3.7 Outcome linker
 
 The linker detects later evidence that strengthens or weakens earlier learning:

@@ -148,6 +148,29 @@ Correction Opportunities through the production builder. It also runs direct
 counterevidence, scope-mismatch, and unverified negative cases. Add `--stable`
 to enforce the 1% Wrong Injection threshold.
 
+Run the aggregate M1 + M2 MVP Go/No-Go gate:
+
+```powershell
+.\node_modules\.bin\provenloop.cmd eval mvp `
+  --out .provenloop\eval `
+  --evidence .provenloop\release-evidence.json `
+  --stable
+```
+
+Start from
+`packages\evaluation\fixtures\mvp-release-evidence-template-v1.json`, then
+replace every placeholder with the code version, dataset versions, and
+runtime/subgate evidence digests from the evidence-free run's
+`evaluationBinding` plus retained review, Shadow, observation-window, and Git
+rollback evidence. Omitting `--evidence`, leaving evidence incomplete, or
+retaining an M0 blocker produces an explicit `No-Go`; research thresholds can
+produce only an expiring Conditional Go restricted to named repository or
+design-partner targets.
+
+Both `--out` and `--evidence` must resolve outside the Git worktree or beneath
+an ignored directory such as `.provenloop`; the gate fails if the worktree
+changes while its subgates are running.
+
 Enable correction learning before capturing explicit corrections:
 
 ```powershell
@@ -268,6 +291,12 @@ than fixture-filling each Opportunity's recurrence and application fields. It
 retains RCR, provenance completeness, Evidence Tier accuracy,
 direct-counterevidence, all-card Wrong Injection, case-level results, and both
 replay databases for research and stable release decisions.
+The aggregate MVP release gate now runs M0, M1, and M2 against one code version,
+retains every subgate report, and combines them with explicit worst-case review,
+zero-harm/leakage claims, Shadow, observation-window, and rollback evidence.
+It publishes an atomic Go, Conditional Go, or No-Go report; the current
+built-in run remains No-Go while M0 blockers and real release evidence remain
+open.
 Batch 6 has started with a deterministic Work Episode builder. It groups
 canonical Session evidence repository-first, retains low-confidence links as
 candidates, applies explicit merge/split corrections, avoids bridge merges with

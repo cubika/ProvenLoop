@@ -304,7 +304,7 @@ describe("M1 context retrieval", () => {
       expect(tinyBudget.items).toEqual([]);
       expect(tinyBudget.renderedTokens).toBeLessThanOrEqual(1);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -352,7 +352,7 @@ describe("M1 context retrieval", () => {
         "repo-two-branch",
       ]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -404,7 +404,7 @@ describe("M1 context retrieval", () => {
         "generated-topic",
       ]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -455,7 +455,7 @@ describe("M1 context retrieval", () => {
 
       expect(response.items).toEqual([]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -508,7 +508,7 @@ describe("M1 context retrieval", () => {
       );
       expect(store.feedbackEvents()).toEqual([]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -554,7 +554,7 @@ describe("M1 context retrieval", () => {
         MAX_CONTEXT_TOKENS,
       );
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -616,7 +616,7 @@ describe("M1 context retrieval", () => {
         status: "not_previously_retrieved",
       });
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -701,7 +701,7 @@ describe("M1 context retrieval", () => {
         ])[0]?.state,
       ).toBe("active");
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -761,6 +761,7 @@ describe("M1 context retrieval", () => {
       const service = new ContextRetrievalService({
         backend,
         store,
+        timeoutMs: 5_000,
       });
       const response = await service.context({
         cwd: "C:\\repo",
@@ -780,7 +781,7 @@ describe("M1 context retrieval", () => {
       );
       expect(JSON.stringify(explanation)).toContain("[REDACTED]");
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -1047,7 +1048,7 @@ describe("M1 context retrieval", () => {
         status: "muted",
       });
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -1105,7 +1106,7 @@ describe("M1 context retrieval", () => {
         ])[0]?.utility.helpful,
       ).toBe(1);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -1161,7 +1162,7 @@ describe("M1 context retrieval", () => {
           targetId: "delete-records",
         });
       } finally {
-        backend.close();
+        await backend.closeAsync();
       }
 
       await new DeletionService({
@@ -1456,7 +1457,7 @@ describe("M1 context retrieval", () => {
           targetId: "helpful-surviving",
         });
       } finally {
-        backend.close();
+        await backend.closeAsync();
       }
 
       await new DeletionService({
@@ -1560,7 +1561,7 @@ describe("M1 context retrieval", () => {
           });
         }
       } finally {
-        backend.close();
+        await backend.closeAsync();
       }
       expect(store.sessionMuted("session-multi-mute"))
         .toBe(true);
@@ -1645,7 +1646,7 @@ describe("M1 context retrieval", () => {
         status: "degraded",
       });
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });

@@ -25,6 +25,8 @@ import {
   runM0ReleaseGate,
   runM1ReleaseGate,
   runM2ReleaseGate,
+  runMvpReleaseGate,
+  MvpReleaseInputError,
 } from "@provenloop/evaluation";
 import {
   DeletionPropagationGateError,
@@ -115,6 +117,7 @@ const usage = `Usage:
   provenloop eval m0 --out <directory>
   provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
   provenloop eval m2 --out <directory> [--dataset <file>] [--stable]
+  provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -720,6 +723,47 @@ const runEvaluationCommand = async (
     } catch (error) {
       io.error(error instanceof Error ? error.message : String(error));
       return 3;
+    }
+  }
+  if (args[1] === "mvp") {
+    const outputRoot = option(args, "--out");
+    const evidencePath = option(args, "--evidence");
+    if (
+      !hasOnlyOptions(args, 2, {
+        flags: [
+          "--stable",
+        ],
+        values: [
+          "--evidence",
+          "--out",
+        ],
+      }) ||
+      !outputRoot ||
+      outputRoot.startsWith("--") ||
+      hasInvalidOptionValue(args, "--evidence")
+    ) {
+      io.error(usage);
+      return 2;
+    }
+    try {
+      const result = await runMvpReleaseGate({
+        ...(evidencePath === undefined
+          ? {}
+          : {
+              evidencePath,
+            }),
+        outputRoot,
+        releaseTarget: args.includes("--stable")
+          ? "stable"
+          : "research",
+      });
+      io.log(
+        `MVP release decision ${result.report.decision}: ${result.runDirectory}`,
+      );
+      return result.report.exitCode;
+    } catch (error) {
+      io.error(error instanceof Error ? error.message : String(error));
+      return error instanceof MvpReleaseInputError ? 2 : 3;
     }
   }
   if (args[1] === "episodes") {

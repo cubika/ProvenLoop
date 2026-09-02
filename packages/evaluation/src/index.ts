@@ -84,6 +84,27 @@ export {
   type RunM2ReleaseGateResult,
 } from "./m2-release-gate.js";
 export {
+  evaluateMvpReleaseReadiness,
+  mvpReleaseExitCode,
+  mvpReleaseEvidenceSchema,
+  MvpReleaseInputError,
+  runMvpReleaseGate,
+  type MvpAutomatedReadiness,
+  type MvpDatasetBinding,
+  type MvpEvaluationBinding,
+  type MvpGuardrailEvidence,
+  type MvpReleaseCheck,
+  type MvpReleaseCheckStatus,
+  type MvpReleaseDecision,
+  type MvpReleaseEvidence,
+  type MvpReleaseReadiness,
+  type MvpReleaseReport,
+  type MvpReleaseTarget,
+  type MvpSubgateSummary,
+  type RunMvpReleaseGateOptions,
+  type RunMvpReleaseGateResult,
+} from "./mvp-release-gate.js";
+export {
   loadEvaluationSuite,
 } from "./load-suite.js";
 export {

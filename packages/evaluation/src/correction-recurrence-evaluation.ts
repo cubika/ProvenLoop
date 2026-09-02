@@ -1000,6 +1000,7 @@ export const evaluateCorrectionRecurrenceDataset = async (
             knowledgeProjectionFromCandidate(current),
           ]);
         },
+        timeoutMs: 5_000,
       });
       const response = await service.context({
         cwd: `C:\\fixtures\\${material.caseId}`,

@@ -182,7 +182,7 @@ describe("SQLite FTS Knowledge backend", () => {
         status: "healthy",
       });
     } finally {
-      backend.close();
+      await backend.closeAsync();
     }
   });
 
@@ -246,7 +246,7 @@ describe("SQLite FTS Knowledge backend", () => {
         ),
       ).resolves.toHaveLength(1);
     } finally {
-      backend.close();
+      await backend.closeAsync();
     }
   });
 
@@ -495,7 +495,7 @@ describe("SQLite FTS Knowledge backend", () => {
         ]),
       ).toThrow("contains a deleted identity");
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -551,7 +551,7 @@ describe("SQLite FTS Knowledge backend", () => {
         }),
       ]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -673,7 +673,7 @@ describe("SQLite FTS Knowledge backend", () => {
       expect(deletion.gate.status).toBe("pass");
       expect(store.knowledgeCandidates()).toEqual([]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -772,7 +772,7 @@ describe("SQLite FTS Knowledge backend", () => {
       await expect(backend.get(knowledge.knowledgeId))
         .resolves.toBeUndefined();
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });
@@ -870,7 +870,7 @@ describe("SQLite FTS Knowledge backend", () => {
       await expect(backend.get(knowledge.knowledgeId))
         .resolves.toBeUndefined();
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });

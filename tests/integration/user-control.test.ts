@@ -356,7 +356,7 @@ describe("M1 user control", () => {
         backend.get("dependent-knowledge"),
       ).resolves.toBeDefined();
     } finally {
-      backend.close();
+      await backend.closeAsync();
     }
 
     await expect(

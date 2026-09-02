@@ -187,7 +187,7 @@ describe("M2 aggregate release gate", () => {
         }),
       ]);
     } finally {
-      backend.close();
+      await backend.closeAsync();
       store.close();
     }
   });

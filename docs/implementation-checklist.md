@@ -1,7 +1,7 @@
 # ProvenLoop Implementation Checklist
 
 **Status:** Active  
-**Updated:** 2026-09-01
+**Updated:** 2026-09-02
 
 **Immediate target:** M0 observation foundation, followed by the M1 + M2
 validated MVP.
@@ -489,6 +489,11 @@ frozen.
   release.
 
 ## 13. M1 + M2 MVP Go/No-Go
+
+The aggregate `provenloop eval mvp` command is implemented and retains M0, M1,
+M2, manual review, Shadow, observation-window, and rollback checks in one
+atomic report. The checklist remains open because the current real decision is
+No-Go until M0 blockers and retained release evidence are completed.
 
 - [ ] Run event/process integrity, Branch Continuation, Correction Recurrence,
   Negative Trigger, and Safety/Recovery suites.
