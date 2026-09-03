@@ -5,8 +5,8 @@
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-02
 
-**Evidence candidate:** `0.1.0-alpha.0.1` supersedes the initial
-`0.1.0-alpha.0` package and collects the real Windows,
+**Evidence candidate:** `0.1.0-alpha.0.2` supersedes the earlier
+`0.1.0-alpha.0.x` packages and collects the real Windows,
 provider-degradation, and remote-upgrade evidence required to approve the
 target `0.1.0-alpha.1`. It is a prerelease and must not be described as
 M0-approved.

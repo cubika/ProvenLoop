@@ -2,6 +2,13 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.2] - 2026-09-03
+
+### Fixed
+
+- Use Windows PowerShell 5.1-compatible absolute path validation for MCP
+  launchers on non-C: drives and hosted runners.
+
 ## [0.1.0-alpha.0.1] - 2026-09-03
 
 ### Fixed
@@ -10,6 +17,8 @@ All notable changes to ProvenLoop are documented here.
   the abbreviated marketplace list output.
 - Increased hosted-runner integration test timeouts without weakening product
   time budgets.
+- Superseded by `0.1.0-alpha.0.2` because the MCP launcher rejected some
+  valid absolute paths on non-C: drives.
 
 ## [0.1.0-alpha.0] - 2026-09-02
 

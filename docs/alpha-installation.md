@@ -8,20 +8,20 @@
 | Node.js | `>=22.18.0 <23` |
 | npm | `>=11 <12` |
 | GitHub Copilot CLI | `1.0.82-0` |
-| ProvenLoop | `0.1.0-alpha.0.1` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.2` evidence candidate |
 
 Other versions fail closed as incompatible. The Alpha does not bundle Node.js.
 
 ## Install
 
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.0.1
+npm install --global @provenloop/cli@0.1.0-alpha.0.2
 provenloop install
 provenloop doctor
 ```
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.1` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.2` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -35,7 +35,7 @@ provenloop install --no-auto-collect
 ## Upgrade
 
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.0.1
+npm install --global @provenloop/cli@0.1.0-alpha.0.2
 provenloop upgrade
 provenloop doctor
 ```

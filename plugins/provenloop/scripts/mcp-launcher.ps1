@@ -14,21 +14,16 @@ function Test-AbsolutePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return $false
     }
-    try {
-        $root = [IO.Path]::GetPathRoot($Path)
-        return (
-            -not [string]::IsNullOrWhiteSpace($root) -and
-            [IO.Path]::GetFullPath($Path) -eq $Path
-        )
-    } catch {
-        return $false
-    }
+    return $Path -match (
+        "^(?:[A-Za-z]:[\\/]|" +
+        "\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))"
+    )
 }
 
 if (
     $runtime.product -ne "ProvenLoopRuntime" -or
     $runtime.schemaVersion -ne 1 -or
-    $runtime.version -ne "0.1.0-alpha.0.1" -or
+    $runtime.version -ne "0.1.0-alpha.0.2" -or
     -not (Test-AbsolutePath ([string]$runtime.nodeExecutable)) -or
     -not (Test-AbsolutePath ([string]$runtime.cliBinPath)) -or
     -not (Test-AbsolutePath ([string]$runtime.dataRoot)) -or

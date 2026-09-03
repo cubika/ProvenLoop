@@ -3,7 +3,7 @@
 Windows Design Partner Preview for ProvenLoop and GitHub Copilot CLI.
 
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.0.1
+npm install --global @provenloop/cli@0.1.0-alpha.0.2
 provenloop install
 provenloop doctor
 ```

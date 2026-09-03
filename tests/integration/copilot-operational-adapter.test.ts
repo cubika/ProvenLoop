@@ -54,7 +54,7 @@ class FakeCommandRunner implements CommandRunner {
   public marketplaceSource: string | undefined;
   public pluginEnabled = false;
   public pluginInstalled = false;
-  public pluginVersion = "0.1.0-alpha.0.1";
+  public pluginVersion = "0.1.0-alpha.0.2";
   public providerResult: CommandResult = {
     exitCode: 0,
     stderr: "",
@@ -449,7 +449,7 @@ describe("Copilot operational adapter", () => {
     });
     expect(runner.calls).toContain(
       "copilot plugin marketplace add " +
-        "cubika/ProvenLoop#v0.1.0-alpha.0.1",
+        "cubika/ProvenLoop#v0.1.0-alpha.0.2",
     );
     const status = await adapter.status();
     expect(status.pluginInstalled).toBe(true);
@@ -861,7 +861,7 @@ describe("Copilot operational adapter", () => {
     });
 
     await expect(adapter.install()).rejects.toThrow(
-      "does not match runtime 0.1.0-alpha.0.1",
+      "does not match runtime 0.1.0-alpha.0.2",
     );
     await expect(adapter.status()).resolves.toMatchObject({
       installed: false,
@@ -892,7 +892,7 @@ describe("Copilot operational adapter", () => {
         "copilot plugin uninstall provenloop@provenloop-marketplace",
         "copilot plugin marketplace remove provenloop-marketplace",
         "copilot plugin marketplace add " +
-          "cubika/ProvenLoop#v0.1.0-alpha.0.1",
+          "cubika/ProvenLoop#v0.1.0-alpha.0.2",
       ]),
     );
   });
@@ -909,7 +909,7 @@ describe("Copilot operational adapter", () => {
         extraKnownMarketplaces: {
           "provenloop-marketplace": {
             source: {
-              ref: "v0.1.0-alpha.0.1",
+              ref: "v0.1.0-alpha.0.2",
               repo: "cubika/ProvenLoop",
               source: "github",
             },
