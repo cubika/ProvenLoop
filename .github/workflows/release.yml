@@ -40,14 +40,14 @@ jobs:
             throw "Git tag does not match package version $version."
           }
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
-          if ($version -eq "0.1.0-alpha.0") {
+          if ($version -like "0.1.0-alpha.0*") {
             "RELEASE_NOTES_PATH=docs\releases\$version.md" >> $env:GITHUB_ENV
           } else {
             "RELEASE_NOTES_PATH=release-evidence\$version\release-notes.md" >> $env:GITHUB_ENV
           }
 
       - name: Verify retained release evidence
-        if: env.RELEASE_VERSION != '0.1.0-alpha.0'
+        if: ${{ !startsWith(env.RELEASE_VERSION, '0.1.0-alpha.0') }}
         run: >-
           node scripts/verify-release-evidence.mjs
           ${{ env.RELEASE_VERSION }}

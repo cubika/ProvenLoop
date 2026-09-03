@@ -17,6 +17,7 @@ import {
   resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "jsonc-parser";
 
 import {
   PROVENLOOP_CAPABILITIES,
@@ -1573,7 +1574,10 @@ implements AgentAdapter<CopilotEventMappingResult> {
       marketplaces.stdout,
       "Registered marketplaces:",
     ).find((line) => marketplacePattern.test(line));
+    const configuredMarketplaceSource =
+      await this.#configuredMarketplaceSource();
     const marketplaceSource =
+      configuredMarketplaceSource ??
       marketplaceLine?.match(/\([^:]+:\s*([^)]+)\)/u)?.[1]?.trim();
     const pluginLine = plugins.stdout
       .split(/\r?\n/u)
@@ -1614,6 +1618,47 @@ implements AgentAdapter<CopilotEventMappingResult> {
       );
     }
     return status;
+  }
+
+  async #configuredMarketplaceSource(): Promise<string | undefined> {
+    try {
+      const parsed = parse(
+        await readFile(this.#settingsPath(), "utf8"),
+      ) as unknown;
+      if (!isRecord(parsed)) {
+        return undefined;
+      }
+      const marketplaces = parsed.extraKnownMarketplaces;
+      if (!isRecord(marketplaces)) {
+        return undefined;
+      }
+      const marketplace = marketplaces[this.#marketplaceName];
+      if (!isRecord(marketplace)) {
+        return undefined;
+      }
+      const source = marketplace.source;
+      if (typeof source === "string") {
+        return source.trim() || undefined;
+      }
+      if (
+        !isRecord(source) ||
+        typeof source.repo !== "string"
+      ) {
+        return undefined;
+      }
+      const repository = source.repo.trim();
+      if (!repository) {
+        return undefined;
+      }
+      return typeof source.ref === "string" && source.ref.trim()
+        ? `${repository}#${source.ref.trim()}`
+        : repository;
+    } catch (error) {
+      if (errnoCode(error) === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   async #ensureMarketplaceRegistered(): Promise<void> {

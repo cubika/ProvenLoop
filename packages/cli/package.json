@@ -1,6 +1,6 @@
 {
   "name": "@provenloop/cli",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.0.1",
   "description": "Local learning infrastructure for GitHub Copilot CLI.",
   "license": "MIT",
   "type": "module",

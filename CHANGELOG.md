@@ -2,6 +2,15 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.1] - 2026-09-03
+
+### Fixed
+
+- Read the pinned marketplace ref from Copilot settings instead of relying on
+  the abbreviated marketplace list output.
+- Increased hosted-runner integration test timeouts without weakening product
+  time budgets.
+
 ## [0.1.0-alpha.0] - 2026-09-02
 
 ### Added
@@ -24,3 +33,5 @@ All notable changes to ProvenLoop are documented here.
 - The release does not include M3-M6 delayed outcome, retrospective, or
   playbook automation.
 - This evidence-collection candidate is not the final M0-approved Alpha.
+- Superseded by `0.1.0-alpha.0.1` because marketplace ref detection could
+  incorrectly disable capture after installation.

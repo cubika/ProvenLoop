@@ -5,9 +5,10 @@
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-02
 
-**Evidence candidate:** `0.1.0-alpha.0` is published first to collect the real
-Windows, provider-degradation, and remote-upgrade evidence required to approve
-the target `0.1.0-alpha.1`. It is a prerelease and must not be described as
+**Evidence candidate:** `0.1.0-alpha.0.1` supersedes the initial
+`0.1.0-alpha.0` package and collects the real Windows,
+provider-degradation, and remote-upgrade evidence required to approve the
+target `0.1.0-alpha.1`. It is a prerelease and must not be described as
 M0-approved.
 
 ## 1. Goal
@@ -120,7 +121,7 @@ merged before the dependent branch starts.
 ## 5. Workstream A: publishable runtime package
 
 - [ ] Set the final root and publishable package version to `0.1.0-alpha.1`
-  after the `0.1.0-alpha.0` evidence period.
+  after the `0.1.0-alpha.0.x` evidence period.
 - [x] Keep internal-only packages private or bundle them into the public CLI.
 - [x] Produce one publishable `@provenloop/cli` package.
 - [x] Bundle the CLI, MCP server, worker, and Extension runtime.

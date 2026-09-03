@@ -1,9 +1,9 @@
 # Release evidence
 
-`0.1.0-alpha.0` is the explicit evidence-collection candidate and is exempt
-from retained M0/MVP evidence. Before tagging an evidence-approved release
-such as `0.1.0-alpha.1`, add a privacy-reviewed directory named for the package
-version:
+The `0.1.0-alpha.0.x` line is the explicit evidence-collection candidate and
+is exempt from retained M0/MVP evidence. Before tagging an evidence-approved
+release such as `0.1.0-alpha.1`, add a privacy-reviewed directory named for the
+package version:
 
 ```text
 release-evidence/
