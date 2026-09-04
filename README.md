@@ -120,6 +120,22 @@ See [Alpha installation and operations](docs/alpha-installation.md) for the
 supported environment, installation, upgrade, Doctor, capability controls,
 acceptance evidence, uninstall, purge, and rollback procedures.
 
+For the Microsoft-internal Design Partner preview, install the exact
+GitHub Release tarball rather than resolving the package through an npm
+registry:
+
+```powershell
+npm install --global `
+  "https://github.com/cubika/ProvenLoop/releases/download/v0.1.0-alpha.0.2/provenloop-cli-0.1.0-alpha.0.2.tgz" `
+  --no-audit --no-fund
+provenloop install
+provenloop doctor
+```
+
+This uses npm only as the local package installer. It does not contact
+`registry.npmjs.org`, `packagefeedproxy.microsoft.io`, or an Azure Artifacts
+feed for the ProvenLoop package.
+
 Run a built-in evaluation fixture:
 
 ```powershell

@@ -68,10 +68,24 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.1
+npm install --global `
+  "https://github.com/cubika/ProvenLoop/releases/download/v0.1.0-alpha.1/provenloop-cli-0.1.0-alpha.1.tgz" `
+  --no-audit --no-fund
 provenloop install
 provenloop doctor
 ```
+
+For the Microsoft-internal Design Partner preview, the versioned GitHub
+Release tarball is the canonical runtime source. npm is used only as the local
+installer and must not resolve ProvenLoop through a registry. The tarball and
+its SHA-256 file must be downloaded from the same immutable Git tag and
+verified before installation.
+
+Public npm and a future governed Azure Artifacts path are optional secondary
+channels. If O365 internal distribution later uses Azure Artifacts, the
+expected model is an approved producer pipeline and Feed, normally Common,
+with consumption through Enzyme; direct Enzyme publishing requires explicit
+owner approval.
 
 `provenloop install` should:
 
@@ -130,6 +144,9 @@ merged before the dependent branch starts.
 - [x] Resolve installed assets from the package installation directory.
 - [x] Verify `npm pack` contains every runtime file and no test/private data.
 - [x] Install the packed tarball into a clean temporary user environment.
+- [x] Publish the exact tarball and SHA-256 through GitHub Releases.
+- [x] Document registry-independent installation from the GitHub Release
+  tarball.
 - [x] Run `install`, `status`, `doctor`, `worker run`, and `uninstall` from the
   packed artifact.
 - [x] Verify uninstall preserves `%LOCALAPPDATA%\ProvenLoop` unless `--purge`

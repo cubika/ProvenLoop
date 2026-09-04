@@ -14,11 +14,35 @@ Other versions fail closed as incompatible. The Alpha does not bundle Node.js.
 
 ## Install
 
+For the Microsoft-internal Design Partner preview, the canonical installation
+source is the exact tarball attached to the versioned GitHub Release:
+
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.0.2
+$version = "0.1.0-alpha.0.2"
+$release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
+$package = Join-Path $env:TEMP "provenloop-cli-$version.tgz"
+$checksum = "$package.sha256"
+
+Invoke-WebRequest "$release/provenloop-cli-$version.tgz" `
+  -OutFile $package
+Invoke-WebRequest "$release/provenloop-cli-$version.tgz.sha256" `
+  -OutFile $checksum
+
+$expected = (Get-Content $checksum -Raw).Trim().Split()[0]
+$actual = (Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) {
+  throw "ProvenLoop package checksum mismatch."
+}
+
+npm install --global $package --no-audit --no-fund
 provenloop install
 provenloop doctor
 ```
+
+The tarball contains the complete ProvenLoop runtime and has no runtime npm
+dependencies. npm is used only to place the files in a stable installation
+directory and create the `provenloop` command. It does not resolve ProvenLoop
+through npmjs, `packagefeedproxy.microsoft.io`, or Azure Artifacts.
 
 The installer registers the release-pinned
 `cubika/ProvenLoop#v0.1.0-alpha.0.2` marketplace, installs
@@ -34,8 +58,11 @@ provenloop install --no-auto-collect
 
 ## Upgrade
 
+Download and verify the new version's GitHub Release tarball, then install it
+from the local file:
+
 ```powershell
-npm install --global @provenloop/cli@0.1.0-alpha.0.2
+npm install --global <downloaded-provenloop-tarball> --no-audit --no-fund
 provenloop upgrade
 provenloop doctor
 ```
@@ -144,9 +171,33 @@ Purge refuses an unowned, ambiguous, or active data root.
 ## Rollback
 
 1. Run `provenloop uninstall`.
-2. Install the previously retained npm tarball or exact package version.
-3. Run `provenloop install`.
-4. Run `provenloop doctor`.
+2. Download and verify the previous version's GitHub Release tarball.
+3. Install that local tarball with `npm install --global <tarball>`.
+4. Run `provenloop install`.
+5. Run `provenloop doctor`.
 
 Do not delete `%LOCALAPPDATA%\ProvenLoop` during rollback. Database migrations
 and release evidence must be retained with the rollback artifact.
+
+## Distribution decision
+
+The Design Partner preview deliberately uses GitHub Release tarballs instead
+of an internal npm Feed:
+
+- it is immediately available without the public npm/CFS quarantine period;
+- it avoids onboarding ProvenLoop as a publisher to a shared O365 Feed;
+- the package, checksum, Git tag, source commit, and release notes remain
+  together;
+- the existing tested npm package layout and global command shims are reused.
+
+An internal Azure Artifacts path may be added when the internal audience grows.
+For O365, the expected governed model is publication through an approved
+pipeline to the designated producer Feed, normally Common, with consumption
+through Enzyme. Direct publication to Enzyme is not assumed without approval
+from its owners.
+
+The npmjs package remains an optional public/developer distribution channel;
+it is not the installation dependency for this internal preview.
+
+This decision is recorded in
+[ADR 0003](decisions/0003-design-partner-distribution.md).
