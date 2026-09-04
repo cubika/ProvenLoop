@@ -72,6 +72,7 @@ jobs:
           }
 
       - name: Verify npm publication
+        if: ${{ !startsWith(env.RELEASE_VERSION, '0.1.0-alpha.0') }}
         shell: pwsh
         run: |
           $integrity = $null

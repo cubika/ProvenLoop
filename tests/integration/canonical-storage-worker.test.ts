@@ -1373,6 +1373,10 @@ describe("shared capture worker", () => {
 
     await expect(
       runCaptureWorkerOnce({
+        admission: () => ({
+          allowed: true,
+          reasons: [],
+        }),
         dataRoot,
         lease: new WindowsNamedPipeLeaseProvider(
           `worker-runtime-${randomUUID()}`,

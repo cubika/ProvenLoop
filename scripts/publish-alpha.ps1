@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)]
-    [string]$Version
+    [string]$Version,
+    [switch]$SkipNpmPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,37 +84,43 @@ if (-not $remoteTag) {
     }
 }
 
-function Get-PublishedIntegrity {
-    $value = npm.cmd view "@provenloop/cli@$Version" dist.integrity `
-        --json `
-        --registry=https://registry.npmjs.org 2> $null
-    if ($LASTEXITCODE -ne 0) {
-        return $null
+if (-not $SkipNpmPublish) {
+    function Get-PublishedIntegrity {
+        $value = npm.cmd view "@provenloop/cli@$Version" dist.integrity `
+            --json `
+            --registry=https://registry.npmjs.org 2> $null
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+        $value | ConvertFrom-Json
     }
-    $value | ConvertFrom-Json
-}
 
-$publishedIntegrity = Get-PublishedIntegrity
-if ($null -eq $publishedIntegrity) {
-    npm.cmd publish `
-        $tarball `
-        --access public `
-        --tag alpha `
-        --registry=https://registry.npmjs.org
-    if ($LASTEXITCODE -ne 0) {
-        throw "npm publication failed."
-    }
-    for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
-        Start-Sleep -Seconds 3
-        $publishedIntegrity = Get-PublishedIntegrity
-        if ($null -ne $publishedIntegrity) {
-            break
+    $publishedIntegrity = Get-PublishedIntegrity
+    if ($null -eq $publishedIntegrity) {
+        npm.cmd publish `
+            $tarball `
+            --access public `
+            --tag alpha `
+            --registry=https://registry.npmjs.org
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm publication failed."
+        }
+        for ($attempt = 0; $attempt -lt 10; $attempt += 1) {
+            Start-Sleep -Seconds 3
+            $publishedIntegrity = Get-PublishedIntegrity
+            if ($null -ne $publishedIntegrity) {
+                break
+            }
         }
     }
-}
-if ($publishedIntegrity -ne $expectedIntegrity) {
-    throw "Published npm artifact does not match the verified tarball."
+    if ($publishedIntegrity -ne $expectedIntegrity) {
+        throw "Published npm artifact does not match the verified tarball."
+    }
 }
 
 Remove-Item -LiteralPath $artifactRoot -Recurse -Force
-Write-Output "Published @provenloop/cli@$Version and $expectedTag."
+if ($SkipNpmPublish) {
+    Write-Output "Published Git tag $expectedTag; npm publication skipped."
+} else {
+    Write-Output "Published @provenloop/cli@$Version and $expectedTag."
+}

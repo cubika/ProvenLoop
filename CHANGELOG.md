@@ -2,7 +2,7 @@
 
 All notable changes to ProvenLoop are documented here.
 
-## [0.1.0-alpha.0.3] - Unreleased
+## [0.1.0-alpha.0.3] - 2026-09-04
 
 ### Added
 

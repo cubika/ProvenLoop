@@ -20,6 +20,7 @@ import {
   CorrectionCaptureProjector,
   KnowledgeLifecycleProjector,
   WorkEpisodeProjector,
+  type CaptureWorkerAdmission,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
@@ -40,6 +41,9 @@ import {
 } from "@provenloop/storage-sqlite";
 
 export interface RunCaptureWorkerOnceOptions {
+  readonly admission?: () =>
+    | CaptureWorkerAdmission
+    | Promise<CaptureWorkerAdmission>;
   readonly batchSize?: number;
   readonly dataRoot: string;
   readonly lease?: ProcessLeaseProvider;
@@ -148,39 +152,41 @@ export const runCaptureWorkerOnce = async (
       projectionMarked = true;
     };
     const result = await new CaptureWorker({
-      admission: async () => {
-        const currentCpuAt = process.hrtime.bigint();
-        const elapsedMicroseconds =
-          Number(currentCpuAt - previousCpuAt) / 1_000;
-        const currentCpu = process.cpuUsage();
-        const usedMicroseconds =
-          currentCpu.user - previousCpu.user +
-          currentCpu.system - previousCpu.system;
-        previousCpu = currentCpu;
-        previousCpuAt = currentCpuAt;
-        const filesystem = await statfs(paths.root);
-        const queueDepth = (await queue.list()).filter(
-          (item) =>
-            item.state === "pending" ||
-            item.state === "claimed" ||
-            item.state === "retry",
-        ).length;
-        return breaker.evaluate({
-          consecutiveProviderErrors: 0,
-          cpuPercent:
-            elapsedMicroseconds <= 0
-              ? 0
-              : usedMicroseconds /
-                elapsedMicroseconds /
-                availableParallelism() *
-                100,
-          freeDiskBytes:
-            Number(filesystem.bavail) *
-            Number(filesystem.bsize),
-          memoryBytes: process.memoryUsage().rss,
-          queueDepth,
-        });
-      },
+      admission:
+        options.admission ??
+        (async () => {
+          const currentCpuAt = process.hrtime.bigint();
+          const elapsedMicroseconds =
+            Number(currentCpuAt - previousCpuAt) / 1_000;
+          const currentCpu = process.cpuUsage();
+          const usedMicroseconds =
+            currentCpu.user - previousCpu.user +
+            currentCpu.system - previousCpu.system;
+          previousCpu = currentCpu;
+          previousCpuAt = currentCpuAt;
+          const filesystem = await statfs(paths.root);
+          const queueDepth = (await queue.list()).filter(
+            (item) =>
+              item.state === "pending" ||
+              item.state === "claimed" ||
+              item.state === "retry",
+          ).length;
+          return breaker.evaluate({
+            consecutiveProviderErrors: 0,
+            cpuPercent:
+              elapsedMicroseconds <= 0
+                ? 0
+                : usedMicroseconds /
+                  elapsedMicroseconds /
+                  availableParallelism() *
+                  100,
+            freeDiskBytes:
+              Number(filesystem.bavail) *
+              Number(filesystem.bsize),
+            memoryBytes: process.memoryUsage().rss,
+            queueDepth,
+          });
+        }),
       batchSize: options.batchSize ?? 100,
       enabled: async () =>
         (
