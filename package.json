@@ -1,12 +1,12 @@
 {
   "name": "provenloop",
-  "version": "0.1.0-alpha.0.2",
+  "version": "0.1.0-alpha.0.3",
   "private": true,
   "description": "Local learning infrastructure for coding agents.",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.18.0 <23",
+    "node": ">=22.16.0 <23",
     "npm": ">=11 <12"
   },
   "packageManager": "npm@11.6.2",

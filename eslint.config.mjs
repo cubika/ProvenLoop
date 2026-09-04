@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/coverage/**",
       "**/dist/**",
       "**/node_modules/**",
+      ".provenloop/**",
       "plugins/**/extensions/**/extension.mjs",
       "spikes/**",
     ],

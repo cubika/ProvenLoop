@@ -125,14 +125,11 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-npm install --global `
-  "https://github.com/cubika/ProvenLoop/releases/download/v0.1.0-alpha.0.2/provenloop-cli-0.1.0-alpha.0.2.tgz" `
-  --no-audit --no-fund
-provenloop install
-provenloop doctor
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.3/install.ps1 | iex
 ```
 
-This uses npm only as the local package installer. It does not contact
+The installer downloads and verifies the exact GitHub Release tarball, then
+uses npm only as the local package installer. It does not contact
 `registry.npmjs.org`, `packagefeedproxy.microsoft.io`, or an Azure Artifacts
 feed for the ProvenLoop package.
 

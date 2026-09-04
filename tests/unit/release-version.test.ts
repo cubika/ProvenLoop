@@ -19,6 +19,7 @@ describe("release version", () => {
       marketplace,
       plugin,
       extension,
+      installer,
       mcpLauncher,
     ] = await Promise.all([
       readFile("package.json", "utf8"),
@@ -29,6 +30,7 @@ describe("release version", () => {
         "plugins/provenloop/extensions/event-capture/extension.mjs",
         "utf8",
       ),
+      readFile("install.ps1", "utf8"),
       readFile(
         "plugins/provenloop/scripts/mcp-launcher.ps1",
         "utf8",
@@ -36,9 +38,15 @@ describe("release version", () => {
     ]);
 
     expect(JSON.parse(rootPackage)).toMatchObject({
+      engines: {
+        node: ">=22.16.0 <23",
+      },
       version: PROVENLOOP_VERSION,
     });
     expect(JSON.parse(cliPackage)).toMatchObject({
+      engines: {
+        node: ">=22.16.0 <23",
+      },
       version: PROVENLOOP_VERSION,
     });
     expect(JSON.parse(marketplace)).toMatchObject({
@@ -56,6 +64,9 @@ describe("release version", () => {
     });
     expect(extension).toContain(
       `runtime.version !== "${PROVENLOOP_VERSION}"`,
+    );
+    expect(installer).toContain(
+      `[string]$Version = "${PROVENLOOP_VERSION}"`,
     );
     expect(mcpLauncher).toContain(
       `$runtime.version -ne "${PROVENLOOP_VERSION}"`,

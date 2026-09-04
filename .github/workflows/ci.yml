@@ -28,4 +28,6 @@ jobs:
       - run: npm run test:integration
       - run: npm run build
       - run: npm run package:verify
+      - shell: powershell
+        run: .\install.ps1 -DryRun
       - run: git --no-pager diff --exit-code

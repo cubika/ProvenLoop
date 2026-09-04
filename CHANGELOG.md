@@ -2,6 +2,20 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.3] - Unreleased
+
+### Added
+
+- Immutable, checksum-verifying PowerShell installer for the Microsoft Design
+  Partner preview.
+- Stable per-user runtime prefix and PATH command registration.
+
+### Changed
+
+- Lowered the Node.js runtime minimum from 22.18 to 22.16 after running the
+  unit and integration suites with Node.js 22.16.
+- Installation now probes the required `node:sqlite` APIs directly.
+
 ## [0.1.0-alpha.0.2] - 2026-09-03
 
 ### Fixed

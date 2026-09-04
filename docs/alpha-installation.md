@@ -5,10 +5,10 @@
 | Component | Supported version |
 |---|---|
 | Operating system | Windows 10 or Windows 11, x64 |
-| Node.js | `>=22.18.0 <23` |
+| Node.js | `>=22.16.0 <23` |
 | npm | `>=11 <12` |
 | GitHub Copilot CLI | `1.0.82-0` |
-| ProvenLoop | `0.1.0-alpha.0.2` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.3` evidence candidate |
 
 Other versions fail closed as incompatible. The Alpha does not bundle Node.js.
 
@@ -18,15 +18,52 @@ For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release:
 
 ```powershell
-$version = "0.1.0-alpha.0.2"
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.3/install.ps1 | iex
+```
+
+The installer:
+
+1. checks Windows, Node.js, npm, and Copilot CLI;
+2. optionally installs Node.js 22 through Winget when Node is missing;
+3. downloads the exact Release tarball and SHA-256 file;
+4. verifies the checksum;
+5. installs the local tarball without contacting an npm registry;
+6. registers the version-pinned Copilot marketplace and plugin;
+7. enables capture, worker, retrieval, and correction learning;
+8. runs passive Doctor.
+
+Install without automatic event collection:
+
+```powershell
+& ([ScriptBlock]::Create(
+  (Invoke-RestMethod `
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.3/install.ps1)
+)) -NoAutoCollect
+```
+
+Install without retrieval or correction learning:
+
+```powershell
+& ([ScriptBlock]::Create(
+  (Invoke-RestMethod `
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.3/install.ps1)
+)) -NoLearning
+```
+
+The equivalent manual installation is:
+
+```powershell
+$version = "0.1.0-alpha.0.3"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $package = Join-Path $env:TEMP "provenloop-cli-$version.tgz"
 $checksum = "$package.sha256"
 
 Invoke-WebRequest "$release/provenloop-cli-$version.tgz" `
-  -OutFile $package
+  -OutFile $package `
+  -UseBasicParsing
 Invoke-WebRequest "$release/provenloop-cli-$version.tgz.sha256" `
-  -OutFile $checksum
+  -OutFile $checksum `
+  -UseBasicParsing
 
 $expected = (Get-Content $checksum -Raw).Trim().Split()[0]
 $actual = (Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -36,6 +73,8 @@ if ($actual -ne $expected) {
 
 npm install --global $package --no-audit --no-fund
 provenloop install
+provenloop enable retrieval
+provenloop enable correction_learning
 provenloop doctor
 ```
 
@@ -45,7 +84,7 @@ directory and create the `provenloop` command. It does not resolve ProvenLoop
 through npmjs, `packagefeedproxy.microsoft.io`, or Azure Artifacts.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.2` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.3` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.

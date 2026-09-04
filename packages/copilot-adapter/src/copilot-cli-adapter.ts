@@ -1896,12 +1896,12 @@ implements AgentAdapter<CopilotEventMappingResult> {
     ] = process.versions.node.split(".");
     const major = Number(majorText);
     const minor = Number(minorText);
-    const supported = major === 22 && minor >= 18;
+    const supported = major === 22 && minor >= 16;
     return {
       id: "runtime.node",
       message: supported
         ? `Node ${process.versions.node} is supported.`
-        : `Node ${process.versions.node} is outside >=22.18.0 <23.`,
+        : `Node ${process.versions.node} is outside >=22.16.0 <23.`,
       status: supported ? "pass" : "fail",
     };
   }

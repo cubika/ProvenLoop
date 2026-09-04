@@ -5,7 +5,7 @@
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-02
 
-**Evidence candidate:** `0.1.0-alpha.0.2` supersedes the earlier
+**Evidence candidate:** `0.1.0-alpha.0.3` supersedes the earlier
 `0.1.0-alpha.0.x` packages and collects the real Windows,
 provider-degradation, and remote-upgrade evidence required to approve the
 target `0.1.0-alpha.1`. It is a prerelease and must not be described as
@@ -68,11 +68,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-npm install --global `
-  "https://github.com/cubika/ProvenLoop/releases/download/v0.1.0-alpha.1/provenloop-cli-0.1.0-alpha.1.tgz" `
-  --no-audit --no-fund
-provenloop install
-provenloop doctor
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.3/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
@@ -80,6 +76,11 @@ Release tarball is the canonical runtime source. npm is used only as the local
 installer and must not resolve ProvenLoop through a registry. The tarball and
 its SHA-256 file must be downloaded from the same immutable Git tag and
 verified before installation.
+
+The bootstrap installer must check prerequisites, verify the Release SHA-256,
+install the local tarball without registry resolution, register the Copilot
+integration, enable the in-scope learning capabilities, run Doctor, and clean
+all temporary package files.
 
 Public npm and a future governed Azure Artifacts path are optional secondary
 channels. If O365 internal distribution later uses Azure Artifacts, the
