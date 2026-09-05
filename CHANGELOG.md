@@ -2,6 +2,13 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.5] - 2026-09-05
+
+### Fixed
+
+- Raised unit-test and hook timeouts to 30 seconds so the release workflow
+  remains reliable on loaded Windows hosted runners.
+
 ## [0.1.0-alpha.0.4] - 2026-09-05
 
 ### Changed

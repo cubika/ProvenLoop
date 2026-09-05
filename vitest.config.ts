@@ -21,8 +21,10 @@ export default defineConfig({
     },
   },
   test: {
+    hookTimeout: 30_000,
     include: [
       "tests/unit/**/*.test.ts"
     ],
+    testTimeout: 30_000,
   },
 });

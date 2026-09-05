@@ -8,7 +8,7 @@
 | Node.js | `>=22.16.0 <23` |
 | npm | `>=11 <12` |
 | GitHub Copilot CLI | `>=1.0.71` |
-| ProvenLoop | `0.1.0-alpha.0.4` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.5` evidence candidate |
 
 The installer probes the Plugin Marketplace, plugin installation, and plugin
 enable/disable commands before changing Copilot configuration. Copilot CLI
@@ -23,7 +23,7 @@ For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.4/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1 | iex
 ```
 
 The installer:
@@ -42,7 +42,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.4/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -51,14 +51,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.4/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1)
 )) -NoLearning
 ```
 
 The equivalent manual installation is:
 
 ```powershell
-$version = "0.1.0-alpha.0.4"
+$version = "0.1.0-alpha.0.5"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $package = Join-Path $env:TEMP "provenloop-cli-$version.tgz"
 $checksum = "$package.sha256"
@@ -89,7 +89,7 @@ directory and create the `provenloop` command. It does not resolve ProvenLoop
 through npmjs, `packagefeedproxy.microsoft.io`, or Azure Artifacts.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.4` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.5` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.

@@ -7,7 +7,7 @@
       "replace-me"
     ],
     "copilotCliVersion": "replace-me",
-    "pluginVersion": "0.1.0-alpha.0.4",
+    "pluginVersion": "0.1.0-alpha.0.5",
     "fixtureVersion": 1,
     "probeVersion": 1,
     "captureRunIds": [
@@ -45,7 +45,7 @@
     "status": "fail",
     "source": "cubika/ProvenLoop",
     "fromVersion": "replace-me",
-    "toVersion": "0.1.0-alpha.0.4",
+    "toVersion": "0.1.0-alpha.0.5",
     "disableEnablePassed": false,
     "repeatedInstallPassed": false,
     "knowledgeDataPreserved": false,

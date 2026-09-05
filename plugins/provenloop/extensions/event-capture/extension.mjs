@@ -25,7 +25,7 @@ const runtime = JSON.parse(
 if (
   runtime.product !== "ProvenLoopRuntime" ||
   runtime.schemaVersion !== 1 ||
-  runtime.version !== "0.1.0-alpha.0.4" ||
+  runtime.version !== "0.1.0-alpha.0.5" ||
   typeof runtime.dataRoot !== "string" ||
   !isAbsolute(runtime.dataRoot) ||
   typeof runtime.extensionModuleUrl !== "string" ||
