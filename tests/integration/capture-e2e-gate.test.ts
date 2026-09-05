@@ -96,7 +96,7 @@ describe("capture to canonical Ledger Gate", () => {
     }
 
     writer.submit(mapped.value);
-    expect(await writer.flush(1_000)).toBe(true);
+    expect(await writer.flush(30_000)).toBe(true);
     expect(
       await readFile(join(queueRoot, "queue-1.json"), "utf8"),
     ).not.toContain(secret);

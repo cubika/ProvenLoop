@@ -2,6 +2,13 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.7] - 2026-09-05
+
+### Fixed
+
+- Make Windows-hosted integration tests independent of current machine resource
+  pressure and give bounded asynchronous evaluation work its full test budget.
+
 ## [0.1.0-alpha.0.6] - 2026-09-05
 
 ### Fixed

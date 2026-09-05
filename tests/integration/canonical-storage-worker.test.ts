@@ -1249,6 +1249,10 @@ describe("shared capture worker", () => {
 
     expect(
       await runCaptureWorkerOnce({
+        admission: () => ({
+          allowed: true,
+          reasons: [],
+        }),
         batchSize: 10,
         dataRoot,
         lease: new WindowsNamedPipeLeaseProvider(

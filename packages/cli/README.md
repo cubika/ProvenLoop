@@ -6,7 +6,7 @@ Microsoft-internal preview users should install the exact GitHub Release
 tarball rather than resolving ProvenLoop through an npm registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.7/install.ps1 | iex
 ```
 
 The npmjs package remains available as an optional public/developer channel.

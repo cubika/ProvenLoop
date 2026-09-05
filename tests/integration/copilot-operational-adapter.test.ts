@@ -65,7 +65,7 @@ class FakeCommandRunner implements CommandRunner {
   public marketplaceSource: string | undefined;
   public pluginEnabled = false;
   public pluginInstalled = false;
-  public pluginVersion = "0.1.0-alpha.0.6";
+  public pluginVersion = "0.1.0-alpha.0.7";
   public providerResult: CommandResult = {
     exitCode: 0,
     stderr: "",
@@ -519,7 +519,7 @@ describe("Copilot operational adapter", () => {
     });
     expect(runner.calls).toContain(
       "copilot plugin marketplace add " +
-        "cubika/ProvenLoop#v0.1.0-alpha.0.6",
+        "cubika/ProvenLoop#v0.1.0-alpha.0.7",
     );
     const status = await adapter.status();
     expect(status.pluginInstalled).toBe(true);
@@ -637,7 +637,7 @@ describe("Copilot operational adapter", () => {
       runner.marketplaceSource = "cubika/ProvenLoop#v0.1.0-alpha.0.4";
       runner.pluginVersion = "0.1.0-alpha.0.4";
       runner.failures.set(
-        "copilot plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.6",
+        "copilot plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.7",
         {
           exitCode: 1,
           stderr: "network unavailable",
@@ -1183,7 +1183,7 @@ describe("Copilot operational adapter", () => {
     });
 
     await expect(adapter.install()).rejects.toThrow(
-      "does not match runtime 0.1.0-alpha.0.6",
+      "does not match runtime 0.1.0-alpha.0.7",
     );
     await expect(adapter.status()).resolves.toMatchObject({
       installed: false,
@@ -1214,7 +1214,7 @@ describe("Copilot operational adapter", () => {
         "copilot plugin uninstall provenloop@provenloop-marketplace",
         "copilot plugin marketplace remove provenloop-marketplace",
         "copilot plugin marketplace add " +
-          "cubika/ProvenLoop#v0.1.0-alpha.0.6",
+          "cubika/ProvenLoop#v0.1.0-alpha.0.7",
       ]),
     );
   });
@@ -1231,7 +1231,7 @@ describe("Copilot operational adapter", () => {
         extraKnownMarketplaces: {
           "provenloop-marketplace": {
             source: {
-              ref: "v0.1.0-alpha.0.6",
+              ref: "v0.1.0-alpha.0.7",
               repo: "cubika/ProvenLoop",
               source: "github",
             },

@@ -38,7 +38,7 @@ provenloop doctor
 The supported bootstrap entry point automates this sequence:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.7/install.ps1 | iex
 ```
 
 npm is used only as the local file installer. Installation must not require

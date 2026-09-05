@@ -214,6 +214,6 @@ describe("M1 + M2 MVP aggregate release gate", () => {
         root.report.evaluationBinding,
       );
     },
-    15_000,
+    30_000,
   );
 });

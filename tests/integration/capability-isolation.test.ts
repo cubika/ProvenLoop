@@ -73,7 +73,7 @@ class FakeCopilotRunner implements CommandRunner {
     if (command === "plugin list") {
       return Promise.resolve(this.#success(
         this.pluginInstalled
-          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v0.1.0-alpha.0.6) (${
+          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v0.1.0-alpha.0.7) (${
               this.pluginEnabled ? "enabled" : "disabled"
             })\n`
           : "Live Plugins:\n",
@@ -81,7 +81,7 @@ class FakeCopilotRunner implements CommandRunner {
     }
     if (
       command ===
-      "plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.6"
+      "plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.7"
     ) {
       this.marketplaceRegistered = true;
       this.marketplaceSource = args[3];

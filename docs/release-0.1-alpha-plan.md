@@ -5,7 +5,7 @@
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-02
 
-**Evidence candidate:** `0.1.0-alpha.0.6` supersedes the earlier
+**Evidence candidate:** `0.1.0-alpha.0.7` supersedes the earlier
 `0.1.0-alpha.0.x` packages and collects the real Windows,
 provider-degradation, and remote-upgrade evidence required to approve the
 target `0.1.0-alpha.1`. It is a prerelease and must not be described as
@@ -68,7 +68,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.7/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
