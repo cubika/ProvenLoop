@@ -249,6 +249,10 @@ describe("capability isolation", () => {
     await adapter.enable("worker");
     await expect(
       runCaptureWorkerOnce({
+        admission: () => ({
+          allowed: true,
+          reasons: [],
+        }),
         dataRoot,
       }),
     ).resolves.toMatchObject({
@@ -288,6 +292,10 @@ describe("capability isolation", () => {
       );
       await expect(
         runCaptureWorkerOnce({
+          admission: () => ({
+            allowed: true,
+            reasons: [],
+          }),
           dataRoot,
         }),
       ).resolves.toMatchObject({
