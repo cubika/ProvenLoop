@@ -509,6 +509,33 @@ const toolError = (
 
 const MCP_WRITE_RESERVE_MS = 25;
 
+const withDeadline = async <T>(
+  operation: Promise<T>,
+  deadline: number,
+  message: string,
+): Promise<T> => {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error(message);
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(message)),
+          remaining,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+};
+
 export class LocalMcpToolHandlers implements McpToolHandlers {
   readonly #adapter: CopilotCliAdapter;
   readonly #cwd: string;
@@ -550,12 +577,16 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
           statusDetail: "Retrieval capability is disabled.",
         };
       }
-      const identity = await this.#adapter.resolveSession({
-        adapterVersion:
-          state.detectedCopilotVersion ?? "unknown",
-        cwd: request.cwd,
-        sessionId: request.sessionId,
-      });
+      const identity = await withDeadline(
+        this.#adapter.resolveSession({
+          adapterVersion:
+            state.detectedCopilotVersion ?? "unknown",
+          cwd: request.cwd,
+          sessionId: request.sessionId,
+        }),
+        deadline - MCP_WRITE_RESERVE_MS,
+        "Retrieval deadline expired while resolving repository identity.",
+      );
       if (identity.internalSession) {
         return {
           items: [],

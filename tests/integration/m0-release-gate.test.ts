@@ -46,7 +46,7 @@ const passingEvidence = (
       "Windows-10",
       "Windows-11",
     ],
-    pluginVersion: "0.1.0-alpha.0.5",
+    pluginVersion: "0.1.0-alpha.0.6",
     probeVersion: 1,
     reportDigests: [
       digest("1"),
@@ -105,7 +105,7 @@ const passingEvidence = (
     settingsRestoredExactly: true,
     source: "cubika/ProvenLoop",
     status: "pass",
-    toVersion: "0.1.0-alpha.0.5",
+    toVersion: "0.1.0-alpha.0.6",
     uninstallPreservedData: true,
   },
   observedGuardrails: {

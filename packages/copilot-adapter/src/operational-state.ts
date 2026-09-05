@@ -343,6 +343,15 @@ export const ensureExperimentalSetting = async (
   return state;
 };
 
+export const assertExperimentalSettingRestorable = async (
+  path: string,
+  tracked: ExperimentalSettingState | undefined,
+): Promise<void> => {
+  if (tracked?.managed) {
+    await readSettings(path);
+  }
+};
+
 export const restoreExperimentalSetting = async (
   path: string,
   tracked: ExperimentalSettingState | undefined,

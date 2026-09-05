@@ -1,5 +1,6 @@
 export {
   CaptureQueueItemNotFoundError,
+  CaptureQueueLeaseTimeoutError,
   CaptureQueueNotInitializedError,
   CaptureQueueDeletionInProgressError,
   ConflictingCaptureQueueDeletionError,
@@ -26,6 +27,17 @@ export {
   type CopilotSessionFileDescriptor,
   type DiscoverCopilotSessionFilesOptions,
 } from "./copilot-session-files.js";
+export {
+  beginExtensionShutdown,
+  ExtensionShutdownRequestedError,
+  ExtensionShutdownTimeoutError,
+  isExtensionShutdownRequested,
+  registerActiveExtension,
+  waitForActiveExtensionsToStop,
+  type ActiveExtensionRegistration,
+  type ExtensionShutdownBarrier,
+  type RegisterActiveExtensionOptions,
+} from "./extension-lifecycle.js";
 export {
   WindowsNamedPipeLeaseProvider,
   windowsNamedPipePath,

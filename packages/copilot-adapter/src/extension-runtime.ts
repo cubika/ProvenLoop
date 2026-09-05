@@ -22,6 +22,7 @@ export interface CopilotExtensionCaptureOptions {
   readonly internalSession: boolean;
   readonly mapper: CopilotEventMapper;
   readonly onDiagnostic?: (message: string) => void;
+  readonly onStopped?: () => Promise<void> | void;
   readonly refreshWorkspace?: () => Promise<CopilotWorkspaceSnapshot>;
   readonly shutdownDeadlineMs: number;
   readonly writer: AsyncCaptureWriter;
@@ -74,6 +75,7 @@ export class CopilotExtensionCapture {
   readonly #mapper: CopilotEventMapper;
   #malformedEvents = 0;
   readonly #onDiagnostic: ((message: string) => void) | undefined;
+  readonly #onStopped: (() => Promise<void> | void) | undefined;
   readonly #refreshWorkspace:
     (() => Promise<CopilotWorkspaceSnapshot>) | undefined;
   #activeRefresh: Promise<void> | undefined;
@@ -83,6 +85,7 @@ export class CopilotExtensionCapture {
   #runtimeErrors = 0;
   readonly #shutdownDeadlineMs: number;
   #shutdownPromise: Promise<boolean> | undefined;
+  #stoppedNotification: Promise<void> | undefined;
   #started = false;
   #unsupportedEvents = 0;
   #workspaceGeneration = 0;
@@ -99,6 +102,7 @@ export class CopilotExtensionCapture {
     this.#internalSession = options.internalSession;
     this.#mapper = options.mapper;
     this.#onDiagnostic = options.onDiagnostic;
+    this.#onStopped = options.onStopped;
     this.#refreshWorkspace = options.refreshWorkspace;
     this.#shutdownDeadlineMs = options.shutdownDeadlineMs;
     this.#writer = options.writer;
@@ -227,7 +231,8 @@ export class CopilotExtensionCapture {
   }
 
   public shutdown(): Promise<boolean> {
-    this.#shutdownPromise ??= this.#shutdownWithinDeadline();
+    this.#shutdownPromise ??= this.#shutdownWithinDeadline()
+      .finally(() => this.#notifyStopped());
     return this.#shutdownPromise;
   }
 
@@ -356,6 +361,15 @@ export class CopilotExtensionCapture {
     const remaining = Math.max(1, deadline - Date.now());
     const writerSettled = await this.#writer.stop(remaining);
     return refreshesSettled && writerSettled;
+  }
+
+  #notifyStopped(): Promise<void> {
+    this.#stoppedNotification ??= Promise.resolve(
+      this.#onStopped?.(),
+    ).catch((error: unknown) => {
+      this.#diagnostic(error);
+    });
+    return this.#stoppedNotification;
   }
 
   #diagnostic(value: unknown): void {

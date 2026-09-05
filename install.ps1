@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.5",
+    [string]$Version = "0.1.0-alpha.0.6",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -245,31 +245,53 @@ Write-Success $copilotText
 $temporaryRoot = Join-Path (
     $env:TEMP
 ) "provenloop-install-$([Guid]::NewGuid().ToString('N'))"
-$installPrefix = Join-Path $env:LOCALAPPDATA "ProvenLoopRuntime"
+$runtimeRoot = Join-Path $env:LOCALAPPDATA "ProvenLoopRuntime"
+$runtimeSlotsRoot = Join-Path $runtimeRoot "versions"
+$installPrefix = Join-Path $runtimeSlotsRoot $Version
 $packagePath = Join-Path $temporaryRoot $fileName
 $checksumPath = "$packagePath.sha256"
-$existingStatus = $null
-$existingCommandPath = Join-Path $installPrefix "provenloop.cmd"
-$existingCommand = if (
-    Test-Path -LiteralPath $existingCommandPath -PathType Leaf
-) {
-    $existingCommandPath
-} else {
-    $command = Get-Command provenloop.cmd -ErrorAction SilentlyContinue
-    if ($null -eq $command) {
-        $null
-    } else {
-        $command.Source
-    }
-}
-if ($null -ne $existingCommand) {
+$existingInstallation = $false
+$runtimeLocatorPath = Join-Path (
+    $env:LOCALAPPDATA
+) "ProvenLoopIntegration\runtime.json"
+if (Test-Path -LiteralPath $runtimeLocatorPath -PathType Leaf) {
     try {
-        $existingStatus = (
-            & $existingCommand status 2>$null |
-                Out-String
-        ) | ConvertFrom-Json
+        $runtimeLocator = Get-Content `
+            -LiteralPath $runtimeLocatorPath `
+            -Raw `
+            -Encoding UTF8 |
+            ConvertFrom-Json
+        if (
+            $runtimeLocator.product -eq "ProvenLoopRuntime" -and
+            $runtimeLocator.schemaVersion -eq 1 -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$runtimeLocator.nodeExecutable
+            ) -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$runtimeLocator.cliBinPath
+            ) -and
+            (Test-Path `
+                -LiteralPath $runtimeLocator.nodeExecutable `
+                -PathType Leaf) -and
+            (Test-Path `
+                -LiteralPath $runtimeLocator.cliBinPath `
+                -PathType Leaf)
+        ) {
+            $existingStatus = (
+                & $runtimeLocator.nodeExecutable `
+                    $runtimeLocator.cliBinPath `
+                    status 2>$null |
+                    Out-String
+            ) | ConvertFrom-Json
+            if (
+                $LASTEXITCODE -eq 0 -and
+                $existingStatus.installed -eq $true
+            ) {
+                $existingInstallation = $true
+            }
+        }
     } catch {
-        $existingStatus = $null
+        $existingInstallation = $false
     }
 }
 
@@ -301,7 +323,7 @@ try {
     }
     Write-Success "Package checksum verified"
 
-    Write-Step "Installing the verified local tarball"
+    Write-Step "Installing the verified local tarball into its runtime slot"
     & $npmCommand.Source install `
         --global `
         --prefix $installPrefix `
@@ -311,19 +333,7 @@ try {
         --no-fund
     Require-Success "ProvenLoop package installation"
 
-    Ensure-UserPath $installPrefix
     $provenLoopCommand = Resolve-ProvenLoopCommand $installPrefix
-    $resolvedCommand = Get-Command provenloop.cmd -ErrorAction SilentlyContinue
-    if (
-        $null -eq $resolvedCommand -or
-        [IO.Path]::GetFullPath($resolvedCommand.Source) -ine
-            [IO.Path]::GetFullPath($provenLoopCommand)
-    ) {
-        throw (
-            "PATH does not resolve to the newly installed ProvenLoop " +
-            "command at $provenLoopCommand."
-        )
-    }
     $metadata = (
         & $provenLoopCommand version |
             Out-String
@@ -337,13 +347,37 @@ try {
     }
     Write-Success "Installed ProvenLoop $Version"
 
-    Write-Step "Registering the Copilot integration"
-    $installArguments = @("install")
-    if ($NoAutoCollect) {
-        $installArguments += "--no-auto-collect"
+    if ($existingInstallation) {
+        Write-Step "Upgrading the Copilot integration"
+        & $provenLoopCommand upgrade
+        Require-Success "ProvenLoop integration upgrade"
+        if ($NoAutoCollect) {
+            Write-Step "Disabling automatic collection"
+            & $provenLoopCommand collection disable | Out-Null
+            Require-Success "Collection disable"
+        }
+    } else {
+        Write-Step "Registering the Copilot integration"
+        $installArguments = @("install")
+        if ($NoAutoCollect) {
+            $installArguments += "--no-auto-collect"
+        }
+        & $provenLoopCommand @installArguments
+        Require-Success "ProvenLoop integration installation"
     }
-    & $provenLoopCommand @installArguments
-    Require-Success "ProvenLoop integration installation"
+
+    Ensure-UserPath $installPrefix
+    $resolvedCommand = Get-Command provenloop.cmd -ErrorAction SilentlyContinue
+    if (
+        $null -eq $resolvedCommand -or
+        [IO.Path]::GetFullPath($resolvedCommand.Source) -ine
+            [IO.Path]::GetFullPath($provenLoopCommand)
+    ) {
+        throw (
+            "PATH does not resolve to the newly installed ProvenLoop " +
+            "command at $provenLoopCommand."
+        )
+    }
 
     if ($NoLearning) {
         Write-Step "Keeping retrieval and correction learning disabled"
@@ -351,7 +385,7 @@ try {
         Require-Success "Retrieval disable"
         & $provenLoopCommand disable correction_learning | Out-Null
         Require-Success "Correction learning disable"
-    } elseif ($null -eq $existingStatus) {
+    } elseif (-not $existingInstallation) {
         Write-Step "Enabling retrieval and correction learning"
         & $provenLoopCommand enable retrieval | Out-Null
         Require-Success "Retrieval enable"
@@ -392,6 +426,7 @@ try {
     Write-Host ""
     Write-Success "ProvenLoop installation completed"
     Write-Host "Command: $provenLoopCommand"
+    Write-Host "Runtime slot: $installPrefix"
     Write-Host "Data: $env:LOCALAPPDATA\ProvenLoop"
     Write-Host (
         "Automatic collection: " +

@@ -44,9 +44,11 @@ import {
   sanitizeDiagnostic,
 } from "@provenloop/domain";
 import {
+  beginExtensionShutdown,
   resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
+  waitForActiveExtensionsToStop,
   WindowsCaptureQueue,
   WindowsNamedPipeLeaseProvider,
   type WindowsProvenLoopPaths,
@@ -67,6 +69,7 @@ import {
   type CopilotEventMappingResult,
 } from "./event-mapper.js";
 import {
+  assertExperimentalSettingRestorable,
   clearExperimentalSettingState,
   ensureExperimentalSetting,
   readCopilotAdapterState,
@@ -125,6 +128,11 @@ const PLUGIN_CAPABILITIES = new Set<ProvenLoopCapability>([
   "capture",
   "retrieval",
 ]);
+const COPILOT_COMMAND_TIMEOUT_MS = 15_000;
+const GIT_COMMAND_TIMEOUT_MS = 5_000;
+const STATE_LEASE_TIMEOUT_MS = 5_000;
+const STATE_LEASE_RETRY_DELAY_MS = 25;
+const EXTENSION_SHUTDOWN_TIMEOUT_MS = 6_000;
 
 export interface CopilotCliAdapterOptions {
   readonly cliBinPath?: string;
@@ -475,7 +483,6 @@ implements AgentAdapter<CopilotEventMappingResult> {
 
   async #upgrade(): Promise<AdapterOperationResult> {
     await this.#initializeCoreStorage();
-    await this.#writeRuntimeLocator();
     const version = await this.#detectCopilotVersion();
     if (
       version === undefined ||
@@ -492,29 +499,37 @@ implements AgentAdapter<CopilotEventMappingResult> {
     await this.#assertPluginCommandSupport();
     await this.#prepareMarketplaceSource();
     const registration = await this.#requireRegistrationStatus();
+    const stateBefore = await this.#readState();
     if (
       !registration.marketplaceRegistered ||
       !registration.pluginInstalled
     ) {
       return this.#install();
     }
-    if (
-      marketplaceSourceMatches(
-        registration.marketplaceSource,
-        this.#marketplaceSource,
-      )
-    ) {
-      await this.#runRequired(
-        [
-          "plugin",
-          "marketplace",
-          "update",
-          this.#marketplaceName,
-        ],
-        "marketplace update",
+    if (registration.marketplaceSource === undefined) {
+      throw new Error(
+        "Cannot safely upgrade because the current ProvenLoop marketplace source is unavailable.",
       );
     }
-    if (registration.pluginInstalled) {
+    let replacementStarted = false;
+    try {
+      if (
+        marketplaceSourceMatches(
+          registration.marketplaceSource,
+          this.#marketplaceSource,
+        )
+      ) {
+        await this.#runRequired(
+          [
+            "plugin",
+            "marketplace",
+            "update",
+            this.#marketplaceName,
+          ],
+          "marketplace update",
+        );
+      }
+      replacementStarted = true;
       await this.#runRequired(
         [
           "plugin",
@@ -523,48 +538,96 @@ implements AgentAdapter<CopilotEventMappingResult> {
         ],
         "plugin uninstall before upgrade",
       );
+      await this.#runRequired(
+        [
+          "plugin",
+          "marketplace",
+          "remove",
+          this.#marketplaceName,
+        ],
+        "marketplace replacement before upgrade",
+      );
+      await this.#ensureMarketplaceRegistered();
+      await this.#runRequired(
+        [
+          "plugin",
+          "install",
+          this.#pluginReference(),
+        ],
+        "plugin installation after marketplace upgrade",
+      );
+      await this.#assertInstalledPluginVersion();
+      await this.#ensurePluginEnabled();
+      const state = stateWith(stateBefore, this.#now(), {
+        detectedCopilotVersion: version,
+        installed: true,
+        marketplaceRegistered: true,
+        pluginEnabled: true,
+        pluginInstalled: true,
+      });
+      await this.#writeState(state);
+      await this.#writeRuntimeLocator();
+      return {
+        message: "ProvenLoop Copilot integration upgraded.",
+        status: "changed",
+      };
+    } catch (error) {
+      if (!replacementStarted) {
+        throw error;
+      }
+      let restorationError: unknown;
+      try {
+        await this.#restoreRegistration(registration);
+        await this.#writeState(stateBefore);
+      } catch (restoreError) {
+        restorationError = restoreError;
+      }
+      if (restorationError !== undefined) {
+        throw new Error(
+          "ProvenLoop upgrade failed and could not restore the prior integration: " +
+            sanitizeDiagnostic(restorationError),
+          {
+            cause: error,
+          },
+        );
+      }
+      throw new Error(
+        "ProvenLoop upgrade failed; the prior integration was restored: " +
+          sanitizeDiagnostic(error),
+        {
+          cause: error,
+        },
+      );
     }
-    await this.#runRequired(
-      [
-        "plugin",
-        "marketplace",
-        "remove",
-        this.#marketplaceName,
-      ],
-      "marketplace replacement before upgrade",
-    );
-    await this.#ensureMarketplaceRegistered();
-    await this.#runRequired(
-      [
-        "plugin",
-        "install",
-        this.#pluginReference(),
-      ],
-      "plugin installation after marketplace upgrade",
-    );
-    await this.#assertInstalledPluginVersion();
-    await this.#ensurePluginEnabled();
-    let state = await this.#readState();
-    state = stateWith(state, this.#now(), {
-      detectedCopilotVersion: version,
-      installed: true,
-      marketplaceRegistered: true,
-      pluginEnabled: true,
-      pluginInstalled: true,
-    });
-    await this.#writeState(state);
-    return {
-      message: "ProvenLoop Copilot integration upgraded.",
-      status: "changed",
-    };
   }
 
   async #install(
     options: AdapterInstallOptions = {},
   ): Promise<AdapterOperationResult> {
     await this.#initializeCoreStorage();
-    await this.#writeRuntimeLocator();
     let state = await this.#readState();
+    if (state.installed) {
+      const registration = await this.#requireRegistrationStatus();
+      if (
+        registration.marketplaceRegistered &&
+        registration.pluginInstalled &&
+        (
+          !marketplaceSourceMatches(
+            registration.marketplaceSource,
+            this.#marketplaceSource,
+          ) ||
+          registration.pluginVersion !== PROVENLOOP_VERSION
+        )
+      ) {
+        const result = await this.#upgrade();
+        if (options.autoCollect === false) {
+          await this.#disable("capture");
+          await this.#disable("worker");
+        }
+        return result;
+      }
+    }
+    await this.#writeRuntimeLocator();
     const stateWasInstalled = state.installed;
     const collectionBefore = {
       capture: state.capabilities.capture.enabled,
@@ -901,12 +964,19 @@ implements AgentAdapter<CopilotEventMappingResult> {
     if (dataRootWasPresent) {
       await this.#assertOwnedDataRoot();
     }
+    await assertExperimentalSettingRestorable(
+      this.#settingsPath(),
+      state.experimentalSetting,
+    );
     let workerLease: Awaited<
       ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
     >;
     let knowledgeLease: Awaited<
       ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
     >;
+    let extensionShutdown:
+      | Awaited<ReturnType<typeof beginExtensionShutdown>>
+      | undefined;
     try {
       if (options.purge && dataRootWasPresent) {
         const workerLeaseName =
@@ -932,6 +1002,13 @@ implements AgentAdapter<CopilotEventMappingResult> {
             "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
           );
         }
+        extensionShutdown = await beginExtensionShutdown(
+          this.#paths.root,
+        );
+        await waitForActiveExtensionsToStop(
+          this.#paths.root,
+          EXTENSION_SHUTDOWN_TIMEOUT_MS,
+        );
       }
       const registration = await this.#requireRegistrationStatus();
     if (
@@ -1017,6 +1094,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: changed || options.purge ? "changed" : "unchanged",
       };
     } finally {
+      await extensionShutdown?.cancel();
       await knowledgeLease?.release();
       await workerLease?.release();
     }
@@ -1394,10 +1472,16 @@ implements AgentAdapter<CopilotEventMappingResult> {
       "adapter-state",
     );
     const provider = new WindowsNamedPipeLeaseProvider(leaseName);
+    const deadline = Date.now() + STATE_LEASE_TIMEOUT_MS;
     let lease = await provider.tryAcquire();
     while (lease === undefined) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          "Timed out waiting for the ProvenLoop operation lock. Retry the command after the active operation completes.",
+        );
+      }
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 5);
+        setTimeout(resolve, STATE_LEASE_RETRY_DELAY_MS);
       });
       lease = await provider.tryAcquire();
     }
@@ -1528,6 +1612,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         ...this.#environment,
         COPILOT_HOME: this.#copilotHome,
       },
+      timeoutMs: COPILOT_COMMAND_TIMEOUT_MS,
     });
   }
 
@@ -1544,6 +1629,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       ],
       {
         environment: this.#environment,
+        timeoutMs: GIT_COMMAND_TIMEOUT_MS,
       },
     );
   }
@@ -1705,6 +1791,64 @@ implements AgentAdapter<CopilotEventMappingResult> {
         return undefined;
       }
       throw error;
+    }
+  }
+
+  async #restoreRegistration(
+    previous: CopilotRegistrationStatus,
+  ): Promise<void> {
+    const current = await this.#requireRegistrationStatus();
+    if (current.pluginInstalled) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "uninstall",
+          this.#pluginReference(),
+        ],
+        "plugin uninstall during upgrade recovery",
+      );
+    }
+    if (current.marketplaceRegistered) {
+      await this.#runRequired(
+        [
+          "plugin",
+          "marketplace",
+          "remove",
+          this.#marketplaceName,
+        ],
+        "marketplace removal during upgrade recovery",
+      );
+    }
+    if (!previous.marketplaceRegistered) {
+      return;
+    }
+    if (previous.marketplaceSource === undefined) {
+      throw new Error(
+        "The previous ProvenLoop marketplace source is unavailable.",
+      );
+    }
+    await this.#runRequired(
+      [
+        "plugin",
+        "marketplace",
+        "add",
+        previous.marketplaceSource,
+      ],
+      "marketplace restoration after upgrade failure",
+    );
+    if (!previous.pluginInstalled) {
+      return;
+    }
+    await this.#runRequired(
+      [
+        "plugin",
+        "install",
+        this.#pluginReference(),
+      ],
+      "plugin restoration after upgrade failure",
+    );
+    if (!previous.pluginEnabled) {
+      await this.#ensurePluginDisabled();
     }
   }
 

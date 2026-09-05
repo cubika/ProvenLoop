@@ -8,7 +8,7 @@
 | Node.js | `>=22.16.0 <23` |
 | npm | `>=11 <12` |
 | GitHub Copilot CLI | `>=1.0.71` |
-| ProvenLoop | `0.1.0-alpha.0.5` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.6` evidence candidate |
 
 The installer probes the Plugin Marketplace, plugin installation, and plugin
 enable/disable commands before changing Copilot configuration. Copilot CLI
@@ -23,7 +23,7 @@ For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1 | iex
 ```
 
 The installer:
@@ -32,8 +32,10 @@ The installer:
 2. optionally installs Node.js 22 through Winget when Node is missing;
 3. downloads the exact Release tarball and SHA-256 file;
 4. verifies the checksum;
-5. installs the local tarball without contacting an npm registry;
-6. registers the version-pinned Copilot marketplace and plugin;
+5. installs the local tarball into a versioned user-local runtime slot without
+   contacting an npm registry;
+6. upgrades the version-pinned Copilot marketplace and plugin only after the
+   new runtime is verified;
 7. enables capture, worker, retrieval, and correction learning;
 8. runs passive Doctor.
 
@@ -42,7 +44,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -51,14 +53,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.5/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.6/install.ps1)
 )) -NoLearning
 ```
 
 The equivalent manual installation is:
 
 ```powershell
-$version = "0.1.0-alpha.0.5"
+$version = "0.1.0-alpha.0.6"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $package = Join-Path $env:TEMP "provenloop-cli-$version.tgz"
 $checksum = "$package.sha256"
@@ -76,20 +78,35 @@ if ($actual -ne $expected) {
   throw "ProvenLoop package checksum mismatch."
 }
 
-npm install --global $package --no-audit --no-fund
-provenloop install
-provenloop enable retrieval
-provenloop enable correction_learning
-provenloop doctor
+$runtimeSlot = Join-Path `
+  $env:LOCALAPPDATA `
+  "ProvenLoopRuntime\versions\$version"
+npm install --global --prefix $runtimeSlot $package --no-audit --no-fund
+$provenloop = Join-Path $runtimeSlot "provenloop.cmd"
+& $provenloop version
+& $provenloop install
+& $provenloop enable retrieval
+& $provenloop enable correction_learning
+& $provenloop doctor
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  "$runtimeSlot;$userPath",
+  "User"
+)
+$env:Path = "$runtimeSlot;$env:Path"
 ```
 
 The tarball contains the complete ProvenLoop runtime and has no runtime npm
-dependencies. npm is used only to place the files in a stable installation
-directory and create the `provenloop` command. It does not resolve ProvenLoop
-through npmjs, `packagefeedproxy.microsoft.io`, or Azure Artifacts.
+dependencies. npm is used only to place the files in a versioned user-local
+runtime slot and create the `provenloop` command. The installer switches PATH
+only after the new runtime validates and the Copilot integration succeeds, so
+the prior runtime remains available when an upgrade fails. npm does not resolve
+ProvenLoop through npmjs, `packagefeedproxy.microsoft.io`, or Azure Artifacts.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.5` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.6` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -102,17 +119,45 @@ provenloop install --no-auto-collect
 
 ## Upgrade
 
-Download and verify the new version's GitHub Release tarball, then install it
-from the local file:
+The recommended upgrade is to rerun the versioned bootstrap installer for the
+new release. It stages the new runtime in a separate slot, performs the
+integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-npm install --global <downloaded-provenloop-tarball> --no-audit --no-fund
-provenloop upgrade
-provenloop doctor
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v<new-version>/install.ps1 | iex
 ```
 
-Upgrade refreshes the marketplace and plugin without removing the queue,
-canonical database, Knowledge database, or user settings.
+For a manually downloaded and verified release tarball, use the same
+versioned-slot path and invoke that exact new command. Do not use npm's default
+global prefix or an unqualified `provenloop` command, because either can select
+an older runtime:
+
+```powershell
+$version = "<new-version>"
+$runtimeSlot = Join-Path `
+  $env:LOCALAPPDATA `
+  "ProvenLoopRuntime\versions\$version"
+npm install --global --prefix $runtimeSlot `
+  <downloaded-provenloop-tarball> --no-audit --no-fund
+$provenloop = Join-Path $runtimeSlot "provenloop.cmd"
+& $provenloop version
+& $provenloop upgrade
+& $provenloop doctor
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  "$runtimeSlot;$userPath",
+  "User"
+)
+$env:Path = "$runtimeSlot;$env:Path"
+```
+
+Upgrade retains the previous runtime slot until the new marketplace, plugin,
+runtime locator, and capability state all succeed. If marketplace or plugin
+replacement fails, ProvenLoop restores the prior registration and leaves the
+previous active runtime on PATH. Upgrade never removes the queue, canonical
+database, Knowledge database, or user settings.
 
 ## Capability controls
 
@@ -210,15 +255,38 @@ Purge removes only an ownership-verified ProvenLoop data root:
 provenloop uninstall --purge
 ```
 
-Purge refuses an unowned, ambiguous, or active data root.
+Purge refuses an unowned or ambiguous data root. It also requests active
+Extensions to stop and waits for their confirmed shutdown; if any Extension
+does not stop before the deadline, it preserves all data and instructs the user
+to close Copilot before retrying.
 
 ## Rollback
 
 1. Run `provenloop uninstall`.
 2. Download and verify the previous version's GitHub Release tarball.
-3. Install that local tarball with `npm install --global <tarball>`.
-4. Run `provenloop install`.
-5. Run `provenloop doctor`.
+3. Install the prior release into its own runtime slot and run that exact
+   command:
+
+```powershell
+$version = "<previous-version>"
+$runtimeSlot = Join-Path `
+  $env:LOCALAPPDATA `
+  "ProvenLoopRuntime\versions\$version"
+npm install --global --prefix $runtimeSlot `
+  <downloaded-provenloop-tarball> --no-audit --no-fund
+$provenloop = Join-Path $runtimeSlot "provenloop.cmd"
+& $provenloop version
+& $provenloop install
+& $provenloop doctor
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  "$runtimeSlot;$userPath",
+  "User"
+)
+$env:Path = "$runtimeSlot;$env:Path"
+```
 
 Do not delete `%LOCALAPPDATA%\ProvenLoop` during rollback. Database migrations
 and release evidence must be retained with the rollback artifact.

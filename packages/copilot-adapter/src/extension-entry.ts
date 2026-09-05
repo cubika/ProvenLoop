@@ -12,13 +12,19 @@ import {
 } from "node:path";
 
 import {
+  ExtensionShutdownRequestedError,
+  isExtensionShutdownRequested,
+  registerActiveExtension,
   resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
 } from "@provenloop/platform-windows";
 
 import { getCopilotCaptureCapability } from "./capabilities.js";
 import type { CommandRunner } from "./command-runner.js";
-import { CopilotCliAdapter } from "./copilot-cli-adapter.js";
+import {
+  assertCopilotAdapterDataRoot,
+  CopilotCliAdapter,
+} from "./copilot-cli-adapter.js";
 import type { CopilotSessionLike } from "./extension-runtime.js";
 import { readCopilotAdapterState } from "./operational-state.js";
 import { startCopilotExtensionCapture } from "./start-extension.js";
@@ -90,6 +96,15 @@ export const runInstalledCopilotExtension = async (
   const environment = options.environment ?? process.env;
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
   let runtimeActive = true;
+  let extensionRegistration:
+    | Awaited<ReturnType<typeof registerActiveExtension>>
+    | undefined;
+  let metricsTimer: NodeJS.Timeout | undefined;
+  let dataRootVerified = false;
+  const releaseExtensionRegistration = async (): Promise<void> => {
+    await extensionRegistration?.release();
+    extensionRegistration = undefined;
+  };
   const diagnostic = (message: string): void => {
     if (!runtimeActive) {
       return;
@@ -100,11 +115,26 @@ export const runInstalledCopilotExtension = async (
     ).catch(() => undefined);
   };
   try {
+    await assertCopilotAdapterDataRoot(paths);
+    dataRootVerified = true;
+    const sessionId = environment.SESSION_ID?.trim();
+    if (!sessionId) {
+      throw new Error("SESSION_ID is unavailable to the Extension.");
+    }
+    extensionRegistration = await registerActiveExtension(
+      paths.root,
+      sessionId,
+      {
+        assertDataRoot: () =>
+          assertCopilotAdapterDataRoot(paths),
+      },
+    );
     const state = await readCopilotAdapterState(
       paths.adapterState,
       now(),
     );
     if (!state.capabilities.capture.enabled) {
+      await releaseExtensionRegistration();
       return {
         status: "disabled",
       };
@@ -134,13 +164,10 @@ export const runInstalledCopilotExtension = async (
       diagnostic(
         `Copilot version ${adapterVersion ?? "unknown"} is incompatible.`,
       );
+      await releaseExtensionRegistration();
       return {
         status: "incompatible",
       };
-    }
-    const sessionId = environment.SESSION_ID?.trim();
-    if (!sessionId) {
-      throw new Error("SESSION_ID is unavailable to the Extension.");
     }
     const identity = await adapter.resolveSession({
       adapterVersion,
@@ -149,12 +176,21 @@ export const runInstalledCopilotExtension = async (
       sessionId,
     });
     if (identity.internalSession) {
+      await releaseExtensionRegistration();
       return {
         status: "disabled",
       };
     }
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
+    const stopRuntime = async (): Promise<void> => {
+      runtimeActive = false;
+      if (metricsTimer !== undefined) {
+        clearInterval(metricsTimer);
+        metricsTimer = undefined;
+      }
+      await releaseExtensionRegistration();
+    };
     const capture = await startCopilotExtensionCapture({
       adapterVersion,
       buffer: {
@@ -173,6 +209,7 @@ export const runInstalledCopilotExtension = async (
         return session;
       },
       onDiagnostic: diagnostic,
+      onStopped: stopRuntime,
       queue,
       refreshWorkspace: async () => {
         const refreshed = await adapter.resolveSession({
@@ -259,6 +296,12 @@ export const runInstalledCopilotExtension = async (
         ReturnType<typeof readCopilotAdapterState>
       >;
       try {
+        if (await isExtensionShutdownRequested(paths.root)) {
+          capture.setEnabled(false);
+          await capture.shutdown();
+          metricsFlushRunning = false;
+          return;
+        }
         latest = await readCopilotAdapterState(
           paths.adapterState,
           now(),
@@ -279,7 +322,10 @@ export const runInstalledCopilotExtension = async (
         }
         runtimeActive = false;
         capture.setEnabled(false);
-        clearInterval(metricsTimer);
+        if (metricsTimer !== undefined) {
+          clearInterval(metricsTimer);
+          metricsTimer = undefined;
+        }
         await capture.shutdown().catch(() => false);
         metricsFlushRunning = false;
         return;
@@ -287,7 +333,10 @@ export const runInstalledCopilotExtension = async (
       if (!latest.capabilities.capture.enabled) {
         runtimeActive = false;
         capture.setEnabled(false);
-        clearInterval(metricsTimer);
+        if (metricsTimer !== undefined) {
+          clearInterval(metricsTimer);
+          metricsTimer = undefined;
+        }
         await capture.shutdown().catch(() => false);
         metricsFlushRunning = false;
         return;
@@ -312,7 +361,7 @@ export const runInstalledCopilotExtension = async (
         metricsFlushRunning = false;
       }
     };
-    const metricsTimer = setInterval(() => {
+    metricsTimer = setInterval(() => {
       void flushMetrics();
     }, 1_000);
     metricsTimer.unref();
@@ -322,7 +371,21 @@ export const runInstalledCopilotExtension = async (
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    diagnostic(message);
+    if (error instanceof ExtensionShutdownRequestedError) {
+      runtimeActive = false;
+      return {
+        status: "disabled",
+      };
+    }
+    await releaseExtensionRegistration();
+    if (
+      dataRootVerified &&
+      extensionRegistration !== undefined
+    ) {
+      diagnostic(message);
+    } else {
+      runtimeActive = false;
+    }
     return {
       error: message,
       status: "failed",

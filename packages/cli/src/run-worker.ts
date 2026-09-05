@@ -60,13 +60,23 @@ const defaultCircuitBreaker = (): CaptureWorkerCircuitBreaker =>
     minFreeDiskBytes: 512 * 1024 * 1024,
   });
 
+const KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS = 5_000;
+const LEASE_RETRY_DELAY_MS = 25;
+
 const acquireRequiredLease = async (
   provider: ProcessLeaseProvider,
 ): Promise<ProcessLease> => {
+  const deadline =
+    Date.now() + KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS;
   let lease = await provider.tryAcquire();
   while (lease === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Timed out waiting for the Knowledge projection lease.",
+      );
+    }
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
+      setTimeout(resolve, LEASE_RETRY_DELAY_MS);
     });
     lease = await provider.tryAcquire();
   }

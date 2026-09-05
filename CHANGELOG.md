@@ -2,6 +2,19 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.6] - 2026-09-05
+
+### Fixed
+
+- Stage each installer release in a versioned runtime slot, verify that exact
+  command, and switch PATH only after the Copilot integration upgrade succeeds.
+- Restore the prior plugin registration if marketplace or plugin replacement
+  fails, and preserve the previous runtime locator.
+- Refuse purge until active Extensions confirm shutdown, and validate managed
+  Copilot settings before destructive uninstall work begins.
+- Bound Copilot commands and local operation leases so blocked commands return
+  actionable errors instead of waiting indefinitely.
+
 ## [0.1.0-alpha.0.5] - 2026-09-05
 
 ### Fixed

@@ -87,6 +87,7 @@ export interface WindowsCaptureQueueOptions {
   readonly idGenerator?: () => string;
   readonly maxAttempts?: number;
   readonly now?: () => Date;
+  readonly processLeaseTimeoutMs?: number;
   readonly retryBaseDelayMs?: number;
   readonly retryMaxDelayMs?: number;
 }
@@ -96,6 +97,16 @@ export class CaptureQueueNotInitializedError extends Error {
 
   public constructor() {
     super("The capture queue must be initialized before use.");
+  }
+}
+
+export class CaptureQueueLeaseTimeoutError extends Error {
+  public override readonly name = "CaptureQueueLeaseTimeoutError";
+
+  public constructor() {
+    super(
+      "Timed out waiting for the ProvenLoop capture queue. Retry after the active queue operation completes.",
+    );
   }
 }
 
@@ -206,6 +217,7 @@ export class WindowsCaptureQueue {
   readonly #now: () => Date;
   #operationChain: Promise<void> = Promise.resolve();
   #processLease?: WindowsNamedPipeLeaseProvider;
+  readonly #processLeaseTimeoutMs: number;
   readonly #retryBaseDelayMs: number;
   readonly #retryMaxDelayMs: number;
   readonly #root: string;
@@ -229,6 +241,10 @@ export class WindowsCaptureQueue {
       "maxAttempts",
     );
     this.#now = options.now ?? (() => new Date());
+    this.#processLeaseTimeoutMs = positiveInteger(
+      options.processLeaseTimeoutMs ?? 5_000,
+      "processLeaseTimeoutMs",
+    );
     this.#retryBaseDelayMs = positiveInteger(
       options.retryBaseDelayMs ?? 1_000,
       "retryBaseDelayMs",
@@ -1779,13 +1795,17 @@ export class WindowsCaptureQueue {
     if (processLease === undefined) {
       throw new CaptureQueueNotInitializedError();
     }
+    const deadline = Date.now() + this.#processLeaseTimeoutMs;
     while (true) {
       const lease = await processLease.tryAcquire();
       if (lease !== undefined) {
         return lease;
       }
+      if (Date.now() >= deadline) {
+        throw new CaptureQueueLeaseTimeoutError();
+      }
       await new Promise<void>((resolve) => {
-        setTimeout(resolve, 5);
+        setTimeout(resolve, 25);
       });
     }
   }

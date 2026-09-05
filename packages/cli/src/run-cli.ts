@@ -202,6 +202,9 @@ const operationExitCode = (
   result: AdapterOperationResult,
 ): number => result.status === "incompatible" ? 1 : 0;
 
+const KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS = 5_000;
+const LEASE_RETRY_DELAY_MS = 25;
+
 const acquireKnowledgeProjectionLease = async (
   root: string,
 ) => {
@@ -210,10 +213,17 @@ const acquireKnowledgeProjectionLease = async (
     "knowledge-projection",
   );
   const provider = new WindowsNamedPipeLeaseProvider(leaseName);
+  const deadline =
+    Date.now() + KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS;
   let lease = await provider.tryAcquire();
   while (lease === undefined) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Timed out waiting for the Knowledge projection lease. Retry the command after maintenance completes.",
+      );
+    }
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, 5);
+      setTimeout(resolve, LEASE_RETRY_DELAY_MS);
     });
     lease = await provider.tryAcquire();
   }

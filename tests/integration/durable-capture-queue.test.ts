@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { captureQueueItemSchema } from "@provenloop/contracts";
 import { InternalCaptureEventError } from "@provenloop/domain";
 import {
+  CaptureQueueLeaseTimeoutError,
   CorruptCaptureQueueItemError,
   InvalidCaptureQueueTransitionError,
   StaleCaptureQueueClaimError,
@@ -111,6 +112,45 @@ describe("Windows durable capture queue", () => {
       "enqueued",
     ]);
     expect(await firstQueue.list()).toHaveLength(1);
+  });
+
+  it("returns a retryable error instead of waiting forever for another process", async () => {
+    const root = await createTemporaryDirectory();
+    const firstQueue = new WindowsCaptureQueue(root);
+    const secondQueue = new WindowsCaptureQueue(root, {
+      processLeaseTimeoutMs: 25,
+    });
+    await Promise.all([
+      firstQueue.initialize(),
+      secondQueue.initialize(),
+    ]);
+    const item = await firstQueue.enqueue(createInput());
+    let releaseDeletion: (() => void) | undefined;
+    let deletionEntered: (() => void) | undefined;
+    const deletionBlocked = new Promise<void>((resolve) => {
+      releaseDeletion = resolve;
+    });
+    const deletionStarted = new Promise<void>((resolve) => {
+      deletionEntered = resolve;
+    });
+    const deleting = firstQueue.deleteByIdentifiers(
+      new Set([
+        item.envelope.event.eventId,
+      ]),
+      {
+        beforeDelete: async () => {
+          deletionEntered?.();
+          await deletionBlocked;
+        },
+      },
+    );
+
+    await deletionStarted;
+    await expect(secondQueue.list()).rejects.toBeInstanceOf(
+      CaptureQueueLeaseTimeoutError,
+    );
+    releaseDeletion?.();
+    await deleting;
   });
 
   it("redacts before an atomic pending-item write", async () => {

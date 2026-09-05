@@ -34,6 +34,7 @@ export interface StartCopilotExtensionCaptureOptions {
     },
   ) => Promise<CopilotSessionLike>;
   readonly onDiagnostic?: (message: string) => void;
+  readonly onStopped?: () => Promise<void> | void;
   readonly queue: CaptureQueueSink;
   readonly refreshWorkspace?: () => Promise<CopilotWorkspaceSnapshot>;
   readonly retryDelayMs: number;
@@ -83,6 +84,11 @@ export const startCopilotExtensionCapture = async (
       ? {}
       : {
           onDiagnostic: options.onDiagnostic,
+        }),
+    ...(options.onStopped === undefined
+      ? {}
+      : {
+          onStopped: options.onStopped,
         }),
     ...(options.refreshWorkspace === undefined
       ? {}
