@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.3",
+    [string]$Version = "0.1.0-alpha.0.4",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -177,15 +177,68 @@ Write-Success "npm $npmText"
 Write-Step "Checking GitHub Copilot CLI"
 $copilotCommand = Get-Command copilot.exe -ErrorAction SilentlyContinue
 if ($null -eq $copilotCommand) {
-    throw "GitHub Copilot CLI 1.0.82-0 is required."
+    throw "GitHub Copilot CLI >=1.0.71 is required."
 }
 $copilotText = (& $copilotCommand.Source --version | Out-String).Trim()
 Require-Success "Copilot CLI version check"
-if ($copilotText -notmatch "\b1\.0\.82-0\b") {
+$copilotVersionMatch = [regex]::Match(
+    $copilotText,
+    "GitHub Copilot CLI\s+([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9]+))?(?:\.|\s|$)"
+)
+if (-not $copilotVersionMatch.Success) {
     throw (
-        "ProvenLoop 0.1 Alpha requires GitHub Copilot CLI 1.0.82-0. " +
+        "Unable to parse the GitHub Copilot CLI version. " +
         "Detected: $copilotText"
     )
+}
+$copilotMajor = [int]$copilotVersionMatch.Groups[1].Value
+$copilotMinor = [int]$copilotVersionMatch.Groups[2].Value
+$copilotPatch = [int]$copilotVersionMatch.Groups[3].Value
+if (
+    $copilotMajor -lt 1 -or
+    (
+        $copilotMajor -eq 1 -and
+        (
+            $copilotMinor -lt 0 -or
+            (
+                $copilotMinor -eq 0 -and
+                $copilotPatch -lt 71
+            )
+        )
+    )
+) {
+    throw (
+        "ProvenLoop 0.1 Alpha requires GitHub Copilot CLI >=1.0.71. " +
+        "Detected: $copilotText"
+    )
+}
+$requiredCopilotCommands = @(
+    @{
+        Arguments = @("plugin", "marketplace", "list", "--help")
+        Operation = "Copilot Plugin Marketplace"
+    },
+    @{
+        Arguments = @("plugin", "install", "--help")
+        Operation = "Copilot Plugin installation"
+    },
+    @{
+        Arguments = @("plugins", "enable", "--help")
+        Operation = "Copilot Plugin enablement"
+    },
+    @{
+        Arguments = @("plugins", "disable", "--help")
+        Operation = "Copilot Plugin disablement"
+    }
+)
+foreach ($requiredCommand in $requiredCopilotCommands) {
+    $copilotArguments = [string[]]$requiredCommand.Arguments
+    & $copilotCommand.Source @copilotArguments *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "$($requiredCommand.Operation) is unavailable in $copilotText. " +
+            "ProvenLoop requires Plugin Marketplace, install, enable, and disable commands."
+        )
+    }
 }
 Write-Success $copilotText
 

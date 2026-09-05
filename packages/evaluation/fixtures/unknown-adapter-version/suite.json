@@ -28,7 +28,7 @@
         "schemaVersion": 1,
         "eventId": "event-unknown-version-1",
         "adapter": "copilot-cli",
-        "adapterVersion": "999.0.0",
+        "adapterVersion": "1.0.70-0",
         "eventType": "prompt.submitted",
         "timestamp": "2026-08-29T00:00:00.000Z",
         "trust": "user"

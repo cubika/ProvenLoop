@@ -750,7 +750,7 @@ describe("deletion propagation", () => {
     });
     const unsupported = await queue.enqueue({
       adapter: "copilot-cli",
-      adapterVersion: "9.9.9",
+      adapterVersion: "1.0.70-0",
       eventType: "prompt.submitted",
       repoId: "repo-1",
       sessionId: "session-episode-scope",
@@ -887,7 +887,7 @@ describe("deletion propagation", () => {
     });
     const child = await queue.enqueue({
       adapter: "copilot-cli",
-      adapterVersion: "9.9.9",
+      adapterVersion: "1.0.70-0",
       eventType: "tool.completed",
       parentEventId: target.envelope.event.eventId,
       repoId: "repo-1",
@@ -898,7 +898,7 @@ describe("deletion propagation", () => {
     });
     const unrelated = await queue.enqueue({
       adapter: "copilot-cli",
-      adapterVersion: "9.9.9",
+      adapterVersion: "1.0.70-0",
       eventType: "prompt.submitted",
       repoId: "repo-1",
       sessionId: "session-episode-child",

@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import {
+  isSupportedCopilotCliVersion,
+  SUPPORTED_COPILOT_CLI_VERSION_RANGE,
+} from "./copilot-cli-version.js";
+import {
   identifierSchema,
   isoTimestampSchema,
   nonEmptyStringSchema,
@@ -47,7 +51,7 @@ export const SUPPORTED_ADAPTER_VERSIONS: Readonly<
   Record<string, readonly string[]>
 > = {
   "copilot-cli": [
-    "1.0.82-0",
+    SUPPORTED_COPILOT_CLI_VERSION_RANGE,
   ],
 } as const;
 
@@ -149,12 +153,12 @@ export const classifyRawEvent = (input: unknown): RawEventClassification => {
   const supportedVersions = SUPPORTED_ADAPTER_VERSIONS[
     validation.value.adapter
   ];
-  if (
-    supportedVersions === undefined ||
-    !supportedVersions.some(
-      (version) => version === validation.value.adapterVersion,
-    )
-  ) {
+  const adapterVersionSupported =
+    validation.value.adapter === "copilot-cli" &&
+    isSupportedCopilotCliVersion(
+      validation.value.adapterVersion,
+    );
+  if (supportedVersions === undefined || !adapterVersionSupported) {
     return {
       status: "unsupported_adapter_version",
       adapter: validation.value.adapter,

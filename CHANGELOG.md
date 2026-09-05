@@ -2,6 +2,17 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.4] - 2026-09-05
+
+### Changed
+
+- Replaced the exact Copilot CLI `1.0.82-0` allowlist with `>=1.0.71`
+  and no artificial upper bound.
+- The installer now probes the required Plugin Marketplace, installation, and
+  plugin enable/disable commands before modifying Copilot configuration.
+- Doctor distinguishes verified CLI versions (`1.0.82-0`, `1.0.83-4`) from
+  compatible versions that still require ProvenLoop evidence.
+
 ## [0.1.0-alpha.0.3] - 2026-09-04
 
 ### Added

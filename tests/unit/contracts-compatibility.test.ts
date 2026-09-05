@@ -86,10 +86,31 @@ describe("schema version compatibility", () => {
     expect(result).toMatchObject({
       status: "unsupported_adapter_version",
       adapter: "copilot-cli",
-      adapterVersion: "999.0.0",
+      adapterVersion: "1.0.70-0",
       supportedVersions: [
-        "1.0.82-0",
+        ">=1.0.71",
       ],
+    });
+  });
+
+  it("accepts compatible newer Copilot adapter versions", () => {
+    const input = {
+      actorId: "user-1",
+      adapter: "copilot-cli",
+      adapterVersion: "1.1.0",
+      eventId: "event-1",
+      eventType: "prompt.submitted",
+      schemaVersion: 1,
+      sessionId: "session-1",
+      timestamp: "2026-09-05T00:00:00.000Z",
+      trust: "user",
+    };
+
+    expect(classifyRawEvent(input)).toMatchObject({
+      status: "supported",
+      value: {
+        adapterVersion: "1.1.0",
+      },
     });
   });
 

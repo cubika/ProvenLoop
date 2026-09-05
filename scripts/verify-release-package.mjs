@@ -280,6 +280,10 @@ public static class Program
             Console.WriteLine("GitHub Copilot CLI 1.0.82-0.");
             return 0;
         }
+        if (command.EndsWith(" --help"))
+        {
+            return 0;
+        }
         if (command == "plugin marketplace list")
         {
             Console.WriteLine("Registered marketplaces:");

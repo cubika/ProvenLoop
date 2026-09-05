@@ -116,7 +116,7 @@ describe("Copilot Session file parser", () => {
     let eventCount = 0;
     await writeFile(
       path,
-      `${JSON.stringify(header("1.0.81-0"))}\n${JSON.stringify(userEvent)}\n`,
+      `${JSON.stringify(header("1.0.70-0"))}\n${JSON.stringify(userEvent)}\n`,
       "utf8",
     );
 
@@ -129,11 +129,34 @@ describe("Copilot Session file parser", () => {
 
     expect(result).toEqual({
       status: "incompatible",
-      adapterVersion: "1.0.81-0",
+      adapterVersion: "1.0.70-0",
       fileVersion: 1,
       reason: "unsupported_adapter_version",
     });
     expect(eventCount).toBe(0);
+  });
+
+  it("accepts newer compatible Copilot versions with the known file format", async () => {
+    const root = await createTemporaryDirectory();
+    const path = join(root, "events.jsonl");
+    await writeFile(
+      path,
+      `${JSON.stringify(header("1.1.0"))}\n${JSON.stringify(userEvent)}\n`,
+      "utf8",
+    );
+
+    await expect(
+      parseCopilotSessionFile(path, {
+        maxLineChars: 10_000,
+        onEvent: () => undefined,
+      }),
+    ).resolves.toMatchObject({
+      status: "supported",
+      header: {
+        adapterVersion: "1.1.0",
+        fileVersion: 1,
+      },
+    });
   });
 
   it("reports oversized records without retaining their content", async () => {
@@ -302,7 +325,7 @@ describe("Copilot Session file parser", () => {
     const path = join(root, "events.jsonl");
     await writeFile(
       path,
-      `\n${JSON.stringify(header("1.0.81-0"))}\n`,
+      `\n${JSON.stringify(header("1.0.70-0"))}\n`,
       "utf8",
     );
 
@@ -313,7 +336,7 @@ describe("Copilot Session file parser", () => {
       }),
     ).toEqual({
       status: "incompatible",
-      adapterVersion: "1.0.81-0",
+      adapterVersion: "1.0.70-0",
       fileVersion: 1,
       reason: "unsupported_adapter_version",
     });

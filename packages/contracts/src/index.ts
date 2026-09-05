@@ -59,6 +59,14 @@ export {
   type ContextUseRecord,
 } from "./context-use-record.js";
 export {
+  isSupportedCopilotCliVersion,
+  isVerifiedCopilotCliVersion,
+  MINIMUM_COPILOT_CLI_VERSION,
+  parseCopilotCliVersion,
+  SUPPORTED_COPILOT_CLI_VERSION_RANGE,
+  VERIFIED_COPILOT_CLI_VERSIONS,
+} from "./copilot-cli-version.js";
+export {
   correctionKeySchema,
   correctionOpportunitySchema,
   type CorrectionKey,

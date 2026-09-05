@@ -59,6 +59,9 @@ class FakeCopilotRunner implements CommandRunner {
         "GitHub Copilot CLI 1.0.82-0.\n",
       ));
     }
+    if (args.at(-1) === "--help") {
+      return Promise.resolve(this.#success());
+    }
     if (command === "plugin marketplace list") {
       return Promise.resolve(this.#success(
         this.marketplaceRegistered
@@ -70,7 +73,7 @@ class FakeCopilotRunner implements CommandRunner {
     if (command === "plugin list") {
       return Promise.resolve(this.#success(
         this.pluginInstalled
-          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v0.1.0-alpha.0.3) (${
+          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v0.1.0-alpha.0.4) (${
               this.pluginEnabled ? "enabled" : "disabled"
             })\n`
           : "Live Plugins:\n",
@@ -78,7 +81,7 @@ class FakeCopilotRunner implements CommandRunner {
     }
     if (
       command ===
-      "plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.3"
+      "plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.4"
     ) {
       this.marketplaceRegistered = true;
       this.marketplaceSource = args[3];

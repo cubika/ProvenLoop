@@ -308,7 +308,7 @@ describe("capture reconciliation", () => {
       sessionRoot,
       "old-session",
       [
-        `${JSON.stringify(header("old-session", "1.0.81-0"))}\n`,
+        `${JSON.stringify(header("old-session", "1.0.70-0"))}\n`,
       ],
     );
     const mismatchPath = await writeSession(
@@ -334,7 +334,7 @@ describe("capture reconciliation", () => {
       }),
     ).toEqual({
       status: "incompatible",
-      adapterVersion: "1.0.81-0",
+      adapterVersion: "1.0.70-0",
       fileVersion: 1,
       reason: "unsupported_adapter_version",
     });

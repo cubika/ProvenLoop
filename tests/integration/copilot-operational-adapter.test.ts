@@ -54,13 +54,14 @@ class FakeCommandRunner implements CommandRunner {
   public marketplaceSource: string | undefined;
   public pluginEnabled = false;
   public pluginInstalled = false;
-  public pluginVersion = "0.1.0-alpha.0.3";
+  public pluginVersion = "0.1.0-alpha.0.4";
   public providerResult: CommandResult = {
     exitCode: 0,
     stderr: "",
     stdout: "PROVENLOOP_OK\n",
   };
   public registrationProbeFailure = false;
+  public unsupportedHelpCommand: string | undefined;
   public version: string | undefined = "1.0.82-0";
   public gitRoot = "C:\\repo\\worktree";
 
@@ -86,6 +87,17 @@ class FakeCommandRunner implements CommandRunner {
               stderr: "",
               stdout: `GitHub Copilot CLI ${this.version}.\n`,
             },
+      );
+    }
+    if (args.at(-1) === "--help") {
+      return Promise.resolve(
+        command === this.unsupportedHelpCommand
+          ? {
+              exitCode: 1,
+              stderr: "Unknown command.",
+              stdout: "",
+            }
+          : this.#success(),
       );
     }
     if (args[0] === "--prompt") {
@@ -449,7 +461,7 @@ describe("Copilot operational adapter", () => {
     });
     expect(runner.calls).toContain(
       "copilot plugin marketplace add " +
-        "cubika/ProvenLoop#v0.1.0-alpha.0.3",
+        "cubika/ProvenLoop#v0.1.0-alpha.0.4",
     );
     const status = await adapter.status();
     expect(status.pluginInstalled).toBe(true);
@@ -683,7 +695,7 @@ describe("Copilot operational adapter", () => {
   it("reports unsupported Copilot versions without mutating Copilot", async () => {
     const root = await createTemporaryDirectory();
     const runner = new FakeCommandRunner();
-    runner.version = "9.9.9-0";
+    runner.version = "1.0.70-0";
     const adapter = new CopilotCliAdapter({
       commandRunner: runner,
       copilotHome: join(root, "copilot-home"),
@@ -701,7 +713,7 @@ describe("Copilot operational adapter", () => {
     const matrix = await adapter.capabilities();
     expect(matrix).toMatchObject({
       compatibility: "incompatible",
-      installedVersion: "9.9.9-0",
+      installedVersion: "1.0.70-0",
     });
     expect(
       matrix.capabilities.find(
@@ -710,6 +722,80 @@ describe("Copilot operational adapter", () => {
     ).toMatchObject({
       availability: "incompatible",
       enabled: false,
+    });
+  });
+
+  it("installs with newer compatible Copilot versions", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    runner.version = "1.0.83-4";
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+
+    await expect(adapter.install()).resolves.toMatchObject({
+      status: "changed",
+    });
+    await expect(adapter.capabilities()).resolves.toMatchObject({
+      compatibility: "supported",
+      installedVersion: "1.0.83-4",
+      capture: {
+        adapterVersion: "1.0.83-4",
+      },
+    });
+    await expect(adapter.doctor({
+      online: true,
+    })).resolves.toMatchObject({
+      checks: expect.arrayContaining([
+        expect.objectContaining({
+          id: "copilot.version",
+          message: "GitHub Copilot CLI 1.0.83-4 is verified.",
+          status: "pass",
+        }),
+      ]),
+    });
+    runner.version = "1.1.0";
+    await expect(adapter.doctor({
+      online: true,
+    })).resolves.toMatchObject({
+      checks: expect.arrayContaining([
+        expect.objectContaining({
+          id: "copilot.version",
+          message:
+            "GitHub Copilot CLI 1.1.0 is compatible but has not yet completed ProvenLoop verification.",
+          status: "warn",
+        }),
+      ]),
+    });
+  });
+
+  it("stops before changing Copilot configuration when required commands are unavailable", async () => {
+    const root = await createTemporaryDirectory();
+    const copilotHome = join(root, "copilot-home");
+    const runner = new FakeCommandRunner();
+    runner.unsupportedHelpCommand = "copilot plugins enable --help";
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome,
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+
+    await expect(adapter.install()).rejects.toThrow(
+      "Copilot Plugin enablement support failed: Unknown command.",
+    );
+    expect(
+      runner.calls.some((call) =>
+        call.startsWith("copilot plugin marketplace add "),
+      ),
+    ).toBe(false);
+    await expect(access(join(copilotHome, "settings.json"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 
@@ -794,7 +880,7 @@ describe("Copilot operational adapter", () => {
       platform: "win32",
     });
     await adapter.install();
-    runner.version = "9.9.9-0";
+    runner.version = "1.0.70-0";
     let joined = false;
 
     await expect(
@@ -861,7 +947,7 @@ describe("Copilot operational adapter", () => {
     });
 
     await expect(adapter.install()).rejects.toThrow(
-      "does not match runtime 0.1.0-alpha.0.3",
+      "does not match runtime 0.1.0-alpha.0.4",
     );
     await expect(adapter.status()).resolves.toMatchObject({
       installed: false,
@@ -892,7 +978,7 @@ describe("Copilot operational adapter", () => {
         "copilot plugin uninstall provenloop@provenloop-marketplace",
         "copilot plugin marketplace remove provenloop-marketplace",
         "copilot plugin marketplace add " +
-          "cubika/ProvenLoop#v0.1.0-alpha.0.3",
+          "cubika/ProvenLoop#v0.1.0-alpha.0.4",
       ]),
     );
   });
@@ -909,7 +995,7 @@ describe("Copilot operational adapter", () => {
         extraKnownMarketplaces: {
           "provenloop-marketplace": {
             source: {
-              ref: "v0.1.0-alpha.0.3",
+              ref: "v0.1.0-alpha.0.4",
               repo: "cubika/ProvenLoop",
               source: "github",
             },
@@ -1165,7 +1251,7 @@ describe("Copilot operational adapter", () => {
       providerStatus: "unavailable",
     });
 
-    runner.version = "1.0.81-0";
+    runner.version = "1.0.70-0";
     await expect(
       adapter.doctor({
         online: true,

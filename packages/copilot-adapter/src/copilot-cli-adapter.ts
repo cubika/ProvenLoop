@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 
 import {
+  isSupportedCopilotCliVersion,
+  isVerifiedCopilotCliVersion,
   PROVENLOOP_CAPABILITIES,
   PROVENLOOP_VERSION,
   type AdapterCapabilityAvailability,
@@ -82,6 +84,41 @@ const DEFAULT_COPILOT_MARKETPLACE_NAME =
 const DEFAULT_COPILOT_MARKETPLACE_SOURCE =
   `cubika/ProvenLoop#v${PROVENLOOP_VERSION}`;
 const COPILOT_PLUGIN_NAME = "provenloop";
+const REQUIRED_COPILOT_PLUGIN_COMMANDS = [
+  {
+    args: [
+      "plugin",
+      "marketplace",
+      "list",
+      "--help",
+    ],
+    operation: "Plugin Marketplace support",
+  },
+  {
+    args: [
+      "plugin",
+      "install",
+      "--help",
+    ],
+    operation: "Plugin installation support",
+  },
+  {
+    args: [
+      "plugins",
+      "enable",
+      "--help",
+    ],
+    operation: "Plugin enablement support",
+  },
+  {
+    args: [
+      "plugins",
+      "disable",
+      "--help",
+    ],
+    operation: "Plugin disablement support",
+  },
+] as const;
 const DATA_ROOT_MARKER_PRODUCT = "ProvenLoop";
 const RUNTIME_LOCATOR_PRODUCT = "ProvenLoopRuntime";
 const PLUGIN_CAPABILITIES = new Set<ProvenLoopCapability>([
@@ -157,7 +194,7 @@ const compatibilityForVersion = (
   if (version === undefined) {
     return "unavailable";
   }
-  return getCopilotCaptureCapability(version) === undefined
+  return !isSupportedCopilotCliVersion(version)
     ? "incompatible"
     : "supported";
 };
@@ -452,6 +489,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: "incompatible",
       };
     }
+    await this.#assertPluginCommandSupport();
     await this.#prepareMarketplaceSource();
     const registration = await this.#requireRegistrationStatus();
     if (
@@ -565,6 +603,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
       };
     }
 
+    await this.#assertPluginCommandSupport();
     await this.#writeState(state);
     const before = await this.#requireRegistrationStatus();
     try {
@@ -731,6 +770,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     if (capability === "capture") {
       await this.#assertOwnedDataRoot();
       try {
+        await this.#assertPluginCommandSupport();
         const experimentalSetting = await ensureExperimentalSetting(
           this.#settingsPath(),
           state.experimentalSetting,
@@ -1004,6 +1044,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: "incompatible",
       };
     }
+    await this.#assertPluginCommandSupport();
     const before = await this.#requireRegistrationStatus();
     await this.#writeRuntimeLocator();
     await this.#prepareMarketplaceSource();
@@ -1475,7 +1516,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     if (result.exitCode !== 0) {
       return undefined;
     }
-    const match = /GitHub Copilot CLI\s+([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)/u.exec(
+    const match = /GitHub Copilot CLI\s+([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9]+)?)(?:\.|\s|$)/u.exec(
       result.stdout,
     );
     return match?.[1];
@@ -1516,6 +1557,12 @@ implements AgentAdapter<CopilotEventMappingResult> {
       throw new CopilotCommandError(operation, result);
     }
     return result;
+  }
+
+  async #assertPluginCommandSupport(): Promise<void> {
+    for (const command of REQUIRED_COPILOT_PLUGIN_COMMANDS) {
+      await this.#runRequired(command.args, command.operation);
+    }
   }
 
   async #registrationStatus(): Promise<{
@@ -2073,11 +2120,16 @@ implements AgentAdapter<CopilotEventMappingResult> {
         matrix.installedVersion === undefined
           ? "GitHub Copilot CLI is unavailable."
           : matrix.compatibility === "supported"
-            ? `GitHub Copilot CLI ${matrix.installedVersion} is supported.`
+            ? isVerifiedCopilotCliVersion(matrix.installedVersion)
+              ? `GitHub Copilot CLI ${matrix.installedVersion} is verified.`
+              : `GitHub Copilot CLI ${matrix.installedVersion} is compatible but has not yet completed ProvenLoop verification.`
             : `GitHub Copilot CLI ${matrix.installedVersion} is incompatible.`,
       status:
         matrix.compatibility === "supported"
-          ? "pass"
+          ? matrix.installedVersion !== undefined &&
+            isVerifiedCopilotCliVersion(matrix.installedVersion)
+            ? "pass"
+            : "warn"
           : matrix.compatibility === "unavailable"
             ? "warn"
             : "fail",

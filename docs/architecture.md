@@ -169,10 +169,13 @@ interface AgentAdapter {
 }
 ```
 
-The F0 compatibility baseline supports Copilot CLI `1.0.82-0` only. Other
-versions remain unverified until their capability probe passes. Production
-plugin installation uses a marketplace because direct path installs are
-deprecated and cannot be disabled through the normal lifecycle commands.
+The F0 compatibility baseline supports Copilot CLI `>=1.0.71` without an
+artificial upper bound. Installation probes the required Plugin Marketplace and
+plugin commands before changing Copilot configuration. Copilot CLI `1.0.82-0`
+and `1.0.83-4` are verified; compatible versions without ProvenLoop evidence
+remain visible to Doctor as unverified. Production plugin installation uses a
+marketplace because direct path installs are deprecated and cannot be disabled
+through the normal lifecycle commands.
 The operational adapter generates a local marketplace containing the capture
 Extension and stdio MCP registration, then uses Copilot's normal marketplace
 and plugin lifecycle commands. Its state records the detected version,

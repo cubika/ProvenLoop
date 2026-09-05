@@ -1,6 +1,8 @@
 import {
   adapterCapabilitySchema,
   CURRENT_SCHEMA_VERSION,
+  isSupportedCopilotCliVersion,
+  MINIMUM_COPILOT_CLI_VERSION,
   type AdapterCapability,
 } from "@provenloop/contracts";
 
@@ -23,7 +25,7 @@ export const COPILOT_SUPPORTED_SOURCE_EVENT_TYPES = [
 const supportedCapability = adapterCapabilitySchema.parse({
   schemaVersion: CURRENT_SCHEMA_VERSION,
   adapter: "copilot-cli",
-  adapterVersion: "1.0.82-0",
+  adapterVersion: MINIMUM_COPILOT_CLI_VERSION,
   captureTransport: "extension-session-events",
   sessionFileParser: "events-jsonl-v1",
   sessionFileVersions: [
@@ -42,4 +44,9 @@ export const COPILOT_CAPTURE_CAPABILITIES: Readonly<
 export const getCopilotCaptureCapability = (
   adapterVersion: string,
 ): AdapterCapability | undefined =>
-  COPILOT_CAPTURE_CAPABILITIES[adapterVersion];
+  !isSupportedCopilotCliVersion(adapterVersion)
+    ? undefined
+    : {
+        ...supportedCapability,
+        adapterVersion,
+      };
