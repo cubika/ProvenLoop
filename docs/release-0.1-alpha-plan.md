@@ -1,20 +1,20 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.8 evidence candidate; quality-release acceptance remains open
+**Status:** 0.9 evidence candidate; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-06
 
-**Evidence candidate:** `0.1.0-alpha.0.8` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.9` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.8 release notes](releases/0.1.0-alpha.0.8.md).
+[0.9 release notes](releases/0.1.0-alpha.0.9.md).
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
-storage/capture repairs are included in the 0.8 candidate scope. Checked
-engineering items below refer to previously recorded work; the versioned 0.8
+storage/capture repairs are included in the 0.9 candidate scope. Checked
+engineering items below refer to previously recorded work; the versioned 0.9
 artifacts require a fresh retained validation and publication record.
 
 ## 1. Goal
@@ -40,7 +40,7 @@ The planned quality release is complete only when:
 
 An explicitly bounded observation candidate may be distributed with a disclosed
 No-Go to collect missing evidence; it is not an approved quality release.
-The 0.8 MVP gate keeps `field-effect-evidence` blocked, so
+The 0.9 MVP gate keeps `field-effect-evidence` blocked, so
 neither synthetic regression, ordinary observations, nor maintainer attestation
 can currently yield Go/Conditional Go. Controlled-effect evaluation is an
 additional requirement, not a box that packaging work can close.
@@ -86,7 +86,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.8/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.9/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
@@ -100,7 +100,7 @@ install the local tarball without registry resolution, register the Copilot
 integration, enable the in-scope learning capabilities, run Doctor, and clean
 all temporary package files.
 
-The 0.8 preview is not being published to the public npm registry. A separate
+The 0.9 preview is not being published to the public npm registry. A separate
 public npm channel or a future governed Azure Artifacts path is not part of
 this publication. If O365 internal distribution later uses Azure Artifacts, the
 expected model is an approved producer pipeline and Feed, normally Common,
@@ -588,7 +588,7 @@ MVP: GO or explicitly bounded CONDITIONAL GO
 ```
 
 `No-Go`, missing/stale evidence, an unverified recovery target, or non-zero or
-unknown safety counts block quality-release approval. The 0.8
+unknown safety counts block quality-release approval. The 0.9
 `field-effect-evidence` is blocked and cannot be cleared by synthetic or
 observational inputs. Keep any bounded evidence-candidate distribution
 explicitly separate; never relabel it M0/MVP-approved.
@@ -603,7 +603,7 @@ explicitly separate; never relabel it M0/MVP-approved.
 - [ ] Purge removes only the owned ProvenLoop data root.
 - [ ] Daily work produces bounded local observations; explicit maintainer
   experiments produce the required M0 evidence.
-- [ ] The installed 0.8 two-Session rule/Explain/approval workflow is observed.
+- [ ] The installed 0.9 two-Session rule/Explain/approval workflow is observed.
 - [ ] Controlled field-effect evidence is independently established and supported
   by the release evaluator, not inferred from synthetic or observational inputs.
 - [ ] F0-001, F0-002, and F0-003 are closed with retained evidence.

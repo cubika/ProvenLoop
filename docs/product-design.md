@@ -6,7 +6,7 @@
 **版本：** 2.1  
 **更新日期：** 2026-09-06
 
-**实现边界：** 本文同时保留产品目标和分阶段设计。`0.1.0-alpha.0.8` 是 Windows
+**实现边界：** 本文同时保留产品目标和分阶段设计。`0.1.0-alpha.0.9` 是 Windows
 Design Partner Preview 证据候选版，包含 Knowledge 管理、本地观察、可信 Session
 授权、严格原生证明链及有界当前 Session 对账。M3-M6 不是当前能力，合成回归通过
 不等于真实收益或 M0/MVP 批准；`0.1.0-alpha.1` 仍是未获批准的质量发布目标。
@@ -369,7 +369,7 @@ ProvenLoop 的学习分为六层。每个 Milestone 聚焦其中一部分，但�
 
 Raw Event 是审计和重建材料，不直接注入 Agent Context。它在正常保留期内不可修改；
 用户发起 Source Delete 或 Purge 时遵循 §14.4 的删除规则。
-0.8 允许受控的迟到补全：保存原始事件和来源摘要，在独立 enrichment 记录中补充
+0.9 允许受控的迟到补全：保存原始事件和来源摘要，在独立 enrichment 记录中补充
 缺失内容、已脱敏参数或结果摘要。新的派生验证另存为证据，不重分类原始事件。
 不能改写原始时间、工作区、父链、状态、元数据或已记录正文来制造成功。
 `captureQuality` 保留首次采集的省略、截断及原长度；补全不是抹去原始缺口。
@@ -789,9 +789,9 @@ provenloop remember `
 随后开启新的 Copilot Session，请它先调用 `provenloop_context`，再通过
 `provenloop_explain` 检查规则、适用范围和来源。实际尝试后再明确反馈。
 这条路径产生 `user_confirmed` Knowledge，不声称系统独立学会或证明了该规则。
-完整命令及 0.8 版本边界见 [README 首用流程](../README.md#first-useful-workflow)。
+完整命令及 0.9 版本边界见 [README 首用流程](../README.md#first-useful-workflow)。
 
-可选历史导入仍是后续设计，不是 0.8 的全量历史摄取能力。当前自动对账只处理可信
+可选历史导入仍是后续设计，不是 0.9 的全量历史摄取能力。当前自动对账只处理可信
 SDK 当前 Session 的观察窗口；缺少 workspace 元数据时记录诊断并跳过，不猜路径。
 未来的可选历史导入只用于：
 
@@ -803,7 +803,7 @@ SDK 当前 Session 的观察窗口；缺少 workspace 元数据时记录诊断�
 
 ### 9.3 日常使用
 
-0.8 通过 MCP 初始化 instructions 和插件 skill 请求 Agent 在新任务或恢复任务
+0.9 通过 MCP 初始化 instructions 和插件 skill 请求 Agent 在新任务或恢复任务
 开始时调用一次；指令存在不代表宿主必然调用：
 
 ```text
@@ -893,7 +893,7 @@ provenloop uninstall
 provenloop purge
 ```
 
-`knowledge` 和 `observations` 子命令包含在 0.8 中。每次变更先读取 `knowledge show`
+`knowledge` 和 `observations` 子命令包含在 0.9 中。每次变更先读取 `knowledge show`
 中的最新 `expectedDigest`；confirm/replace 仅在用户确实解决反证时使用
 `--resolve "id1,id2"`。Revoke 归档并保留历史，Forget 执行删除。
 Workflow 操作还需要匹配实时可信 SDK Session 的 `SESSION_ID`、workflow 和 `--cwd`；

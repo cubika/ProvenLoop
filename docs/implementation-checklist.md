@@ -10,7 +10,7 @@ This checklist turns the product design, architecture, roadmap, and validation
 documents into an executable delivery order. Work is complete only when its
 behavior is covered by the evaluation spine; code completion alone is not
 completion. Existing checked items record earlier implementation/fixture
-coverage, not a fresh validation of the `0.1.0-alpha.0.8` artifacts or field
+coverage, not a fresh validation of the `0.1.0-alpha.0.9` artifacts or field
 acceptance. The Windows Design Partner Preview includes the M0-M2 repairs and
 user controls below; new-version acceptance remains unchecked pending retained
 results. `0.1.0-alpha.1` remains an unapproved quality-release target.
@@ -361,7 +361,7 @@ need not serialize all safe M1/M2 development behind them.
 - [x] ProvenLoop can be stopped or broken while Copilot remains usable.
 - [x] Installation requires no wrapper command for ordinary Copilot use.
 - [x] Daily operation requires no additional model API key.
-- [ ] Validate capability isolation in the installed 0.8 preview path.
+- [ ] Validate capability isolation in the installed 0.9 preview path.
   Capture, worker, and retrieval are wired to persisted capability state;
   automated coverage is not the full real installed-host matrix.
 
@@ -453,7 +453,7 @@ need not serialize all safe M1/M2 development behind them.
 - [x] Return zero to three items and allow an empty result.
 - [x] Deduplicate repeated injection within a session.
 - [x] Fail closed with no context on timeout or backend degradation.
-- [ ] Validate 0.8 MCP instructions/plugin skill and per-call trusted
+- [ ] Validate 0.9 MCP instructions/plugin skill and per-call trusted
   live Session snapshot with stale, ambiguous, outside-repo, and moved-workspace cases.
 - [ ] Verify exact real-user feedback approval; helpful/provided must not
   imply adoption or a successful outcome.
@@ -469,7 +469,7 @@ need not serialize all safe M1/M2 development behind them.
 - [x] Block dependent work while deletion is active.
 - [x] Recompute or deactivate dependent Knowledge.
 - [x] Run the deletion propagation gate before reporting success.
-- [ ] Revalidate 0.8 Knowledge list/show/confirm/replace/revoke with
+- [ ] Revalidate 0.9 Knowledge list/show/confirm/replace/revoke with
   stale digests, explicit confirmation, and named counterevidence resolution.
 - [ ] Verify old confirmation cannot clear later failures or corrections.
 
@@ -535,7 +535,7 @@ Synthetic fixture timing/outcome values do not measure real-user improvement.
 - [ ] Confirm direct counterevidence stops injection on the native installed path.
 - [ ] Establish real Wrong Injection at most 2% for research and 1% for stable.
 
-### 12.5 First-use observations — 0.8 acceptance
+### 12.5 First-use observations — 0.9 acceptance
 
 - [ ] Verify explicit scoped rule -> later-session Context -> Explain ->
   approved feedback -> local observation using the actual installed MCP path.
@@ -600,7 +600,7 @@ fixture Extension event
   -> JSON/Markdown report and stable exit code
 ```
 
-0.8 rerun checklist (not a claim that the original implementation
+0.9 rerun checklist (not a claim that the original implementation
 is still missing):
 
 - [ ] a valid event passes;

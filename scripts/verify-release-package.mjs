@@ -79,7 +79,7 @@ const requireSuccess = (
   if (result.exitCode !== 0) {
     throw new Error(
       `${operation} failed with exit code ${result.exitCode}:\n` +
-      `${result.stderr || result.stdout}`,
+      `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
     );
   }
 };
@@ -608,13 +608,48 @@ public static class Program
       `installed CLI doctor failed:\n${doctor.stderr || doctor.stdout}`,
     );
   }
-  requireSuccess(
-    await runInstalledCli([
-      "worker",
-      "run",
-    ]),
-    "installed CLI worker run",
-  );
+  const controlledWorker = await cliModule.runCaptureWorkerOnce({
+    dataRoot,
+    admission: () => ({ allowed: true, reasons: [] }),
+  });
+  if (
+    controlledWorker.status !== "completed" ||
+    controlledWorker.failed !== 0 ||
+    controlledWorker.circuitOpenReasons.length !== 0
+  ) {
+    throw new Error(`Installed worker failed under controlled admission: ${JSON.stringify(controlledWorker)}`);
+  }
+  const workerCommand = await runInstalledCli(["worker", "run"]);
+  let workerResult;
+  try {
+    workerResult = JSON.parse(workerCommand.stdout);
+  } catch (error) {
+    throw new Error(
+      `Installed worker returned invalid JSON:\nstdout:\n${workerCommand.stdout}\nstderr:\n${workerCommand.stderr}`,
+      { cause: error },
+    );
+  }
+  const workerCompleted = workerCommand.exitCode === 0 &&
+    workerResult?.status === "completed" &&
+    workerResult.failed === 0 &&
+    Array.isArray(workerResult.circuitOpenReasons) &&
+    workerResult.circuitOpenReasons.length === 0;
+  const pressureReasons = workerResult?.status === "circuit_open"
+    ? workerResult.reasons : workerResult?.circuitOpenReasons;
+  const workerResourceLimited = workerCommand.exitCode === 1 &&
+    (workerResult?.status === "circuit_open" ||
+      (workerResult?.status === "completed" && workerResult.failed === 0)) &&
+    Array.isArray(pressureReasons) && pressureReasons.length > 0 &&
+    pressureReasons.every((reason) => ["cpu", "disk", "memory"].includes(reason));
+  if (!workerCompleted && !workerResourceLimited) {
+    throw new Error(
+      `Installed worker returned an unexpected result (exit ${workerCommand.exitCode}):\n` +
+      `stdout:\n${workerCommand.stdout}\nstderr:\n${workerCommand.stderr}`,
+    );
+  }
+  if (workerResourceLimited) {
+    console.log(`Installed worker CLI preserved resource admission: ${pressureReasons.join(", ")}.`);
+  }
   requireSuccess(
     await runInstalledCli([
       "remember", "--scope", "personal",

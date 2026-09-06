@@ -2,7 +2,37 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.9] - 2026-09-06
+
+Windows Design Partner Preview evidence candidate. Includes the full capability
+scope recorded under the attempted 0.8 release below, plus deterministic worker
+validation. M0/MVP remain No-Go; controlled benefit is unproved and
+`0.1.0-alpha.1` remains an unapproved quality-release target.
+
+### Fixed
+
+- Distinguish explicit resource-pressure or circuit pauses from errors in
+  package smoke, retain both stdout and stderr diagnostics, and require the
+  installed runtime worker to complete under controlled test admission.
+- Control resource admission in the current-session reconciliation fixture so
+  ambient runner load does not prevent its expected worker rows. Product
+  admission thresholds and runtime budgets remain unchanged.
+- Supersede the failed 0.8 publication attempt without changing its immutable
+  tag. The earlier smoke treated a potentially legitimate resource pause as a
+  failure; surfaced diagnostics did not establish the exact worker reason.
+
+### Validation boundary
+
+The 0.8 release lint, typecheck, unit, and integration jobs passed, but package
+smoke stopped publication before any GitHub Release or assets were created.
+These results do not certify the new 0.9 artifacts; new-version validation and
+publication must be verified separately.
+
 ## [0.1.0-alpha.0.8] - 2026-09-06
+
+**Failed publication attempt — no GitHub Release or assets; superseded by
+`0.1.0-alpha.0.9`.** The tag at `b40d03e` remains immutable. The following is
+the attempted capability scope, not a successfully published package.
 
 Windows Design Partner Preview evidence candidate, not an M0/MVP-approved
 quality release. Controlled field benefit remains unestablished, and

@@ -12,7 +12,7 @@ rule, retrieval in a later Session, explanation, explicit feedback, and local
 observations. Safe capture and strict evidence qualification support that
 path; automated delayed outcome discovery is not a prerequisite.
 
-The `0.1.0-alpha.0.8` Windows Design Partner Preview evidence candidate includes
+The `0.1.0-alpha.0.9` Windows Design Partner Preview evidence candidate includes
 M0-M2 repairs, Knowledge review, trusted feedback, local observations, and
 bounded current-session reconciliation. `0.1.0-alpha.1` remains an unapproved
 quality-release target; new-version validation and field acceptance require

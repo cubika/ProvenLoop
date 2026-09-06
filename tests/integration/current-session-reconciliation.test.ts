@@ -89,6 +89,11 @@ describe("installed current-session capture backfill", () => {
             ? { exitCode: 1, stdout: "", stderr: "fatal: not a git repository" }
             : { exitCode: 0, stderr: "", stdout: args[0] === "--version" ? "GitHub Copilot CLI 1.0.82-0.\n" : "[]\n" },
         },
+      }, {
+        runWorker: (options) => runCaptureWorkerOnce({
+          ...options,
+          admission: () => ({ allowed: true, reasons: [] }),
+        }),
       });
       expect(result).toMatchObject({
         status: "started",
@@ -151,7 +156,13 @@ describe("installed current-session capture backfill", () => {
     expect(await reconcileCurrentSessionCapture(options)).toMatchObject({
       status: "reconciled", reconciliation: { queuedEvents: 2 },
     });
-    await runCaptureWorkerOnce({ dataRoot: paths.root });
+    const worker = await runCaptureWorkerOnce({
+      dataRoot: paths.root,
+      admission: () => ({ allowed: true, reasons: [] }),
+    });
+    expect(worker).toMatchObject({
+      status: "completed", stored: 2, acknowledged: 2, failed: 0, circuitOpenReasons: [],
+    });
     const store = new CanonicalSqliteStore(paths.database);
     try {
       expect(store.rawEvents().map((record) => record.envelope.sourceEventId).sort()).toEqual(["request", "start"]);

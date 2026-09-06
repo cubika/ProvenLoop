@@ -23,6 +23,7 @@ export {
 
 export const runProvenLoopCopilotExtension = async (
   options: InstalledCopilotExtensionOptions,
+  dependencies: { readonly runWorker?: typeof runCaptureWorkerOnce } = {},
 ): Promise<InstalledCopilotExtensionResult> => {
   let workerRunning = false;
   let stopped = false;
@@ -56,7 +57,7 @@ export const runProvenLoopCopilotExtension = async (
       return;
     }
     workerRunning = true;
-    void runCaptureWorkerOnce({
+    void (dependencies.runWorker ?? runCaptureWorkerOnce)({
       dataRoot: options.dataRoot,
     })
       .then(async (workerResult) => {
