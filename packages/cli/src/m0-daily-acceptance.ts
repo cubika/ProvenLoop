@@ -258,6 +258,7 @@ const findFiles = async (
 const drainWorker = async (
   dataRoot: string,
   timeoutMs: number,
+  runWorker: typeof runCaptureWorkerOnce,
 ): Promise<{
   readonly completed: boolean;
   readonly iterations: number;
@@ -265,7 +266,7 @@ const drainWorker = async (
   const deadline = Date.now() + timeoutMs;
   let iterations = 0;
   while (Date.now() < deadline) {
-    const result = await runCaptureWorkerOnce({
+    const result = await runWorker({
       batchSize: 100,
       dataRoot,
     });
@@ -443,6 +444,7 @@ export const startM0DailyAcceptance = async (
 
 export const completeM0DailyAcceptance = async (
   options: CompleteM0DailyAcceptanceOptions,
+  dependencies: { readonly runWorker?: typeof runCaptureWorkerOnce } = {},
 ): Promise<M0DailyAcceptanceResult> => {
   const now = options.now ?? (() => new Date());
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
@@ -460,6 +462,7 @@ export const completeM0DailyAcceptance = async (
   const drain = await drainWorker(
     paths.root,
     options.drainTimeoutMs ?? 30_000,
+    dependencies.runWorker ?? runCaptureWorkerOnce,
   );
   const queue = new WindowsCaptureQueue(paths.queue);
   await queue.initialize();
@@ -493,6 +496,7 @@ export const completeM0DailyAcceptance = async (
     const postReconciliationDrain = await drainWorker(
       paths.root,
       options.drainTimeoutMs ?? 30_000,
+      dependencies.runWorker ?? runCaptureWorkerOnce,
     );
     const items = await queue.list();
     const callbackSamples: number[] = [];

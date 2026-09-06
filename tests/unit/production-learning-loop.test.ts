@@ -19,6 +19,8 @@ import {
 } from "@provenloop/platform-windows";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 
+import { contextWithDeadlineRetries } from "../fixtures/context-with-deadline-retries.js";
+
 const roots: string[] = [];
 const repoId = "repo-production-loop";
 const head = "a".repeat(40);
@@ -232,16 +234,18 @@ describe("production learning and reuse path", () => {
       expect(candidate.evidenceTier).toBe("externally_verified");
       expect(candidate.sourceEvidenceIds.length).toBeGreaterThanOrEqual(3);
       await publisher.start();
-      const context = await callMcp(paths.root, "next-session", "provenloop_context", {
-        prompt: "\u8bf7\u7528 npm test \u505a package validation",
-        tokenBudget: 600,
-      });
-      expect(context).toMatchObject({ status: "ok" });
-      expect(context.items).toEqual(expect.arrayContaining([
+      const context = await contextWithDeadlineRetries(() =>
+        callMcp(paths.root, "next-session", "provenloop_context", {
+          prompt: "\u8bf7\u7528 npm test \u505a package validation",
+          tokenBudget: 600,
+        }),
+      );
+      expect(context, JSON.stringify(context)).toMatchObject({ status: "ok" });
+      expect(context.items, JSON.stringify(context)).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: candidate.knowledgeId, kind: "knowledge" }),
       ]));
       if (typeof context.requestId !== "string") {
-        throw new Error("Context did not contain a stable request ID.");
+        throw new Error(`Context did not contain a stable request ID: ${JSON.stringify(context)}`);
       }
       const feedback = {
         action: "helpful",
@@ -267,18 +271,24 @@ describe("production learning and reuse path", () => {
         adoption: "user_reported",
         outcome: "unknown",
       });
-      expect(store.contextUseRecords("next-session")[0]).toMatchObject({
+      expect(store.contextUseRecords("next-session").find((record) =>
+        record.requestId === context.requestId,
+      ), JSON.stringify(context)).toMatchObject({
+        requestId: context.requestId,
         sessionId: "next-session",
         repoId,
         retrievalStatus: "provided",
         feedback: "helpful",
       });
       await otherPublisher.start();
-      const otherRepository = await callMcp(
-        paths.root, "other-repository-session", "provenloop_context",
-        { prompt: "npm test package validation", tokenBudget: 600 },
+      const otherRepository = await contextWithDeadlineRetries(() =>
+        callMcp(
+          paths.root, "other-repository-session", "provenloop_context",
+          { prompt: "npm test package validation", tokenBudget: 600 },
+        ),
       );
-      expect(otherRepository.items).not.toEqual(expect.arrayContaining([
+      expect(otherRepository, JSON.stringify(otherRepository)).toMatchObject({ status: "ok" });
+      expect(otherRepository.items, JSON.stringify(otherRepository)).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ id: candidate.knowledgeId }),
       ]));
     } finally {

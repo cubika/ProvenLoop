@@ -3,7 +3,7 @@
 **状态：** Extension 可行性已通过；完整 M0 验收仍开放
 **更新：** 2026-09-06
 
-`0.1.0-alpha.0.9` 是 Windows Design Partner Preview 证据候选版，包含本文描述的
+`0.1.0-alpha.0.10` 是 Windows Design Partner Preview 证据候选版，包含本文描述的
 原生证明桥、采集质量、有界当前 Session 对账和可信实时 Session 控制。
 历史 Windows 11 最小 Extension probe 不等于完整生产链已通过真实宿主验收；
 新版本工件须单独验证，`0.1.0-alpha.1` 质量发布目标仍未获批准。
@@ -123,7 +123,7 @@ Session 启动时建立快照，并在可能改变 Git 状态的工具完成后�
 每个 Extension 进程维护一个有界 FIFO 缓冲区，同时限制事件数量和总字节数。
 源码提供显式的数量、字节及字段上限；默认配置是否满足真实负载仍需 F0 压测证明。
 
-0.9 安装入口使用以下固定默认值；底层 constructor 可配置，但它们不是新增 CLI
+0.10 安装入口使用以下固定默认值；底层 constructor 可配置，但它们不是新增 CLI
 参数，也不是已经通过全平台性能验收的指标：
 
 | 项目 | 当前默认值 |
@@ -191,7 +191,7 @@ Extension 只负责安全交付原始事件，不包含领域逻辑。
 ### 5.5 Reconciler
 
 Reconciler 是恢复组件，不持续 tail 全部 Copilot 历史。当前明确的维护者入口是
-`provenloop acceptance complete`；0.9 安装入口已将可信当前 Session 的有界对账
+`provenloop acceptance complete`；0.10 安装入口已将可信当前 Session 的有界对账
 接入已有后台 observation 调度，底层 helper 也保留 programmatic export。
 `doctor --repair-capture` 不是已实现的 CLI 命令，Doctor 不应被当成任意历史扫描入口。
 
@@ -208,7 +208,7 @@ plugin/capture/worker/internal 状态、worker lease 及路径/链接边界。
 
 built integration fixture 使用真实 Extension 入口、SDK/command-runner fixture 和
 真实 queue/worker/store，覆盖自动补齐省略参数、保留原始 envelope、排除观察开始前记录
-及只加入一次 Session。这是回归覆盖，不替代 0.9 工件验证、原生 SDK 宿主现场观察或受控收益证明。
+及只加入一次 Session。这是回归覆盖，不替代 0.10 工件验证、原生 SDK 宿主现场观察或受控收益证明。
 
 对账不能只依赖 `capture_gap`：Extension 可能在 gap 落盘前崩溃。以可信 Session 根、
 版本和时间窗口限定输入，并设置文件/行/事件/字节/时间预算及可恢复游标。预算耗尽
@@ -505,7 +505,7 @@ unknown envelope 保存，不能自动映射为已知领域事件。
 
 ## 15. 验收和 Go/No-Go
 
-以下为尚需完整证据支持的 M0 采集验收目标，不是 0.9 工件测试结果声明：
+以下为尚需完整证据支持的 M0 采集验收目标，不是 0.10 工件测试结果声明：
 
 - Windows 10 和 11 各采集至少 500 个代表性事件；
 - Prompt、工具成功、工具失败、取消、resume、shutdown 和 subagent 均有样本；

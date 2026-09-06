@@ -1,9 +1,14 @@
 import { fileURLToPath } from "node:url";
 
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 const packageSource = (name: string): string =>
   fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
+
+const sourceRuntimeTests = [
+  "tests/unit/production-learning-loop.test.ts",
+  "tests/unit/mcp-registry-runtime.test.ts",
+];
 
 export default defineConfig({
   resolve: {
@@ -24,8 +29,26 @@ export default defineConfig({
     hookTimeout: 30_000,
     // Bound process startup contention without relaxing foreground runtime deadlines.
     maxWorkers: 4,
-    include: [
-      "tests/unit/**/*.test.ts"
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["tests/unit/**/*.test.ts"],
+          exclude: [...configDefaults.exclude, ...sourceRuntimeTests],
+          sequence: { groupOrder: 0 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "source-runtime",
+          include: sourceRuntimeTests,
+          // Run native-runtime functional checks after CPU-heavy tests, not alongside them.
+          fileParallelism: false,
+          sequence: { groupOrder: 1 },
+        },
+      },
     ],
     testTimeout: 30_000,
   },

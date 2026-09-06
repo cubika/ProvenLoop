@@ -2,7 +2,40 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.10] - 2026-09-06
+
+Windows Design Partner Preview evidence candidate. Carries forward the full
+attempted 0.8 capability scope and 0.9 deterministic worker smoke changes.
+M0/MVP remain No-Go; controlled benefit is unproved and `0.1.0-alpha.1` remains
+an unapproved quality-release target.
+
+### Fixed
+
+- Schedule real-runtime source fixtures in an isolated phase after CPU-heavy
+  suites. Allow bounded retries only for documented deadline degradation,
+  without skipping tests or relaxing the runtime's 150 ms limit; successful
+  context retrieval remains mandatory.
+- Strengthen the cross-repository assertion and identify feedback through its
+  request ID rather than incidental record order.
+- Make daily-acceptance fixtures deterministic with injected real-worker
+  admission and a five-second test-only drain budget. Require `incomplete` in
+  the CPU-blocked negative case; production deadlines and resource thresholds
+  remain unchanged.
+
+### Validation boundary
+
+The 0.9 release failed a functional context assertion (`ok` expected,
+`degraded` received) on a loaded runner. No exact cause is established here.
+Local passes and any separate main-CI outcome do not make that release
+successful. The immutable 0.9 tag has no GitHub Release or assets; 0.10 requires
+its own retained validation and publication record.
+
 ## [0.1.0-alpha.0.9] - 2026-09-06
+
+**Failed publication attempt — no GitHub Release or assets; superseded by
+`0.1.0-alpha.0.10`.** The tag at `c5a48fc` remains immutable. Release run
+`34002088945` failed the `production-learning-loop` context assertion on a
+loaded runner; this is distinct from the earlier 0.8 package-smoke failure.
 
 Windows Design Partner Preview evidence candidate. Includes the full capability
 scope recorded under the attempted 0.8 release below, plus deterministic worker
@@ -25,8 +58,9 @@ validation. M0/MVP remain No-Go; controlled benefit is unproved and
 
 The 0.8 release lint, typecheck, unit, and integration jobs passed, but package
 smoke stopped publication before any GitHub Release or assets were created.
-These results do not certify the new 0.9 artifacts; new-version validation and
-publication must be verified separately.
+Those results did not certify 0.9. Its release subsequently failed the functional
+context assertion, despite local runs passing 472 unit and 244 integration
+tests. No release or assets were created.
 
 ## [0.1.0-alpha.0.8] - 2026-09-06
 

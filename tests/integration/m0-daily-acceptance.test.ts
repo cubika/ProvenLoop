@@ -26,6 +26,7 @@ import {
 } from "@provenloop/copilot-adapter";
 import {
   completeM0DailyAcceptance,
+  runCaptureWorkerOnce,
   startM0DailyAcceptance,
 } from "@provenloop/cli";
 import {
@@ -58,7 +59,10 @@ afterEach(async () => {
 });
 
 describe("M0 daily acceptance", () => {
-  it("creates bounded privacy-safe reports and prevents overlapping runs", async () => {
+  it.each([
+    { allowed: true, status: "pass" },
+    { allowed: false, status: "incomplete" },
+  ] as const)("creates bounded privacy-safe $status reports and prevents overlapping runs", async ({ allowed, status }) => {
     const root = await createTemporaryDirectory();
     const dataRoot = resolve(join(root, "data-root"));
     const paths = resolveWindowsProvenLoopPaths(dataRoot);
@@ -175,14 +179,19 @@ describe("M0 daily acceptance", () => {
         }),
       },
       dataRoot,
-      drainTimeoutMs: 100,
+      drainTimeoutMs: 5_000,
       now: () => new Date("2026-09-02T01:00:00.000Z"),
+    }, {
+      runWorker: (options) => runCaptureWorkerOnce({
+        ...options,
+        admission: () => ({ allowed, reasons: allowed ? [] : ["cpu"] }),
+      }),
     });
 
     expect(completed).toMatchObject({
       runDirectory: started.runDirectory,
       runId: started.runId,
-      status: "pass",
+      status,
     });
     for (const name of [
       "capture-metrics.json",
@@ -200,9 +209,9 @@ describe("M0 daily acceptance", () => {
     }
     const report = await readFile(completed.reportPath, "utf8");
     expect(JSON.parse(report)).toMatchObject({
-      status: "pass",
+      status,
       evidenceKind: "observational",
-      observationCompleted: true,
+      observationCompleted: allowed,
       releaseReadiness: "not_evaluated",
     });
     expect(JSON.parse(await readFile(

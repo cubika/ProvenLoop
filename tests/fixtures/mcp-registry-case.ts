@@ -21,6 +21,8 @@ import {
 } from "@provenloop/retrieval";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 
+import { contextWithDeadlineRetries } from "./context-with-deadline-retries.js";
+
 const execute = promisify(execFile);
 type Reply = Readonly<Record<string, unknown>>;
 
@@ -85,24 +87,12 @@ const connect = async (dataRoot: string) => {
 
 const contextWhenReady = async (
   client: Awaited<ReturnType<typeof connect>>,
-): Promise<Reply> => {
-  // Identity assertions still require success; latency degradation has separate coverage.
-  for (let attempt = 0; ; attempt += 1) {
-    const result = object((await client.call("provenloop_context", {
-      prompt: "Run focused tests",
-      tokenBudget: 600,
-    })).structuredContent);
-    if (
-      attempt >= 4 ||
-      result.status !== "degraded" ||
-      typeof result.statusDetail !== "string" ||
-      !/deadline|timed out/iu.test(result.statusDetail)
-    ) {
-      return result;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  }
-};
+): Promise<Reply> => contextWithDeadlineRetries(async () =>
+  object((await client.call("provenloop_context", {
+    prompt: "Run focused tests",
+    tokenBudget: 600,
+  })).structuredContent),
+);
 
 export const registerMcpRegistryTests = (target: string): void => {
   describe(`production MCP registry boundary (${target})`, () => {
@@ -293,7 +283,8 @@ export const registerMcpRegistryTests = (target: string): void => {
           repositoryState: "known_repo",
         });
         await publisher.flush();
-        expect(await contextWhenReady(client)).toMatchObject({
+        const second = await contextWhenReady(client);
+        expect(second, JSON.stringify(second)).toMatchObject({
           status: "ok",
           items: [expect.objectContaining({ id: secondId })],
         });
@@ -305,7 +296,9 @@ export const registerMcpRegistryTests = (target: string): void => {
         })).isError).toBe(true);
         publisher.updateWorkspace({ cwd: repoTwo, repositoryState: "known_outside_repo" });
         await publisher.flush();
-        expect(await contextWhenReady(client)).toMatchObject({ status: "ok", items: [] });
+        const outsideRepository = await contextWhenReady(client);
+        expect(outsideRepository, JSON.stringify(outsideRepository))
+          .toMatchObject({ status: "ok", items: [] });
         publisher.observeUserMessage({
           eventId: "sdk-user-old-workspace-code",
           text: confirmation,

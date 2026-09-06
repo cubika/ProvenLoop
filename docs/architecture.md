@@ -1,6 +1,6 @@
 # ProvenLoop Technical Architecture
 
-**Status:** 0.1.0-alpha.0.9 preview architecture with explicitly deferred capabilities
+**Status:** 0.1.0-alpha.0.10 preview architecture with explicitly deferred capabilities
 
 **Updated:** 2026-09-06
 
@@ -9,7 +9,7 @@ long-term logical architecture. They use the same event, evidence, domain, and
 evaluation contracts. Later milestones enable additional consumers and state
 transitions; they do not introduce a second architecture.
 
-Current implementation descriptions apply to the `0.1.0-alpha.0.9` Windows
+Current implementation descriptions apply to the `0.1.0-alpha.0.10` Windows
 Design Partner Preview evidence candidate. M3-M6 consumers remain targets.
 Synthetic regression coverage is not native-host acceptance, controlled benefit
 evidence, or M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
@@ -250,7 +250,7 @@ atomic source-identity index in the queue so concurrent writers cannot normally
 create duplicate queue items. Internal Session IDs stop parsing immediately
 after the header, before content-bearing records are read.
 
-Explicit acceptance completion invokes reconciliation. The 0.9
+Explicit acceptance completion invokes reconciliation. The 0.10
 installed Extension also wires `reconcileCurrentSessionCapture` into its
 existing background observation loop. `runInstalledCopilotExtension` uses the
 actually joined SDK Session's `sessionId` and public `workspacePath`. Automatic
@@ -351,7 +351,7 @@ Queue items remain durable while a consumer is paused or unavailable.
 
 The canonical store uses Node 22's built-in SQLite behind the `storage-sqlite`
 package. Startup enables WAL, foreign keys, and a bounded busy timeout.
-The 0.9 schema is **10**. Ordinary opens reject an existing older schema
+The 0.10 schema is **10**. Ordinary opens reject an existing older schema
 with a migration-required error, and reject schemas newer than the runtime.
 Only explicit maintenance permits contiguous migrations under `BEGIN IMMEDIATE`;
 new empty databases can initialize normally.
@@ -622,7 +622,7 @@ M0/M1/M2 evidence digests. When the built CLI is running, the binding also
 hashes every executed package `dist` JavaScript artifact so stale compiled code
 cannot inherit a source-only approval. Research thresholds can produce only an
 expiring Conditional Go restricted to named repository or design-partner targets
-under the release policy. The 0.9 evaluator additionally keeps
+under the release policy. The 0.10 evaluator additionally keeps
 `field-effect-evidence` blocked: neither synthetic replay, an observational
 manifest, nor maintainer attestation establishes controlled field benefit.
 Thus the current inputs cannot yield Go or Conditional Go.
@@ -1507,7 +1507,7 @@ hard-deletes the Knowledge body, feedback, usage records, mute projections, and
 search projection, then archives Knowledge that superseded or conflicted with
 the forgotten item. Purge is a dedicated alias for the guarded full uninstall
 and removes the owned local data root.
-Knowledge review/mutation and observation commands are included in 0.9.
+Knowledge review/mutation and observation commands are included in 0.10.
 `knowledge show` supplies the latest `expectedDigest`; each mutation checks it again and
 requires `--confirm`. Revoke preserves review history, unlike Forget. Workflow
 review requires the matching live SDK workflow/workspace; `--workflow` alone
