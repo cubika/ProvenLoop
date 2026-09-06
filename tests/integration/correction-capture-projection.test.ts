@@ -16,7 +16,10 @@ import {
   WorkEpisodeProjector,
 } from "@provenloop/host";
 import { WindowsCaptureQueue } from "@provenloop/platform-windows";
-import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
+import {
+  CanonicalSqliteStore,
+  DEFAULT_SQLITE_MIGRATIONS,
+} from "@provenloop/storage-sqlite";
 
 const temporaryDirectories: string[] = [];
 
@@ -97,6 +100,7 @@ describe("Correction capture projection", () => {
     );
     try {
       const queued = [];
+      let operationEventId: string | undefined;
       for (const input of [
         {
           adapter: "copilot-cli",
@@ -143,7 +147,47 @@ describe("Correction capture projection", () => {
           trust: "user" as const,
         },
       ]) {
-        const item = await queue.enqueue(input);
+        let verificationBinding: {
+          correctionEventId: string;
+          operationEventId: string;
+        } | undefined;
+        if (input.eventType === "test.completed") {
+          const correction = queued[0];
+          if (correction === undefined) {
+            throw new Error("Expected the correction before its verification.");
+          }
+          const operation = await queue.enqueue({
+            adapter: "copilot-cli",
+            adapterVersion: "1.0.82-0",
+            branch: "feat/testing",
+            eventType: "tool.started",
+            content: { toolArguments: { command: "npm test -- --run tests\\logging.test.ts" } },
+            operationId: "verify-source",
+            parentEventId: correction.envelope.event.eventId,
+            repoId: "repo-1",
+            sessionId: "session-source",
+            sourceEventId: "verification-start",
+            timestamp: "2026-09-01T00:15:00.000Z",
+            toolName: "powershell",
+            trust: "tool",
+            worktree: "C:\\repo",
+          });
+          expect(store.ingestQueueItem(operation).status).toBe("stored");
+          operationEventId = operation.envelope.event.eventId;
+          verificationBinding = {
+            correctionEventId: correction.envelope.event.eventId,
+            operationEventId,
+          };
+        }
+        const item = await queue.enqueue({
+          ...input,
+          worktree: "C:\\repo",
+          ...(verificationBinding === undefined ? {} : {
+            operationId: "verify-source",
+            parentEventId: verificationBinding.operationEventId,
+            verificationBinding,
+          }),
+        });
         queued.push(item);
         expect(store.ingestQueueItem(item).status).toBe("stored");
       }
@@ -156,7 +200,8 @@ describe("Correction capture projection", () => {
       if (
         sourceCorrectionId === undefined ||
         verificationId === undefined ||
-        nextPromptId === undefined
+        nextPromptId === undefined ||
+        operationEventId === undefined
       ) {
         throw new Error("Expected queued correction fixtures.");
       }
@@ -171,6 +216,7 @@ describe("Correction capture projection", () => {
             episodeId: "episode-source",
             sourceEventIds: [
               sourceCorrectionId,
+              operationEventId,
               verificationId,
             ],
             startedAt: "2026-09-01T00:00:00.000Z",
@@ -192,7 +238,7 @@ describe("Correction capture projection", () => {
         store,
       }).rebuild();
 
-      expect(store.health().userVersion).toBe(7);
+      expect(store.health().userVersion).toBe(DEFAULT_SQLITE_MIGRATIONS.length);
       expect(first).toMatchObject({
         issues: [],
         persistedCorrectionKeys: 1,
@@ -250,6 +296,23 @@ describe("Correction capture projection", () => {
         sourceEventId: "correction-source",
         timestamp: "2026-09-01T00:10:00.000Z",
         trust: "user",
+        worktree: "C:\\repo",
+      });
+      const operation = await queue.enqueue({
+        adapter: "copilot-cli",
+        adapterVersion: "1.0.82-0",
+        branch: "feat/testing",
+        eventType: "tool.started",
+        content: { toolArguments: { command: "npm test -- --run tests\\logging.test.ts" } },
+        operationId: "verify-source",
+        parentEventId: correction.envelope.event.eventId,
+        repoId: "repo-1",
+        sessionId: "session-source",
+        sourceEventId: "verification-start",
+        timestamp: "2026-09-01T00:15:00.000Z",
+        toolName: "powershell",
+        trust: "tool",
+        worktree: "C:\\repo",
       });
       const verification = await queue.enqueue({
         adapter: "copilot-cli",
@@ -257,11 +320,18 @@ describe("Correction capture projection", () => {
         branch: "feat/testing",
         completionStatus: "succeeded",
         eventType: "test.completed",
+        operationId: "verify-source",
+        parentEventId: operation.envelope.event.eventId,
         repoId: "repo-1",
         sessionId: "session-source",
         sourceEventId: "verification-source",
         timestamp: "2026-09-01T00:20:00.000Z",
         trust: "tool",
+        verificationBinding: {
+          correctionEventId: correction.envelope.event.eventId,
+          operationEventId: operation.envelope.event.eventId,
+        },
+        worktree: "C:\\repo",
       });
       const nextPrompt = await queue.enqueue({
         adapter: "copilot-cli",
@@ -283,6 +353,7 @@ describe("Correction capture projection", () => {
       });
       for (const item of [
         correction,
+        operation,
         verification,
         nextPrompt,
       ]) {
@@ -299,6 +370,7 @@ describe("Correction capture projection", () => {
             episodeId: "episode-source",
             sourceEventIds: [
               correction.envelope.event.eventId,
+              operation.envelope.event.eventId,
               verification.envelope.event.eventId,
             ],
             startedAt: "2026-09-01T00:00:00.000Z",

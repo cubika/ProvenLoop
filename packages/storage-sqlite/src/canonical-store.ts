@@ -1,4 +1,5 @@
 import {
+  createHash,
   randomBytes,
   randomUUID,
 } from "node:crypto";
@@ -13,10 +14,12 @@ import {
   mkdir,
   open,
   readFile,
+  rename,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   backup,
   DatabaseSync,
@@ -61,6 +64,10 @@ import {
   sanitizeDiagnostic,
   sha256,
 } from "@provenloop/domain";
+import {
+  resolveWindowsProvenLoopLeaseName,
+  WindowsNamedPipeLeaseProvider,
+} from "@provenloop/platform-windows";
 
 export interface SqliteMigration {
   readonly sql: string;
@@ -68,9 +75,10 @@ export interface SqliteMigration {
 }
 
 export interface CanonicalSqliteStoreOptions {
+  readonly allowSchemaMigration?: boolean;
   readonly busyTimeoutMs?: number;
   readonly faultInjector?: (
-    stage: "after_raw_event_insert",
+    stage: "after_raw_event_insert" | "after_restore_key_install",
   ) => void;
   readonly migrations?: readonly SqliteMigration[];
   readonly now?: () => Date;
@@ -81,6 +89,55 @@ export interface CanonicalStoreHealth {
   readonly journalMode: string;
   readonly quickCheck: string;
   readonly userVersion: number;
+}
+
+export interface CanonicalRestoreOptions extends CanonicalSqliteStoreOptions {
+  readonly expectedTargetFingerprint?: string;
+}
+
+export interface CanonicalBackupManifest {
+  readonly formatVersion: 1;
+  readonly product: "ProvenLoopCanonicalBackup";
+  readonly createdAt: string;
+  readonly databaseDigest: string;
+  readonly deletionKeyDigest: string;
+  readonly schemaVersion: number;
+  readonly runtimeVersion?: string;
+}
+
+export interface CanonicalTimeRange {
+  readonly since: string;
+  readonly until: string;
+  readonly timeBasis?: "event" | "observed";
+  readonly sessionId?: string;
+  readonly limit?: number;
+  readonly after?: {
+    readonly timestamp: string;
+    readonly id: string;
+  };
+}
+
+export interface CanonicalRangePage<T> {
+  readonly records: readonly T[];
+  readonly next?: { readonly timestamp: string; readonly id: string };
+}
+
+export interface CanonicalEnrichmentResult {
+  readonly status: "enriched" | "duplicate" | "rejected";
+  readonly reason?: string;
+}
+
+interface RestoreJournal {
+  readonly formatVersion: 1;
+  readonly pid: number;
+  readonly operationId: string;
+  readonly targetPath: string;
+  readonly temporaryPath: string;
+  readonly previousPath: string;
+  readonly hadTarget: boolean;
+  readonly phase: "preparing" | "installing";
+  readonly previousDigest?: string;
+  readonly replacementDigest?: string;
 }
 
 export type CanonicalIngestResult =
@@ -102,6 +159,7 @@ export interface CanonicalRawEventRecord {
   readonly envelope: CaptureEnvelope;
   readonly eventId: string;
   readonly eventType: string;
+  readonly lastSeenAt?: string;
   readonly parseStatus: string;
   readonly sessionId?: string;
   readonly sourceEventId: string;
@@ -148,6 +206,20 @@ export interface CanonicalDeletionMutationResult {
   readonly dependentIds: readonly string[];
   readonly sourceIds: readonly string[];
 }
+
+const canonicalReferenceMigrationSql = (
+  table: "raw_events" | "parser_errors",
+  path: string,
+): string => {
+  const value = `json_extract(safe_envelope_json, '${path}')`;
+  return `UPDATE ${table}
+    SET safe_envelope_json = json_set(safe_envelope_json, '${path}', lower(${value}))
+    WHERE safe_envelope_json IS NOT NULL
+      AND typeof(${value}) = 'text'
+      AND length(${value}) = 70
+      AND lower(substr(${value}, 1, 6)) = 'event-'
+      AND substr(${value}, 7) NOT GLOB '*[^0-9A-Fa-f]*';`;
+};
 
 export const DEFAULT_SQLITE_MIGRATIONS = [
   {
@@ -435,6 +507,77 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         );
     `,
   },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE raw_event_enrichments (
+        enrichment_id TEXT PRIMARY KEY,
+        deduplication_key TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        original_digest TEXT NOT NULL,
+        safe_envelope_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX raw_event_enrichments_event
+        ON raw_event_enrichments(deduplication_key, created_at, enrichment_id);
+
+      CREATE INDEX raw_events_time
+        ON raw_events(event_timestamp, deduplication_key);
+
+      CREATE INDEX context_use_time
+        ON context_use_records(created_at, request_id);
+
+      ${["raw_events", "parser_errors"].flatMap((table) =>
+        [
+          "$.event.parentEventId",
+          "$.event.verificationBinding.correctionEventId",
+          "$.event.verificationBinding.operationEventId",
+        ].map((path) => canonicalReferenceMigrationSql(
+          table as "raw_events" | "parser_errors", path,
+        )),
+      ).join("\n")}
+
+      DELETE FROM correction_opportunities;
+      DELETE FROM correction_key_sources;
+      DELETE FROM correction_keys;
+      DELETE FROM knowledge_candidates
+        WHERE knowledge_id LIKE 'correction-knowledge-%'
+          AND COALESCE(json_extract(body_json, '$.evidenceTier'), '') <> 'user_confirmed'
+          AND json_extract(body_json, '$.state') <> 'superseded';
+      DELETE FROM branch_contexts;
+    `,
+  },
+  {
+    version: 9,
+    sql: "ALTER TABLE feedback_events ADD COLUMN replacement_json TEXT;",
+  },
+  {
+    version: 10,
+    sql: `
+      CREATE TABLE context_use_records_v10 (
+        request_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO context_use_records_v10 (
+        request_id, schema_version, session_id, body_json, source_digest, created_at, updated_at
+      )
+      SELECT request_id, schema_version, session_id, body_json, source_digest, created_at, created_at
+        FROM context_use_records;
+      DROP TABLE context_use_records;
+      ALTER TABLE context_use_records_v10 RENAME TO context_use_records;
+      CREATE INDEX context_use_session ON context_use_records(session_id, created_at);
+      CREATE INDEX context_use_episode ON context_use_records(json_extract(body_json, '$.episodeId'), created_at);
+      CREATE INDEX context_use_time ON context_use_records(created_at, request_id);
+      CREATE INDEX context_use_observed ON context_use_records(updated_at, request_id);
+      CREATE INDEX raw_events_observed ON raw_events(last_seen_at, deduplication_key);
+    `,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 export class UnsupportedDatabaseVersionError extends Error {
@@ -444,6 +587,14 @@ export class UnsupportedDatabaseVersionError extends Error {
     super(
       `Database version ${version} is newer than supported version ${latestVersion}.`,
     );
+  }
+}
+
+export class CanonicalMigrationRequiredError extends Error {
+  public override readonly name = "CanonicalMigrationRequiredError";
+
+  public constructor(current: number, latest: number) {
+    super(`Canonical schema ${current} requires a verified maintenance upgrade to ${latest}; run provenloop upgrade before reopening it.`);
   }
 }
 
@@ -463,6 +614,111 @@ export class InvalidCanonicalSchemaError extends Error {
   }
 }
 
+export class StaleCanonicalStoreError extends Error {
+  public override readonly name = "StaleCanonicalStoreError";
+
+  public constructor() {
+    super("Canonical storage changed during maintenance; close and reopen this store before retrying.");
+  }
+}
+
+const digestBytes = (value: string | Uint8Array): string =>
+  createHash("sha256").update(value).digest("hex");
+
+const readOptionalText = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
+const writeDurable = async (path: string, value: string): Promise<void> => {
+  const staged = `${path}.${randomUUID()}.pending`;
+  try {
+    const file = await open(staged, "wx", 0o600);
+    try {
+      await file.writeFile(value, "utf8");
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(staged, path);
+  } finally {
+    await unlink(staged).catch((error: unknown) => {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    });
+  }
+};
+
+const rangeParameters = (input: CanonicalTimeRange): {
+  since: string;
+  until: string;
+  limit: number;
+  timeBasis: "event" | "observed";
+} => {
+  const since = new Date(input.since);
+  const until = new Date(input.until);
+  const limit = input.limit ?? 500;
+  const timeBasis = input.timeBasis ?? "event";
+  if (
+    !Number.isFinite(since.getTime()) ||
+    !Number.isFinite(until.getTime()) ||
+    since >= until ||
+    !Number.isInteger(limit) || limit < 1 || limit > 1_000 ||
+    !["event", "observed"].includes(timeBasis)
+  ) {
+    throw new RangeError("A valid time range and a limit between 1 and 1000 are required.");
+  }
+  if (input.after !== undefined && (
+    !Number.isFinite(Date.parse(input.after.timestamp)) ||
+    input.after.id.length === 0
+  )) {
+    throw new RangeError("The range cursor is invalid.");
+  }
+  return { since: since.toISOString(), until: until.toISOString(), limit, timeBasis };
+};
+
+const mergeMissingContent = (original: unknown, supplied: unknown): unknown => {
+  if (supplied === undefined) {
+    return original;
+  }
+  if (original === undefined) {
+    return supplied;
+  }
+  if (isDeepStrictEqual(original, supplied)) {
+    return original;
+  }
+  if (
+    original !== null && typeof original === "object" &&
+    !Array.isArray(original) &&
+    ["omitted_in_callback", "metadata_only"].includes(
+      String((original as Record<string, unknown>).status),
+    )
+  ) {
+    return supplied;
+  }
+  if (
+    original !== null && supplied !== null &&
+    typeof original === "object" && typeof supplied === "object" &&
+    !Array.isArray(original) && !Array.isArray(supplied)
+  ) {
+    const merged: Record<string, unknown> = {
+      ...(original as Record<string, unknown>),
+    };
+    for (const [key, value] of Object.entries(supplied)) {
+      merged[key] = mergeMissingContent(merged[key], value);
+    }
+    return merged;
+  }
+  throw new Error("Enrichment cannot replace an already recorded fact.");
+};
+
 const asNumber = (value: unknown): number => {
   if (typeof value === "number") {
     return value;
@@ -475,6 +731,118 @@ const asNumber = (value: unknown): number => {
 
 const optionalText = (value: string | undefined): string | null =>
   value ?? null;
+
+const normalizedEventReference = (value: string): string =>
+  /^event-[a-f0-9]{64}$/iu.test(value) ? value.toLowerCase() : value;
+
+const normalizedCaptureReferences = (input: CaptureEnvelope): CaptureEnvelope => {
+  const binding = input.event.verificationBinding;
+  return captureEnvelopeSchema.parse({
+    ...input,
+    event: {
+      ...input.event,
+      ...(input.event.parentEventId === undefined ? {} : {
+        parentEventId: normalizedEventReference(input.event.parentEventId),
+      }),
+      ...(binding === undefined ? {} : {
+        verificationBinding: {
+          correctionEventId: normalizedEventReference(binding.correctionEventId),
+          operationEventId: normalizedEventReference(binding.operationEventId),
+        },
+      }),
+    },
+  });
+};
+
+const evidenceArguments = (input: CaptureEnvelope): Readonly<Record<string, unknown>> | undefined => {
+  if (!["test.completed", "build.completed", "verification.completed", "file.changed"].includes(input.event.eventType)) {
+    return undefined;
+  }
+  const value = input.event.redactedArguments;
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
+};
+
+const captureSdkSources = (input: CaptureEnvelope): readonly {
+  readonly sourceEventId: string;
+  readonly eventTypes: readonly string[];
+}[] => {
+  const arguments_ = evidenceArguments(input);
+  const start = input.event.evidence?.sourceStartEventId ?? arguments_?.sourceStartEventId;
+  const complete = input.event.evidence?.sourceCompleteEventId ?? arguments_?.sourceCompleteEventId;
+  return [
+    ...(typeof start === "string" ? [{ sourceEventId: start, eventTypes: ["tool.started"] }] : []),
+    ...(typeof complete === "string"
+      ? [{ sourceEventId: complete, eventTypes: ["tool.completed", "tool.failed"] }]
+      : []),
+  ];
+};
+
+// SDK source IDs are opaque and scoped; do not treat them as global event IDs.
+const captureSourceAlias = (
+  input: CaptureEnvelope,
+  sourceEventId = input.sourceEventId,
+  eventType = input.event.eventType,
+): string | undefined => input.event.sessionId === undefined ? undefined : `event-${createCaptureDeduplicationKey({
+  adapter: input.event.adapter,
+  adapterVersion: input.event.adapterVersion,
+  eventType,
+  sessionId: input.event.sessionId,
+  sourceEventId,
+})}`;
+
+const captureEvidenceReferences = (input: CaptureEnvelope): readonly string[] => {
+  const binding = input.event.verificationBinding;
+  return [
+    ...(input.event.parentEventId === undefined ? [] : [input.event.parentEventId]),
+    ...(binding === undefined ? [] : [binding.correctionEventId, binding.operationEventId]),
+    ...captureSdkSources(input).flatMap((source) => source.eventTypes.flatMap((eventType) => {
+      const reference = captureSourceAlias(input, source.sourceEventId, eventType);
+      return reference === undefined ? [] : [reference];
+    })),
+  ].map(normalizedEventReference);
+};
+
+const conflictingCaptureEvidence = (input: CaptureEnvelope): boolean => {
+  const evidence = input.event.evidence;
+  const arguments_ = evidenceArguments(input);
+  if (evidence === undefined || arguments_ === undefined) return false;
+  return [
+    ["sourceStartEventId", evidence.sourceStartEventId],
+    ["sourceCompleteEventId", evidence.sourceCompleteEventId],
+    ["commandFamily", evidence.commandFamily],
+    ["exitCode", evidence.exitCode],
+    ["targetPaths", evidence.targetPaths],
+    ["workingDirectory", evidence.workingDirectory],
+    ["cwd", evidence.workingDirectory],
+  ].some(([field, expected]) =>
+    expected !== undefined && arguments_[String(field)] !== undefined &&
+    !isDeepStrictEqual(arguments_[String(field)], expected),
+  );
+};
+
+const normalizedFeedbackEvent = (input: FeedbackEvent): FeedbackEvent =>
+  feedbackEventSchema.parse({
+    ...input,
+    evidenceRef: normalizedEventReference(input.evidenceRef),
+    ...(input.resolvesEvidenceIds === undefined ? {} : {
+      resolvesEvidenceIds: input.resolvesEvidenceIds.map(normalizedEventReference),
+    }),
+  });
+
+const feedbackResolutionIdentities = (
+  event: FeedbackEvent,
+): readonly DeletionPlannedIdentity[] =>
+  (event.resolvesEvidenceIds ?? []).flatMap((identifier): DeletionPlannedIdentity[] => {
+    if (/^event-[a-f0-9]{64}$/iu.test(identifier)) {
+      return [{ identifier: identifier.toLowerCase(), identityType: "event" }];
+    }
+    if (/^[a-f0-9]{64}$/iu.test(identifier)) {
+      return [{ identifier: identifier.toLowerCase(), identityType: "deduplication" }];
+    }
+    return [];
+  });
 
 const normalizedKnowledgeCandidate = (
   input: KnowledgeCandidate,
@@ -558,6 +926,13 @@ const bodyReferences = (
     return true;
   }
   if (
+    record.targetType === "branch_context" &&
+    typeof record.targetId === "string" &&
+    references.record.has(`branch-context:${record.targetId}`)
+  ) {
+    return true;
+  }
+  if (
     record.kind === "mute_session" &&
     typeof record.evidenceRef === "string" &&
     references.session.has(record.evidenceRef)
@@ -585,8 +960,12 @@ const bodyReferences = (
           ? values.some((id) => references.session.has(id))
           : [
                 "correctioneventids",
+                "correctioneventid",
                 "eventid",
                 "parenteventid",
+                "operationeventid",
+                "sourcestarteventid",
+                "sourcecompleteeventid",
                 "sourceid",
                 "sourcecorrectioneventids",
                 "sourceeventids",
@@ -604,6 +983,8 @@ const bodyReferences = (
                   "evidenceref",
                   "invocationids",
                   "sourceevidenceids",
+                  "resolvesevidenceids",
+                  "recentverificationevidenceids",
                   "supportingevidenceids",
                   "verificationevidenceids",
                 ].includes(normalized)
@@ -621,6 +1002,8 @@ const bodyReferences = (
                       "candidateknowledgeids",
                       "conflictswith",
                       "knowledgeid",
+                      "previousknowledgeid",
+                      "replacementknowledgeid",
                       "supersedes",
                     ].includes(normalized)
                   ? values.some((id) =>
@@ -974,6 +1357,23 @@ const feedbackIntentDigest = (
   return sha256(intent);
 };
 
+const confirmedRuleIntentDigest = (candidate: KnowledgeCandidate): string =>
+  sha256({
+    schemaVersion: candidate.schemaVersion,
+    knowledgeId: candidate.knowledgeId,
+    supersedes: candidate.supersedes,
+    content: candidate.content,
+    appliesWhen: candidate.appliesWhen,
+    nonApplicability: candidate.nonApplicability,
+    scope: candidate.scope,
+    scopeId: candidate.scopeId,
+    kind: candidate.kind,
+    topicKey: candidate.topicKey,
+    importance: candidate.importance,
+    sourceEpisodeIds: candidate.sourceEpisodeIds,
+    sourceEvidenceIds: candidate.sourceEvidenceIds,
+  });
+
 const deleteFeedbackRows = (
   database: DatabaseSync,
   references: TypedDeletionReferences,
@@ -983,7 +1383,7 @@ const deleteFeedbackRows = (
   let deleted = 0;
   const rows = database
     .prepare(
-      `SELECT feedback_id, body_json
+      `SELECT *
          FROM feedback_events`,
     )
     .all() as readonly Readonly<Record<string, unknown>>[];
@@ -992,7 +1392,13 @@ const deleteFeedbackRows = (
   );
   for (const row of rows) {
     const parsed = JSON.parse(String(row.body_json)) as unknown;
-    if (!bodyReferences(parsed, references)) {
+    const replacement = row.replacement_json == null
+      ? undefined
+      : JSON.parse(String(row.replacement_json)) as Record<string, unknown>;
+    if (
+      !bodyReferences(parsed, references) &&
+      !bodyReferences(replacement, references)
+    ) {
       continue;
     }
     const id = String(row.feedback_id);
@@ -1002,6 +1408,9 @@ const deleteFeedbackRows = (
     references.record.add(id);
     if (feedbackMutatesKnowledge(event)) {
       affectedKnowledgeIds.add(event.targetId);
+    }
+    if (typeof replacement?.replacementKnowledgeId === "string") {
+      affectedKnowledgeIds.add(replacement.replacementKnowledgeId);
     }
     deleted += 1;
   }
@@ -1117,6 +1526,15 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["body_json", "TEXT", true, false],
     ["source_digest", "TEXT", true, false],
     ["created_at", "TEXT", true, false],
+    ["updated_at", "TEXT", true, false],
+  ],
+  feedback_events: [
+    ["feedback_id", "TEXT", true, true],
+    ["schema_version", "INTEGER", true, false],
+    ["body_json", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
+    ["replacement_json", "TEXT", false, false],
   ],
   knowledge_candidates: [
     ["knowledge_id", "TEXT", true, true],
@@ -1168,6 +1586,14 @@ const RUNTIME_SCHEMA_COLUMNS = {
     ["first_seen_at", "TEXT", true, false],
     ["last_seen_at", "TEXT", true, false],
     ["delivery_count", "INTEGER", true, false],
+  ],
+  raw_event_enrichments: [
+    ["enrichment_id", "TEXT", true, true],
+    ["deduplication_key", "TEXT", true, false],
+    ["source_digest", "TEXT", true, false],
+    ["original_digest", "TEXT", true, false],
+    ["safe_envelope_json", "TEXT", true, false],
+    ["created_at", "TEXT", true, false],
   ],
   schema_migrations: [
     ["version", "INTEGER", false, true],
@@ -1276,6 +1702,18 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   context_use_records: [
+    {
+      columns: ["updated_at", "request_id"],
+      name: "context_use_observed",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: ["created_at", "request_id"],
+      name: "context_use_time",
+      origin: "c",
+      unique: false,
+    },
     {
       columns: [
         "null",
@@ -1386,6 +1824,18 @@ const RUNTIME_SCHEMA_INDEXES = {
   ],
   raw_events: [
     {
+      columns: ["last_seen_at", "deduplication_key"],
+      name: "raw_events_observed",
+      origin: "c",
+      unique: false,
+    },
+    {
+      columns: ["event_timestamp", "deduplication_key"],
+      name: "raw_events_time",
+      origin: "c",
+      unique: false,
+    },
+    {
       columns: [
         "adapter",
         "adapter_version",
@@ -1409,6 +1859,15 @@ const RUNTIME_SCHEMA_INDEXES = {
         "deduplication_key",
       ],
       origin: "pk",
+    },
+  ],
+  raw_event_enrichments: [
+    { columns: ["enrichment_id"], origin: "pk" },
+    {
+      columns: ["deduplication_key", "created_at", "enrichment_id"],
+      name: "raw_event_enrichments_event",
+      origin: "c",
+      unique: false,
     },
   ],
   schema_migrations: [],
@@ -1451,9 +1910,11 @@ const RUNTIME_SCHEMA_INDEXES = {
 
 export class CanonicalSqliteStore {
   readonly #database: DatabaseSync;
+  readonly #allowSchemaMigration: boolean;
   readonly #deletionIdentityKey: string;
+  readonly #generation: string | undefined;
   readonly #faultInjector:
-    | ((stage: "after_raw_event_insert") => void)
+    | CanonicalSqliteStoreOptions["faultInjector"]
     | undefined;
   readonly #now: () => Date;
   readonly #path: string;
@@ -1462,7 +1923,14 @@ export class CanonicalSqliteStore {
     path: string,
     options: CanonicalSqliteStoreOptions = {},
   ) {
-    this.#path = path;
+    this.#path = path === ":memory:" ? path : resolve(path);
+    path = this.#path;
+    if (path !== ":memory:" && existsSync(`${path}.restore.lock`)) {
+      throw new Error("Canonical storage is under maintenance; recover the interrupted restore or retry after maintenance.");
+    }
+    this.#generation = path === ":memory:" ? undefined :
+      readOptionalText(`${path}.restore.generation`);
+    this.#allowSchemaMigration = options.allowSchemaMigration ?? false;
     const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
     if (!Number.isInteger(busyTimeoutMs) || busyTimeoutMs <= 0) {
       throw new RangeError("busyTimeoutMs must be a positive integer.");
@@ -1491,40 +1959,211 @@ export class CanonicalSqliteStore {
     this.#database.close();
   }
 
-  public async backupTo(path: string): Promise<number> {
+  public async backupTo(
+    path: string,
+    options: { readonly runtimeVersion?: string } = {},
+  ): Promise<number> {
+    this.#assertNoRestoreBarrier();
+    if (this.#path !== ":memory:" && resolve(path) === this.#path) {
+      throw new Error("A backup destination must differ from its source database.");
+    }
     await mkdir(dirname(path), {
       recursive: true,
     });
     const pages = await backup(this.#database, path);
-    await writeFile(
+    await writeDurable(
       `${path}.deletion.key`,
       this.#deletionIdentityKey,
-      "utf8",
     );
+    this.#assertNoRestoreBarrier();
+    await CanonicalSqliteStore.#writeBackupManifest(path, options.runtimeVersion);
+    await CanonicalSqliteStore.verifyBackup(path);
     return pages;
+  }
+
+  public static async backupDatabase(
+    sourcePath: string,
+    path: string,
+    options: { readonly runtimeVersion?: string } = {},
+  ): Promise<CanonicalBackupManifest> {
+    if (resolve(sourcePath) === resolve(path)) {
+      throw new Error("A backup destination must differ from its source database.");
+    }
+    await mkdir(dirname(path), { recursive: true });
+    const source = new DatabaseSync(sourcePath, { readOnly: true });
+    try {
+      CanonicalSqliteStore.#assertRestorableBackup(source, DEFAULT_SQLITE_MIGRATIONS);
+      await backup(source, path);
+      const key = readOptionalText(`${sourcePath}.deletion.key`);
+      if (key === undefined || !/^[a-f0-9]{64}$/u.test(key)) {
+        throw new InvalidCanonicalSchemaError("A valid deletion key is required for a complete backup.");
+      }
+      await writeDurable(`${path}.deletion.key`, key);
+      await CanonicalSqliteStore.#writeBackupManifest(path, options.runtimeVersion);
+      return await CanonicalSqliteStore.verifyBackup(path);
+    } finally {
+      source.close();
+    }
+  }
+
+  static async #writeBackupManifest(
+    path: string,
+    runtimeVersion?: string,
+  ): Promise<void> {
+    const database = new DatabaseSync(path, { readOnly: true });
+    let schemaVersion: number;
+    try {
+      schemaVersion = asNumber(database.prepare("PRAGMA user_version").get()?.user_version);
+      const check = database.prepare("PRAGMA quick_check").get();
+      if (check === undefined || firstColumn(check) !== "ok") {
+        throw new InvalidCanonicalSchemaError("The backup failed SQLite integrity validation.");
+      }
+    } finally {
+      database.close();
+    }
+    const manifest: CanonicalBackupManifest = {
+      formatVersion: 1,
+      product: "ProvenLoopCanonicalBackup",
+      createdAt: new Date().toISOString(),
+      schemaVersion,
+      databaseDigest: digestBytes(await readFile(path)),
+      deletionKeyDigest: digestBytes((await readFile(`${path}.deletion.key`, "utf8")).trim()),
+      ...(runtimeVersion === undefined ? {} : { runtimeVersion }),
+    };
+    await writeDurable(`${path}.manifest.json`, JSON.stringify(manifest));
+  }
+
+  public static async verifyBackup(path: string): Promise<CanonicalBackupManifest> {
+    const manifest = JSON.parse(await readFile(`${path}.manifest.json`, "utf8")) as CanonicalBackupManifest;
+    const deletionKey = (await readFile(`${path}.deletion.key`, "utf8")).trim();
+    if (
+      manifest.product !== "ProvenLoopCanonicalBackup" ||
+      manifest.formatVersion !== 1 ||
+      !Number.isInteger(manifest.schemaVersion) ||
+      manifest.databaseDigest !== digestBytes(await readFile(path)) ||
+      !/^[a-f0-9]{64}$/u.test(deletionKey) ||
+      manifest.deletionKeyDigest !== digestBytes(deletionKey)
+    ) {
+      throw new InvalidCanonicalSchemaError("The backup manifest, database, and deletion key do not match.");
+    }
+    const database = new DatabaseSync(path, { readOnly: true });
+    try {
+      CanonicalSqliteStore.#assertRestorableBackup(database, DEFAULT_SQLITE_MIGRATIONS);
+      const check = database.prepare("PRAGMA quick_check").get();
+      if (
+        asNumber(database.prepare("PRAGMA user_version").get()?.user_version) !== manifest.schemaVersion ||
+        check === undefined || firstColumn(check) !== "ok"
+      ) {
+        throw new InvalidCanonicalSchemaError("The backup schema or integrity check failed.");
+      }
+      const verifier = deletionIdentityDigest(
+        "key", "provenloop-deletion-tombstone-key", deletionKey,
+      );
+      for (const row of database.prepare("SELECT body_json FROM deletion_operations").all()) {
+        if (deletionOperationSchema.parse(JSON.parse(String(row.body_json))).tombstoneKeyVerifier !== verifier) {
+          throw new InvalidCanonicalSchemaError("The backup deletion key does not match its tombstones.");
+        }
+      }
+    } finally {
+      database.close();
+    }
+    return manifest;
+  }
+
+  public static databaseFingerprint(path: string): string {
+    const database = new DatabaseSync(path, { readOnly: true });
+    const digest = createHash("sha256");
+    try {
+      digest.update(JSON.stringify(database.prepare("PRAGMA user_version").get()));
+      const tables = database.prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      ).all();
+      for (const table of tables) {
+        digest.update(JSON.stringify(table));
+        for (const row of database.prepare(
+          `SELECT * FROM ${sqliteIdentifier(String(table.name))} ORDER BY rowid`,
+        ).iterate()) {
+          digest.update(JSON.stringify(row, (_key, value: unknown) =>
+            typeof value === "bigint" ? value.toString() : value,
+          ));
+        }
+      }
+      return digest.digest("hex");
+    } finally {
+      database.close();
+    }
+  }
+
+  public static databaseVersion(path: string): number {
+    const database = new DatabaseSync(path, { readOnly: true });
+    try {
+      return asNumber(database.prepare("PRAGMA user_version").get()?.user_version);
+    } finally {
+      database.close();
+    }
   }
 
   public static async restoreFromBackup(
     backupPath: string,
     targetPath: string,
-    options: CanonicalSqliteStoreOptions = {},
+    options: CanonicalRestoreOptions = {},
   ): Promise<CanonicalStoreHealth> {
+    await mkdir(dirname(resolve(targetPath)), { recursive: true });
+    const lease = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dirname(resolve(targetPath)), "canonical-restore"),
+    ).tryAcquire();
+    if (lease === undefined) {
+      throw new Error("Another canonical restore or recovery is already executing.");
+    }
+    try {
+      return await CanonicalSqliteStore.#restoreFromBackupLocked(backupPath, targetPath, options);
+    } finally {
+      await lease.release();
+    }
+  }
+
+  static async #restoreFromBackupLocked(
+    backupPath: string,
+    targetPath: string,
+    options: CanonicalRestoreOptions,
+  ): Promise<CanonicalStoreHealth> {
+    targetPath = resolve(targetPath);
+    backupPath = resolve(backupPath);
+    if (targetPath === backupPath) {
+      throw new Error("A backup cannot be restored over itself.");
+    }
     await mkdir(dirname(targetPath), {
       recursive: true,
     });
+    await CanonicalSqliteStore.#recoverInterruptedRestoreLocked(targetPath);
     const restoreBarrierPath = `${targetPath}.restore.lock`;
     const restoreBarrier = await open(restoreBarrierPath, "wx");
-    await restoreBarrier.writeFile(
-      `${process.pid}\n`,
-      "utf8",
-    );
-    await restoreBarrier.sync();
     const requiredTombstones = new Map<string, DeletionOperation>();
     let installedIncompleteDeletion = false;
     let requiredDeletionKey: string | undefined;
     const restoreId = randomUUID();
     const temporaryPath = `${targetPath}.restore-${restoreId}.tmp`;
+    let journal: RestoreJournal = {
+      formatVersion: 1,
+      pid: process.pid,
+      operationId: restoreId,
+      targetPath,
+      temporaryPath,
+      previousPath: `${targetPath}.restore-${restoreId}.previous`,
+      hadTarget: existsSync(targetPath),
+      phase: "preparing",
+    };
     try {
+      await restoreBarrier.writeFile(JSON.stringify(journal), "utf8");
+      await restoreBarrier.sync();
+    } finally {
+      await restoreBarrier.close();
+    }
+    let retainJournal = false;
+    try {
+      if (existsSync(`${backupPath}.manifest.json`)) {
+        await CanonicalSqliteStore.verifyBackup(backupPath);
+      }
       if (existsSync(targetPath)) {
       let current: DatabaseSync | undefined;
       try {
@@ -1579,6 +2218,23 @@ export class CanonicalSqliteStore {
         throw new InvalidCanonicalSchemaError(
           "Cannot restore while a deletion operation is incomplete.",
         );
+      }
+      if (
+        options.expectedTargetFingerprint !== undefined &&
+        (
+          !journal.hadTarget ||
+          CanonicalSqliteStore.databaseFingerprint(targetPath) !== options.expectedTargetFingerprint
+        )
+      ) {
+        throw new Error("Canonical data changed before the restore barrier was acquired; refusing to overwrite new writes.");
+      }
+      if (journal.hadTarget) {
+        await CanonicalSqliteStore.backupDatabase(targetPath, journal.previousPath);
+        journal = {
+          ...journal,
+          previousDigest: CanonicalSqliteStore.databaseFingerprint(targetPath),
+        };
+        await writeDurable(restoreBarrierPath, JSON.stringify(journal));
       }
       let backupDeletionKey: string | undefined;
       let source: DatabaseSync | undefined;
@@ -1679,7 +2335,7 @@ export class CanonicalSqliteStore {
       try {
         restored = new CanonicalSqliteStore(
           temporaryPath,
-          options,
+          { ...options, allowSchemaMigration: true },
         );
         health = restored.health();
       } finally {
@@ -1690,30 +2346,41 @@ export class CanonicalSqliteStore {
           `Restored SQLite quick_check failed: ${health.quickCheck}.`,
         );
       }
+      journal = {
+        ...journal,
+        phase: "installing",
+        replacementDigest: CanonicalSqliteStore.databaseFingerprint(temporaryPath),
+      };
+      await writeDurable(restoreBarrierPath, JSON.stringify(journal));
+      await writeDurable(`${targetPath}.restore.generation`, restoreId);
       let validatedSource: DatabaseSync | undefined;
       try {
         validatedSource = new DatabaseSync(temporaryPath, {
           readOnly: true,
         });
-        await writeFile(
+        await writeDurable(
           `${targetPath}.deletion.key`,
           backupDeletionKey,
-          "utf8",
         );
+        options.faultInjector?.("after_restore_key_install");
         await backup(validatedSource, targetPath);
       } finally {
         validatedSource?.close();
       }
 
-      let installedStore: CanonicalSqliteStore | undefined;
+      let installedDatabase: DatabaseSync | undefined;
       try {
-        installedStore = new CanonicalSqliteStore(
-          targetPath,
-          options,
+        installedDatabase = new DatabaseSync(targetPath);
+        installedDatabase.exec(
+          `PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 5_000}`,
         );
-        health = installedStore.health();
+        CanonicalSqliteStore.#assertRestorableBackup(
+          installedDatabase,
+          options.migrations ?? DEFAULT_SQLITE_MIGRATIONS,
+        );
+        health = CanonicalSqliteStore.#databaseHealth(installedDatabase);
       } finally {
-        installedStore?.close();
+        installedDatabase?.close();
       }
       if (health.quickCheck !== "ok") {
         throw new Error(
@@ -1721,28 +2388,126 @@ export class CanonicalSqliteStore {
         );
       }
       return health;
+    } catch (error) {
+      if (journal.phase === "installing") {
+        try {
+          await CanonicalSqliteStore.#rollBackRestore(journal);
+        } catch (recoveryError) {
+          retainJournal = true;
+          throw new AggregateError(
+            [error, recoveryError],
+            "Restore failed and requires recovery. The maintenance journal and verified snapshots were preserved; no unrecognized writes were overwritten.",
+            { cause: recoveryError },
+          );
+        }
+      }
+      throw error;
     } finally {
-      await CanonicalSqliteStore.#removeDatabaseFiles(
-        temporaryPath,
-      );
-      await restoreBarrier.close();
-      await unlink(restoreBarrierPath).catch(
-        CanonicalSqliteStore.#ignoreMissing,
-      );
+      if (!retainJournal) {
+        await CanonicalSqliteStore.#removeDatabaseFiles(temporaryPath);
+        await CanonicalSqliteStore.#removeDatabaseFiles(journal.previousPath);
+        await unlink(restoreBarrierPath).catch(CanonicalSqliteStore.#ignoreMissing);
+      }
     }
   }
 
+  public static async recoverInterruptedRestore(targetPath: string): Promise<void> {
+    const lease = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dirname(resolve(targetPath)), "canonical-restore"),
+    ).tryAcquire();
+    if (lease === undefined) {
+      throw new Error("Another canonical restore or recovery is already executing.");
+    }
+    try {
+      await CanonicalSqliteStore.#recoverInterruptedRestoreLocked(targetPath);
+    } finally {
+      await lease.release();
+    }
+  }
+
+  static async #recoverInterruptedRestoreLocked(targetPath: string): Promise<void> {
+    targetPath = resolve(targetPath);
+    const path = `${targetPath}.restore.lock`;
+    const content = readOptionalText(path);
+    if (content === undefined) {
+      return;
+    }
+    let journal: RestoreJournal;
+    try {
+      journal = JSON.parse(content) as RestoreJournal;
+    } catch {
+      throw new Error("The restore journal is incomplete or legacy; preserve the database and backups for explicit recovery.");
+    }
+    if (
+      journal.formatVersion !== 1 || !Number.isInteger(journal.pid) || journal.pid <= 0 ||
+      journal.targetPath !== targetPath ||
+      !/^[a-f0-9-]{36}$/u.test(journal.operationId) ||
+      journal.temporaryPath !== `${targetPath}.restore-${journal.operationId}.tmp` ||
+      journal.previousPath !== `${targetPath}.restore-${journal.operationId}.previous` ||
+      !["preparing", "installing"].includes(journal.phase)
+    ) {
+      throw new Error("The restore journal is malformed; automatic recovery was refused.");
+    }
+    try {
+      process.kill(journal.pid, 0);
+      throw new Error("A restore is still active; wait for its owning process to finish.");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+        throw error;
+      }
+    }
+    if (journal.phase === "installing") {
+      await CanonicalSqliteStore.#rollBackRestore(journal);
+    }
+    await CanonicalSqliteStore.#removeDatabaseFiles(journal.temporaryPath);
+    await CanonicalSqliteStore.#removeDatabaseFiles(journal.previousPath);
+    await unlink(path);
+  }
+
+  static async #rollBackRestore(journal: RestoreJournal): Promise<void> {
+    if (existsSync(journal.targetPath)) {
+      const currentDigest = CanonicalSqliteStore.databaseFingerprint(journal.targetPath);
+      if (
+        currentDigest !== journal.previousDigest &&
+        currentDigest !== journal.replacementDigest
+      ) {
+        throw new Error("The restore target contains unrecognized changes; refusing to overwrite possible new data.");
+      }
+    }
+    if (journal.hadTarget) {
+      await CanonicalSqliteStore.verifyBackup(journal.previousPath);
+      const previous = new DatabaseSync(journal.previousPath, { readOnly: true });
+      try {
+        await writeDurable(
+          `${journal.targetPath}.deletion.key`,
+          (await readFile(`${journal.previousPath}.deletion.key`, "utf8")).trim(),
+        );
+        await backup(previous, journal.targetPath);
+      } finally {
+        previous.close();
+      }
+    } else {
+      await CanonicalSqliteStore.#removeDatabaseFiles(journal.targetPath);
+    }
+    await writeDurable(`${journal.targetPath}.restore.generation`, randomUUID());
+  }
+
   public health(): CanonicalStoreHealth {
-    const journalMode = this.#database
+    this.#assertNoRestoreBarrier();
+    return CanonicalSqliteStore.#databaseHealth(this.#database);
+  }
+
+  static #databaseHealth(database: DatabaseSync): CanonicalStoreHealth {
+    const journalMode = database
       .prepare("PRAGMA journal_mode;")
       .get() as Readonly<Record<string, unknown>>;
-    const busyTimeout = this.#database
+    const busyTimeout = database
       .prepare("PRAGMA busy_timeout;")
       .get() as Readonly<Record<string, unknown>>;
-    const quickCheck = this.#database
+    const quickCheck = database
       .prepare("PRAGMA quick_check;")
       .get() as Readonly<Record<string, unknown>>;
-    const userVersion = this.#database
+    const userVersion = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
     return {
@@ -1754,6 +2519,7 @@ export class CanonicalSqliteStore {
   }
 
   public hasActiveDeletion(): boolean {
+    this.#assertNoRestoreBarrier();
     const row = this.#database
       .prepare(
         `SELECT COUNT(*) AS count
@@ -1792,6 +2558,7 @@ export class CanonicalSqliteStore {
     );
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      this.#assertNoRestoreBarrier();
       const existing = (this.#database
         .prepare(
           `SELECT body_json
@@ -1950,6 +2717,7 @@ export class CanonicalSqliteStore {
   public deletionOperation(
     deletionId: string,
   ): DeletionOperation | undefined {
+    this.#assertNoRestoreBarrier();
     const row = this.#database
       .prepare(
         `SELECT body_json
@@ -2100,9 +2868,10 @@ export class CanonicalSqliteStore {
           row.session_id === null
             ? undefined
             : String(row.session_id);
-        const envelope = captureEnvelopeSchema.parse(
+        const envelope = this.#effectiveEnvelope(captureEnvelopeSchema.parse(
           JSON.parse(String(row.safe_envelope_json)) as unknown,
-        );
+        ));
+        const sourceAlias = captureSourceAlias(envelope);
         const directlySelected =
           (
             targetType === "source" &&
@@ -2127,11 +2896,9 @@ export class CanonicalSqliteStore {
           );
         if (
           !directlySelected &&
-          !(
-            envelope.event.parentEventId !== undefined &&
-            referenceIdentifiers.has(
-              envelope.event.parentEventId,
-            )
+          !(sourceAlias !== undefined && referenceIdentifiers.has(sourceAlias)) &&
+          !captureEvidenceReferences(envelope).some((id) =>
+            referenceIdentifiers.has(id),
           )
         ) {
           continue;
@@ -2141,6 +2908,10 @@ export class CanonicalSqliteStore {
         sourceIds.add(eventId);
         referenceIdentifiers.add(deduplicationKey);
         referenceIdentifiers.add(eventId);
+        if (sourceAlias !== undefined) {
+          sourceIds.add(sourceAlias);
+          referenceIdentifiers.add(sourceAlias);
+        }
         if (sessionId !== undefined) {
           candidateSessionIds.add(sessionId);
         }
@@ -2152,6 +2923,7 @@ export class CanonicalSqliteStore {
           continue;
         }
         const envelope = parserEnvelopes.get(parserErrorId);
+        const sourceAlias = envelope === undefined ? undefined : captureSourceAlias(envelope);
         const deduplicationKey =
           row.deduplication_key === null
             ? undefined
@@ -2189,11 +2961,11 @@ export class CanonicalSqliteStore {
           );
         if (
           !directlySelected &&
+          !(sourceAlias !== undefined && referenceIdentifiers.has(sourceAlias)) &&
           (
             envelope === undefined ||
-            envelope.event.parentEventId === undefined ||
-            !referenceIdentifiers.has(
-              envelope.event.parentEventId,
+            !captureEvidenceReferences(envelope).some((id) =>
+              referenceIdentifiers.has(id),
             )
           )
         ) {
@@ -2201,6 +2973,10 @@ export class CanonicalSqliteStore {
         }
         selectedParserIds.add(parserErrorId);
         dependentIds.add(String(row.queue_item_id));
+        if (sourceAlias !== undefined) {
+          sourceIds.add(sourceAlias);
+          referenceIdentifiers.add(sourceAlias);
+        }
         if (deduplicationKey !== undefined) {
           sourceIds.add(deduplicationKey);
           referenceIdentifiers.add(deduplicationKey);
@@ -2271,26 +3047,38 @@ export class CanonicalSqliteStore {
           )
           .run(targetId);
       }
-      if (deduplicationKeys.length > 0) {
-        const parameters = placeholders(deduplicationKeys.length);
+      for (const chunk of sqliteChunks(deduplicationKeys)) {
+        const parameters = placeholders(chunk.length);
+        if (this.#hasEnrichments()) {
+          for (const row of this.#database.prepare(
+            `SELECT enrichment_id FROM raw_event_enrichments
+              WHERE deduplication_key IN (${parameters})`,
+          ).all(...chunk)) {
+            dependentIds.add(String(row.enrichment_id));
+          }
+          this.#database.prepare(
+            `DELETE FROM raw_event_enrichments
+              WHERE deduplication_key IN (${parameters})`,
+          ).run(...chunk);
+        }
         this.#database
           .prepare(
             `DELETE FROM parser_errors
               WHERE deduplication_key IN (${parameters})`,
           )
-          .run(...deduplicationKeys);
+          .run(...chunk);
         this.#database
           .prepare(
             `DELETE FROM queue_processing
               WHERE deduplication_key IN (${parameters})`,
           )
-          .run(...deduplicationKeys);
+          .run(...chunk);
         this.#database
           .prepare(
             `DELETE FROM raw_events
               WHERE deduplication_key IN (${parameters})`,
           )
-          .run(...deduplicationKeys);
+          .run(...chunk);
       }
       if (selectedParserIds.size > 0) {
         const parserIds = [...selectedParserIds];
@@ -2541,7 +3329,7 @@ export class CanonicalSqliteStore {
         const deactivated = knowledgeCandidateSchema.parse({
           ...candidate,
           expiresAt: operation.requestedAt,
-          state: "archived",
+          state: candidate.state === "superseded" ? "superseded" : "archived",
           validatedAt: operation.requestedAt,
         });
         this.#database
@@ -2590,6 +3378,7 @@ export class CanonicalSqliteStore {
   public remainingIdentifiers(
     identifiers: ReadonlySet<string>,
   ): readonly string[] {
+    this.#assertNoRestoreBarrier();
     const remaining = new Set<string>();
     const inspect = (id: unknown, body?: unknown): void => {
       const normalizedId = String(id);
@@ -2633,11 +3422,10 @@ export class CanonicalSqliteStore {
       const envelope = captureEnvelopeSchema.parse(
         JSON.parse(String(row.safe_envelope_json)) as unknown,
       );
-      if (
-        envelope.event.parentEventId !== undefined &&
-        identifiers.has(envelope.event.parentEventId)
-      ) {
-        remaining.add(envelope.event.parentEventId);
+      for (const reference of captureEvidenceReferences(envelope)) {
+        if (identifiers.has(reference)) {
+          remaining.add(reference);
+        }
       }
     }
     for (const row of this.#database
@@ -2664,7 +3452,7 @@ export class CanonicalSqliteStore {
             parsed.data.deduplicationKey,
             parsed.data.event.eventId,
             parsed.data.event.sessionId,
-            parsed.data.event.parentEventId,
+            ...captureEvidenceReferences(parsed.data),
           ].some(
             (identifier) =>
               identifier !== undefined &&
@@ -2675,7 +3463,7 @@ export class CanonicalSqliteStore {
             parsed.data.deduplicationKey,
             parsed.data.event.eventId,
             parsed.data.event.sessionId,
-            parsed.data.event.parentEventId,
+            ...captureEvidenceReferences(parsed.data),
           ]) {
             if (
               identifier !== undefined &&
@@ -2747,11 +3535,22 @@ export class CanonicalSqliteStore {
     ] as const) {
       for (const row of this.#database
         .prepare(
-          `SELECT ${idColumn} AS id, ${bodyColumn} AS body
+          `SELECT ${idColumn} AS id, ${bodyColumn} AS body${table === "feedback_events" ? ", *" : ""}
              FROM ${table}`,
         )
         .all() as readonly Readonly<Record<string, unknown>>[]) {
         inspect(row.id, row.body);
+        if (row.replacement_json != null) {
+          inspect(row.id, row.replacement_json);
+        }
+      }
+    }
+    if (this.#hasEnrichments()) {
+      for (const row of this.#database.prepare(
+        "SELECT enrichment_id, deduplication_key, safe_envelope_json FROM raw_event_enrichments",
+      ).all()) {
+        inspect(row.enrichment_id, row.safe_envelope_json);
+        inspect(row.deduplication_key);
       }
     }
     return [...remaining].sort();
@@ -2760,6 +3559,7 @@ export class CanonicalSqliteStore {
   public remainingDeletionIdentities(
     identities: readonly DeletionPlannedIdentity[],
   ): readonly DeletionPlannedIdentity[] {
+    this.#assertNoRestoreBarrier();
     const remaining = new Map<string, DeletionPlannedIdentity>();
     const record = (identity: DeletionPlannedIdentity): void => {
       remaining.set(
@@ -2775,7 +3575,7 @@ export class CanonicalSqliteStore {
             : identity.identityType === "event"
               ? (
                   envelope.event.eventId === identity.identifier ||
-                  envelope.event.parentEventId === identity.identifier
+                  captureEvidenceReferences(envelope).includes(identity.identifier)
                 )
               : identity.identityType === "session"
                 ? envelope.event.sessionId === identity.identifier
@@ -2787,6 +3587,13 @@ export class CanonicalSqliteStore {
     };
     for (const envelope of this.episodeSourceEnvelopes()) {
       inspectEnvelope(envelope);
+    }
+    if (this.#hasEnrichments()) {
+      for (const row of this.#database.prepare(
+        "SELECT safe_envelope_json FROM raw_event_enrichments",
+      ).all()) {
+        inspectEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))));
+      }
     }
     for (const row of this.#database
       .prepare(
@@ -3027,20 +3834,24 @@ export class CanonicalSqliteStore {
     if (ids.length === 0) {
       return 0;
     }
-    const parameters = placeholders(ids.length);
-    const parser = this.#database
-      .prepare(
-        `DELETE FROM parser_errors
-          WHERE queue_item_id IN (${parameters})`,
-      )
-      .run(...ids).changes;
-    const processing = this.#database
-      .prepare(
-        `DELETE FROM queue_processing
-          WHERE queue_item_id IN (${parameters})`,
-      )
-      .run(...ids).changes;
-    return Number(parser) + Number(processing);
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      let deleted = 0;
+      for (const chunk of sqliteChunks(ids)) {
+        const parameters = placeholders(chunk.length);
+        for (const table of ["parser_errors", "queue_processing"] as const) {
+          deleted += Number(this.#database.prepare(
+            `DELETE FROM ${table} WHERE queue_item_id IN (${parameters})`,
+          ).run(...chunk).changes);
+        }
+      }
+      this.#database.exec("COMMIT;");
+      return deleted;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   public checkpointDeletionQueue(input: {
@@ -3148,6 +3959,7 @@ export class CanonicalSqliteStore {
   }
 
   #deletionTombstoneKeys(): ReadonlySet<string> {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -3169,6 +3981,7 @@ export class CanonicalSqliteStore {
   }
 
   #knowledgeDeletionBlocked(knowledgeId: string): boolean {
+    this.#assertNoRestoreBarrier();
     const targetDigest = deletionIdentityDigest(
       "target",
       `knowledge:${knowledgeId}`,
@@ -3195,7 +4008,7 @@ export class CanonicalSqliteStore {
   ): CanonicalIngestResult {
     this.#assertNoRestoreBarrier();
     const item = captureQueueItemSchema.parse(input);
-    const parsedEnvelope = item.envelope;
+    const parsedEnvelope = normalizedCaptureReferences(item.envelope);
     if (this.hasActiveDeletion()) {
       throw new Error(
         "Canonical ingestion is blocked by an active deletion.",
@@ -3258,15 +4071,30 @@ export class CanonicalSqliteStore {
         sessionId: parsedEnvelope.event.sessionId,
         sourceEventId: parsedEnvelope.sourceEventId,
       });
-    const safe = redactCaptureEnvelopeForPersistence(
+    const redacted = redactCaptureEnvelopeForPersistence(
       parsedEnvelope,
     );
+    const safe = {
+      ...redacted,
+      envelope: normalizedCaptureReferences(redacted.envelope),
+    };
     const safeEnvelopeJson = JSON.stringify(safe.envelope);
+    const safeDeduplicationKey = safe.envelope.event.sessionId === undefined
+      ? undefined : createCaptureDeduplicationKey({
+      adapter: safe.envelope.event.adapter,
+      adapterVersion: safe.envelope.event.adapterVersion,
+      eventType: safe.envelope.event.eventType,
+      sessionId: safe.envelope.event.sessionId,
+      sourceEventId: safe.envelope.sourceEventId,
+    });
     if (
       parsedEnvelope.deduplicationKey !==
         expectedDeduplicationKey ||
       parsedEnvelope.event.eventId !==
-        `event-${expectedDeduplicationKey}`
+        `event-${expectedDeduplicationKey}` ||
+      safeDeduplicationKey !== expectedDeduplicationKey ||
+      safe.envelope.deduplicationKey !== safeDeduplicationKey ||
+      safe.envelope.event.eventId !== `event-${safeDeduplicationKey}`
     ) {
       const reason = "Capture envelope identity is inconsistent.";
       const recorded = this.#recordRejected(
@@ -3302,8 +4130,6 @@ export class CanonicalSqliteStore {
               "unsupported_adapter_version"
             ? `Unsupported adapter version: ${classification.adapterVersion}.`
             : `Invalid raw event: ${classification.status}.`;
-    const now = this.#now().toISOString();
-
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
@@ -3313,7 +4139,8 @@ export class CanonicalSqliteStore {
         );
       }
       if (
-        this.#captureEnvelopeDeletionBlocked(parsedEnvelope)
+        this.#captureEnvelopeDeletionBlocked(parsedEnvelope) ||
+        this.#captureEnvelopeDeletionBlocked(safe.envelope)
       ) {
         this.#database.exec("ROLLBACK;");
         return {
@@ -3321,6 +4148,7 @@ export class CanonicalSqliteStore {
           status: "duplicate",
         };
       }
+      const now = this.#now().toISOString();
       const existing = this.#database
         .prepare(
           `SELECT delivery_count, parse_status
@@ -3459,6 +4287,7 @@ export class CanonicalSqliteStore {
     adapterVersion: string,
     sessionId: string,
   ): Promise<ReadonlySet<string>> {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT deduplication_key
@@ -3478,6 +4307,7 @@ export class CanonicalSqliteStore {
   public rawEvent(
     deduplicationKey: string,
   ): CanonicalRawEventRecord | undefined {
+    this.#assertNoRestoreBarrier();
     const row = this.#database
       .prepare(
         `SELECT adapter,
@@ -3519,6 +4349,7 @@ export class CanonicalSqliteStore {
   }
 
   public rawEvents(): readonly CanonicalRawEventRecord[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT adapter,
@@ -3556,6 +4387,7 @@ export class CanonicalSqliteStore {
   }
 
   public episodeSourceEnvelopes(): readonly CaptureEnvelope[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT safe_envelope_json
@@ -3565,10 +4397,251 @@ export class CanonicalSqliteStore {
       )
       .all() as readonly Readonly<Record<string, unknown>>[];
     return rows.map((row) =>
-      captureEnvelopeSchema.parse(
+      this.#effectiveEnvelope(captureEnvelopeSchema.parse(
         JSON.parse(String(row.safe_envelope_json)) as unknown,
-      ),
+      )),
     );
+  }
+
+  public effectiveRawEvent(
+    deduplicationKey: string,
+  ): CanonicalRawEventRecord | undefined {
+    const original = this.rawEvent(deduplicationKey);
+    return original === undefined ? undefined : {
+      ...original,
+      envelope: this.#effectiveEnvelope(original.envelope),
+    };
+  }
+
+  #effectiveEnvelope(original: CaptureEnvelope): CaptureEnvelope {
+    if (!this.#hasEnrichments()) {
+      return original;
+    }
+    const row = this.#database.prepare(
+      `SELECT original_digest, safe_envelope_json
+         FROM raw_event_enrichments
+        WHERE deduplication_key = ?
+        ORDER BY rowid DESC LIMIT 1`,
+    ).get(original.deduplicationKey) as
+      | Readonly<Record<string, unknown>>
+      | undefined;
+    if (row === undefined) {
+      return original;
+    }
+    if (String(row.original_digest) !== sha256(original)) {
+      throw new InvalidCanonicalSchemaError("Event enrichment no longer matches its original evidence.");
+    }
+    return captureEnvelopeSchema.parse(
+      JSON.parse(String(row.safe_envelope_json)) as unknown,
+    );
+  }
+
+  #hasEnrichments(): boolean {
+    return this.#database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_event_enrichments'",
+    ).get() !== undefined;
+  }
+
+  public enrichRawEvent(input: {
+    readonly envelope: CaptureEnvelope;
+    readonly sourceDigest: string;
+  }): CanonicalEnrichmentResult {
+    this.#assertNoRestoreBarrier();
+    if (!/^[a-f0-9]{64}$/u.test(input.sourceDigest)) {
+      throw new Error("A session-file source digest is required for enrichment.");
+    }
+    const supplied = normalizedCaptureReferences(redactCaptureEnvelopeForPersistence(
+      captureEnvelopeSchema.parse(input.envelope),
+    ).envelope);
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion() || this.#captureEnvelopeDeletionBlocked(supplied)) {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "Deleted or deleting evidence cannot be enriched." };
+      }
+      const original = this.rawEvent(supplied.deduplicationKey);
+      if (original === undefined || original.parseStatus !== "supported" || !this.#hasEnrichments()) {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "A supported original event is required." };
+      }
+      const withoutContent = (envelope: CaptureEnvelope): unknown => {
+        const event = { ...normalizedCaptureReferences(envelope).event };
+        Reflect.deleteProperty(event, "redactedArguments");
+        Reflect.deleteProperty(event, "resultDigest");
+        return JSON.parse(JSON.stringify({
+          event, schemaVersion: envelope.schemaVersion, sourceEventId: envelope.sourceEventId,
+        })) as unknown;
+      };
+      if (!isDeepStrictEqual(withoutContent(original.envelope), withoutContent(supplied))) {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "Enrichment cannot change event identity, trust, time, or metadata." };
+      }
+      const previous = this.#effectiveEnvelope(original.envelope);
+      let content: unknown;
+      let redactedArguments: unknown;
+      let resultDigest: unknown;
+      try {
+        content = mergeMissingContent(previous.content, supplied.content);
+        redactedArguments = mergeMissingContent(
+          previous.event.redactedArguments, supplied.event.redactedArguments,
+        );
+        resultDigest = mergeMissingContent(previous.event.resultDigest, supplied.event.resultDigest);
+      } catch {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "Enrichment cannot replace an already recorded fact." };
+      }
+      const effective = redactCaptureEnvelopeForPersistence(
+        captureEnvelopeSchema.parse({
+          ...original.envelope,
+          ...(content === undefined ? {} : { content }),
+          event: {
+            ...original.envelope.event,
+            ...(redactedArguments === undefined ? {} : { redactedArguments }),
+            ...(resultDigest === undefined ? {} : { resultDigest }),
+          },
+          redaction: supplied.redaction,
+        }),
+      ).envelope;
+      if (conflictingCaptureEvidence(effective)) {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "Enrichment contains conflicting capture evidence." };
+      }
+      if (this.#captureEnvelopeDeletionBlocked(effective)) {
+        this.#database.exec("ROLLBACK;");
+        return { status: "rejected", reason: "Enrichment references deleted evidence." };
+      }
+      if (isDeepStrictEqual({
+        content: previous.content,
+        arguments: previous.event.redactedArguments,
+        result: previous.event.resultDigest,
+      }, {
+        content: effective.content,
+        arguments: effective.event.redactedArguments,
+        result: effective.event.resultDigest,
+      })) {
+        this.#database.exec("COMMIT;");
+        return { status: "duplicate" };
+      }
+      const id = sha256({
+        deduplicationKey: supplied.deduplicationKey,
+        envelope: effective,
+        sourceDigest: input.sourceDigest,
+      });
+      const observedAt = this.#now().toISOString();
+      this.#database.prepare(
+        `INSERT INTO raw_event_enrichments (
+           enrichment_id, deduplication_key, source_digest,
+           original_digest, safe_envelope_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id, supplied.deduplicationKey, input.sourceDigest,
+        sha256(original.envelope), JSON.stringify(effective), observedAt,
+      );
+      this.#database.prepare(
+        "UPDATE raw_events SET last_seen_at = ? WHERE deduplication_key = ?",
+      ).run(observedAt, supplied.deduplicationKey);
+      this.#database.exec("COMMIT;");
+      return { status: "enriched" };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public rawEventsInRange(
+    input: CanonicalTimeRange,
+  ): CanonicalRangePage<CanonicalRawEventRecord> {
+    this.#assertNoRestoreBarrier();
+    const { since, until, limit, timeBasis } = rangeParameters(input);
+    const timestampColumn = timeBasis === "observed" ? "last_seen_at" : "event_timestamp";
+    // An observed cursor must not advance past an older write that has not committed.
+    this.#database.exec(timeBasis === "observed" ? "BEGIN IMMEDIATE;" : "BEGIN;");
+    try {
+    this.#assertNoRestoreBarrier();
+    const rows = this.#database.prepare(
+      `SELECT deduplication_key AS id, ${timestampColumn} AS timestamp
+         FROM raw_events
+        WHERE ${timestampColumn} >= ? AND ${timestampColumn} < ?
+          ${input.sessionId === undefined ? "" : "AND session_id = ?"}
+          ${input.after === undefined ? "" : `AND (${timestampColumn}, deduplication_key) > (?, ?)`}
+        ORDER BY ${timestampColumn}, deduplication_key LIMIT ?`,
+    ).all(
+      since, until,
+      ...(input.sessionId === undefined ? [] : [input.sessionId]),
+      ...(input.after === undefined ? [] : [new Date(input.after.timestamp).toISOString(), input.after.id]),
+      limit + 1,
+    ) as readonly Readonly<Record<string, unknown>>[];
+    const selected = rows.slice(0, limit);
+    const last = selected.at(-1);
+    const page: CanonicalRangePage<CanonicalRawEventRecord> = {
+      records: selected.map((row) => {
+        const record = this.effectiveRawEvent(String(row.id));
+        if (record === undefined) {
+          throw new InvalidCanonicalSchemaError("A selected raw event is missing from the canonical snapshot.");
+        }
+        return {
+          ...record,
+          ...(timeBasis === "observed" ? { lastSeenAt: String(row.timestamp) } : {}),
+        };
+      }),
+      ...(rows.length <= limit || last === undefined ? {} : {
+        next: { timestamp: String(last.timestamp), id: String(last.id) },
+      }),
+    };
+    this.#database.exec("COMMIT;");
+    return page;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public contextUseRecordsInRange(
+    input: CanonicalTimeRange,
+  ): CanonicalRangePage<ContextUseRecord> {
+    this.#assertNoRestoreBarrier();
+    const { since, until, limit, timeBasis } = rangeParameters(input);
+    if (timeBasis === "observed" && !this.#hasObservedContextTimes()) {
+      throw new Error("Observed context queries require the current canonical schema.");
+    }
+    const timestampColumn = timeBasis === "observed" ? "updated_at" : "created_at";
+    const readPage = (): CanonicalRangePage<ContextUseRecord> => {
+    const rows = this.#database.prepare(
+      `SELECT request_id AS id, ${timestampColumn} AS timestamp, body_json
+         FROM context_use_records
+        WHERE ${timestampColumn} >= ? AND ${timestampColumn} < ?
+          ${input.sessionId === undefined ? "" : "AND session_id = ?"}
+          ${input.after === undefined ? "" : `AND (${timestampColumn}, request_id) > (?, ?)`}
+        ORDER BY ${timestampColumn}, request_id LIMIT ?`,
+    ).all(
+      since, until,
+      ...(input.sessionId === undefined ? [] : [input.sessionId]),
+      ...(input.after === undefined ? [] : [new Date(input.after.timestamp).toISOString(), input.after.id]),
+      limit + 1,
+    ) as readonly Readonly<Record<string, unknown>>[];
+    const selected = rows.slice(0, limit);
+    const last = selected.at(-1);
+    return {
+      records: selected.map((row) => contextUseRecordSchema.parse(
+        JSON.parse(String(row.body_json)) as unknown,
+      )),
+      ...(rows.length <= limit || last === undefined ? {} : {
+        next: { timestamp: String(last.timestamp), id: String(last.id) },
+      }),
+    };
+    };
+    if (timeBasis === "event") return readPage();
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      const page = readPage();
+      this.#database.exec("COMMIT;");
+      return page;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   public replaceWorkEpisodeProjection(input: {
@@ -3775,12 +4848,6 @@ export class CanonicalSqliteStore {
           }
         }
       }
-      const updateContextEpisode = this.#database.prepare(
-        `UPDATE context_use_records
-            SET body_json = ?,
-                source_digest = ?
-          WHERE request_id = ?`,
-      );
       for (const row of contextRows.values()) {
         const record = contextUseRecordSchema.parse(
           JSON.parse(String(row.body_json)) as unknown,
@@ -3813,11 +4880,7 @@ export class CanonicalSqliteStore {
                 episodeId: projectedEpisodeId,
               }),
         });
-        updateContextEpisode.run(
-          JSON.stringify(projected),
-          sha256(projected),
-          projected.requestId,
-        );
+        this.#updateContextUseRecord(record, projected);
       }
       this.#database.exec("COMMIT;");
       return {
@@ -3837,7 +4900,11 @@ export class CanonicalSqliteStore {
   }): number {
     this.#assertNoRestoreBarrier();
     const contexts = input.contexts.map((context) =>
-      branchContextSchema.parse(context),
+      branchContextSchema.parse({
+        ...context,
+        sourceEventIds: context.sourceEventIds.map(normalizedEventReference),
+        recentVerificationEvidenceIds: context.recentVerificationEvidenceIds.map(normalizedEventReference),
+      }),
     );
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
@@ -3857,7 +4924,7 @@ export class CanonicalSqliteStore {
               identifier,
               identityType: "episode" as const,
             })),
-            ...context.sourceEventIds.map((identifier) => ({
+            ...[...context.sourceEventIds, ...context.recentVerificationEvidenceIds].map((identifier) => ({
               identifier,
               identityType: "event" as const,
             })),
@@ -3902,6 +4969,7 @@ export class CanonicalSqliteStore {
   }
 
   public branchContexts(): readonly BranchContext[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -3922,6 +4990,7 @@ export class CanonicalSqliteStore {
     readonly now?: Date;
     readonly repoId: string;
   }): BranchContext | undefined {
+    this.#assertNoRestoreBarrier();
     const row = this.#database
       .prepare(
         `SELECT body_json
@@ -3950,7 +5019,7 @@ export class CanonicalSqliteStore {
           identifier,
           identityType: "episode" as const,
         })),
-        ...context.sourceEventIds.map((identifier) => ({
+        ...[...context.sourceEventIds, ...context.recentVerificationEvidenceIds].map((identifier) => ({
           identifier,
           identityType: "event" as const,
         })),
@@ -3968,7 +5037,11 @@ export class CanonicalSqliteStore {
   }): CorrectionProjectionWriteResult {
     this.#assertNoRestoreBarrier();
     const correctionKeys = input.correctionKeys.map((key) =>
-      correctionKeySchema.parse(key),
+      correctionKeySchema.parse({
+        ...key,
+        sourceCorrectionEventIds: key.sourceCorrectionEventIds.map(normalizedEventReference),
+        verificationEvidenceIds: key.verificationEvidenceIds.map(normalizedEventReference),
+      }),
     );
     const opportunities = input.opportunities.map((opportunity) =>
       correctionOpportunitySchema.parse(opportunity),
@@ -3985,6 +5058,17 @@ export class CanonicalSqliteStore {
         `Correction Opportunity ${missingKey.opportunityId} references an unknown Correction Key.`,
       );
     }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Correction projection is blocked by an active deletion.",
+        );
+      }
     const episodeIds = new Set(
       this.workEpisodes().map((episode) => episode.episodeId),
     );
@@ -4018,17 +5102,6 @@ export class CanonicalSqliteStore {
         "Correction projection contains a deleted identity.",
       );
     }
-    this.#database.exec("BEGIN IMMEDIATE;");
-    try {
-      this.#assertNoRestoreBarrier();
-      if (
-        this.hasActiveDeletion() &&
-        input.allowDuringDeletion !== true
-      ) {
-        throw new Error(
-          "Correction projection is blocked by an active deletion.",
-        );
-      }
       this.#database.exec("DELETE FROM correction_opportunities;");
       this.#database.exec("DELETE FROM correction_key_sources;");
       this.#database.exec("DELETE FROM correction_keys;");
@@ -4105,6 +5178,7 @@ export class CanonicalSqliteStore {
   }
 
   public correctionKeys(): readonly CorrectionKey[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -4120,6 +5194,7 @@ export class CanonicalSqliteStore {
   }
 
   public correctionSourceEventIds(): ReadonlySet<string> {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT event_id
@@ -4135,6 +5210,7 @@ export class CanonicalSqliteStore {
   public correctionOpportunities(
     correctionKeyId?: string,
   ): readonly CorrectionOpportunity[] {
+    this.#assertNoRestoreBarrier();
     return (
       this.#database
         .prepare(
@@ -4178,7 +5254,8 @@ export class CanonicalSqliteStore {
         );
       }
       const forgotten = candidates.find((candidate) =>
-        this.#knowledgeDeletionBlocked(candidate.knowledgeId),
+        this.#knowledgeDeletionBlocked(candidate.knowledgeId) ||
+        (candidate.supersedes !== undefined && this.#knowledgeDeletionBlocked(candidate.supersedes)),
       );
       if (forgotten !== undefined) {
         throw new Error(
@@ -4227,7 +5304,7 @@ export class CanonicalSqliteStore {
            source_digest = excluded.source_digest,
            updated_at = excluded.updated_at`,
       );
-      for (const candidate of candidates) {
+      for (const candidate of this.#retainSupersededKnowledge(candidates)) {
         upsert.run(
           candidate.knowledgeId,
           candidate.schemaVersion,
@@ -4265,6 +5342,17 @@ export class CanonicalSqliteStore {
         "Correction Knowledge projection received a non-correction candidate.",
       );
     }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (
+        this.hasActiveDeletion() &&
+        input.allowDuringDeletion !== true
+      ) {
+        throw new Error(
+          "Correction Knowledge projection is blocked by an active deletion.",
+        );
+      }
     if (
       this.knowledgeCandidatesWithDeletedSources(candidates)
         .size > 0
@@ -4274,7 +5362,8 @@ export class CanonicalSqliteStore {
       );
     }
     const forgotten = candidates.find((candidate) =>
-      this.#knowledgeDeletionBlocked(candidate.knowledgeId),
+      this.#knowledgeDeletionBlocked(candidate.knowledgeId) ||
+      (candidate.supersedes !== undefined && this.#knowledgeDeletionBlocked(candidate.supersedes)),
     );
     if (forgotten !== undefined) {
       throw new Error(
@@ -4308,17 +5397,6 @@ export class CanonicalSqliteStore {
         );
       }
     }
-    this.#database.exec("BEGIN IMMEDIATE;");
-    try {
-      this.#assertNoRestoreBarrier();
-      if (
-        this.hasActiveDeletion() &&
-        input.allowDuringDeletion !== true
-      ) {
-        throw new Error(
-          "Correction Knowledge projection is blocked by an active deletion.",
-        );
-      }
       const selected = new Set(
         candidates.map((candidate) => candidate.knowledgeId),
       );
@@ -4327,7 +5405,8 @@ export class CanonicalSqliteStore {
           .prepare(
             `SELECT knowledge_id
                FROM knowledge_candidates
-              WHERE knowledge_id LIKE 'correction-knowledge-%'`,
+              WHERE knowledge_id LIKE 'correction-knowledge-%'
+                AND json_extract(body_json, '$.state') <> 'superseded'`,
           )
           .all() as readonly Readonly<Record<string, unknown>>[]
       ).map((row) => String(row.knowledge_id));
@@ -4355,7 +5434,7 @@ export class CanonicalSqliteStore {
            source_digest = excluded.source_digest,
            updated_at = excluded.updated_at`,
       );
-      for (const candidate of candidates) {
+      for (const candidate of this.#retainSupersededKnowledge(candidates)) {
         upsert.run(
           candidate.knowledgeId,
           candidate.schemaVersion,
@@ -4377,6 +5456,65 @@ export class CanonicalSqliteStore {
     return this.#knowledgeDeletionBlocked(knowledgeId.trim());
   }
 
+  #retainSupersededKnowledge(
+    candidates: readonly KnowledgeCandidate[],
+  ): readonly KnowledgeCandidate[] {
+    const superseded = new Set(this.#database.prepare(
+      "SELECT knowledge_id FROM knowledge_candidates WHERE json_extract(body_json, '$.state') = 'superseded'",
+    ).all().map((row) => String(row.knowledge_id)));
+    if (this.#hasReplacementReceipts()) {
+      for (const row of this.#database.prepare(
+        "SELECT json_extract(replacement_json, '$.previousKnowledgeId') AS id FROM feedback_events WHERE replacement_json IS NOT NULL",
+      ).all()) {
+        if (typeof row.id !== "string") {
+          throw new Error("Confirmed-rule replacement receipt is invalid.");
+        }
+        superseded.add(row.id);
+      }
+    }
+    return candidates.map((candidate) =>
+      superseded.has(candidate.knowledgeId) && candidate.state !== "archived"
+        ? { ...candidate, state: "superseded" as const }
+        : candidate,
+    );
+  }
+
+  #hasReplacementReceipts(): boolean {
+    return asNumber(this.#database.prepare("PRAGMA user_version;").get()?.user_version) >= 9;
+  }
+
+  #hasObservedContextTimes(): boolean {
+    return asNumber(this.#database.prepare("PRAGMA user_version;").get()?.user_version) >= 10;
+  }
+
+  #updateContextUseRecord(previous: ContextUseRecord, proposed: ContextUseRecord): void {
+    if (
+      proposed.requestId !== previous.requestId ||
+      proposed.sessionId !== previous.sessionId ||
+      proposed.createdAt !== previous.createdAt
+    ) {
+      throw new Error("Feedback cannot replace context request identity or time.");
+    }
+    const observesUpdates = this.#hasObservedContextTimes();
+    const updatedAt = this.#now().toISOString();
+    const updated = contextUseRecordSchema.parse({
+      ...proposed,
+      ...(observesUpdates ? { updatedAt } : {}),
+    });
+    const result = this.#database.prepare(
+      `UPDATE context_use_records SET body_json = ?, source_digest = ?
+         ${observesUpdates ? ", updated_at = ?" : ""}
+       WHERE request_id = ? AND session_id = ?`,
+    ).run(
+      JSON.stringify(updated), sha256(updated),
+      ...(observesUpdates ? [updatedAt] : []),
+      previous.requestId, previous.sessionId,
+    );
+    if (Number(result.changes) !== 1) {
+      throw new Error("Feedback context request does not exist.");
+    }
+  }
+
   public removeKnowledgeCandidates(
     ids: readonly string[],
   ): number {
@@ -4391,21 +5529,28 @@ export class CanonicalSqliteStore {
     if (selected.length === 0) {
       return 0;
     }
-    return Number(
-      this.#database
-        .prepare(
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      let removed = 0;
+      for (const chunk of sqliteChunks(selected)) {
+        removed += Number(this.#database.prepare(
           `DELETE FROM knowledge_candidates
-            WHERE knowledge_id IN (${placeholders(
-              selected.length,
-            )})`,
-        )
-        .run(...selected).changes,
-    );
+            WHERE knowledge_id IN (${placeholders(chunk.length)})`,
+        ).run(...chunk).changes);
+      }
+      this.#database.exec("COMMIT;");
+      return removed;
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   public knowledgeCandidates(
     ids?: readonly string[],
   ): readonly KnowledgeCandidate[] {
+    this.#assertNoRestoreBarrier();
     const selected =
       ids === undefined
         ? undefined
@@ -4445,6 +5590,7 @@ export class CanonicalSqliteStore {
   public knowledgeAdmissionEvidence(
     input: readonly KnowledgeCandidate[],
   ): CanonicalKnowledgeAdmissionEvidence {
+    this.#assertNoRestoreBarrier();
     const candidates = input.map((candidate) =>
       knowledgeCandidateSchema.parse(candidate),
     );
@@ -4463,7 +5609,7 @@ export class CanonicalSqliteStore {
     const sourceEvidenceIds = [
       ...new Set(
         candidates.flatMap(
-          (candidate) => candidate.sourceEvidenceIds,
+          (candidate) => candidate.sourceEvidenceIds.map(normalizedEventReference),
         ),
       ),
     ];
@@ -4516,7 +5662,8 @@ export class CanonicalSqliteStore {
         .prepare(
           `SELECT feedback_id, body_json
              FROM feedback_events
-            WHERE json_extract(body_json, '$.targetId') IN (${placeholders(
+            WHERE json_extract(body_json, '$.targetType') = 'knowledge'
+              AND json_extract(body_json, '$.targetId') IN (${placeholders(
               chunk.length,
             )})`,
         )
@@ -4524,6 +5671,72 @@ export class CanonicalSqliteStore {
         Record<string, unknown>
       >[]) {
         feedbackRows.set(String(row.feedback_id), row);
+      }
+    }
+    const queriedProofIds = new Set(sourceEvidenceIds);
+    const pendingProofIds = new Set<string>();
+    const addProofReferences = (row: Readonly<Record<string, unknown>>): void => {
+      const envelope = this.#effectiveEnvelope(
+        captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))),
+      );
+      for (const reference of captureEvidenceReferences(envelope)) {
+        pendingProofIds.add(reference);
+      }
+      if (envelope.event.sessionId !== undefined) {
+        for (const source of captureSdkSources(envelope)) {
+          for (const referenced of this.#database.prepare(
+            `SELECT event_id FROM raw_events WHERE adapter = ? AND adapter_version = ?
+              AND session_id = ? AND source_event_id = ? AND event_type IN (${placeholders(source.eventTypes.length)})`,
+          ).all(
+            envelope.event.adapter, envelope.event.adapterVersion, envelope.event.sessionId,
+            source.sourceEventId, ...source.eventTypes,
+          )) {
+            pendingProofIds.add(String(referenced.event_id));
+          }
+        }
+      }
+    };
+    for (const row of envelopeRows.values()) {
+      addProofReferences(row);
+    }
+    for (const row of correctionKeyRows.values()) {
+      const key = correctionKeySchema.parse(JSON.parse(String(row.body_json)));
+      for (const reference of key.verificationEvidenceIds) {
+        pendingProofIds.add(normalizedEventReference(reference));
+      }
+    }
+    for (const row of feedbackRows.values()) {
+      const feedback = feedbackEventSchema.parse(JSON.parse(String(row.body_json)));
+      for (const reference of feedback.resolvesEvidenceIds ?? []) {
+        pendingProofIds.add(normalizedEventReference(reference));
+      }
+    }
+    while (pendingProofIds.size > 0) {
+      const references = [...pendingProofIds].filter((id) => !queriedProofIds.has(id));
+      pendingProofIds.clear();
+      for (const reference of references) {
+        queriedProofIds.add(reference);
+      }
+      for (const chunk of sqliteChunks(references)) {
+        for (const row of this.#database.prepare(
+          `SELECT deduplication_key, safe_envelope_json FROM raw_events
+            WHERE parse_status = 'supported' AND event_id IN (${placeholders(chunk.length)})`,
+        ).all(...chunk)) {
+          envelopeRows.set(String(row.deduplication_key), row);
+          addProofReferences(row);
+        }
+        for (const row of this.#database.prepare(
+          `SELECT DISTINCT correction_keys.correction_key_id, correction_keys.body_json
+             FROM correction_key_sources JOIN correction_keys
+               ON correction_keys.correction_key_id = correction_key_sources.correction_key_id
+            WHERE correction_key_sources.source_event_id IN (${placeholders(chunk.length)})`,
+        ).all(...chunk)) {
+          correctionKeyRows.set(String(row.correction_key_id), row);
+          const key = correctionKeySchema.parse(JSON.parse(String(row.body_json)));
+          for (const reference of key.verificationEvidenceIds) {
+            pendingProofIds.add(normalizedEventReference(reference));
+          }
+        }
       }
     }
     for (const chunk of sqliteChunks(sourceEpisodeIds)) {
@@ -4554,9 +5767,9 @@ export class CanonicalSqliteStore {
     }
     const envelopes = [...envelopeRows.values()]
       .map((row) =>
-        captureEnvelopeSchema.parse(
+        this.#effectiveEnvelope(captureEnvelopeSchema.parse(
           JSON.parse(String(row.safe_envelope_json)) as unknown,
-        ),
+        )),
       )
       .sort(
         (left, right) =>
@@ -4632,6 +5845,44 @@ export class CanonicalSqliteStore {
           "Context use persistence is blocked by an active deletion.",
         );
       }
+      if (
+        this.#deletionIdentitiesBlocked([
+          { identityType: "session", identifier: record.sessionId },
+          ...(record.episodeId === undefined ? [] : [
+            { identityType: "episode" as const, identifier: record.episodeId },
+          ]),
+        ]) ||
+        [
+          ...record.appliedKnowledgeIds,
+          ...record.candidateKnowledgeIds,
+          ...record.returnedKnowledgeIds,
+        ].some((id) => {
+          if (!id.startsWith("branch-context:")) {
+            return this.#knowledgeDeletionBlocked(id.replace(/^knowledge:/u, ""));
+          }
+          const row = this.#database.prepare(
+            "SELECT body_json FROM branch_contexts WHERE branch_context_id = ?",
+          ).get(id.slice("branch-context:".length));
+          if (row === undefined) return true;
+          const context = branchContextSchema.parse(JSON.parse(String(row.body_json)));
+          return this.#deletionIdentitiesBlocked([
+            ...context.sourceEpisodeIds.map((identifier) => ({
+              identifier, identityType: "episode" as const,
+            })),
+            ...[...context.sourceEventIds, ...context.recentVerificationEvidenceIds].map((identifier) => ({
+              identifier, identityType: "event" as const,
+            })),
+          ]);
+        })
+      ) {
+        throw new Error("Context use cannot restore a deleted identity.");
+      }
+      const observesUpdates = this.#hasObservedContextTimes();
+      const updatedAt = this.#now().toISOString();
+      const persisted = contextUseRecordSchema.parse({
+        ...record,
+        ...(observesUpdates ? { updatedAt } : {}),
+      });
       const result = this.#database
         .prepare(
           `INSERT OR IGNORE INTO context_use_records (
@@ -4640,16 +5891,17 @@ export class CanonicalSqliteStore {
              session_id,
              body_json,
              source_digest,
-             created_at
-           ) VALUES (?, ?, ?, ?, ?, ?)`,
+             created_at${observesUpdates ? ", updated_at" : ""}
+           ) VALUES (?, ?, ?, ?, ?, ?${observesUpdates ? ", ?" : ""})`,
         )
         .run(
           record.requestId,
           record.schemaVersion,
           record.sessionId,
-          JSON.stringify(record),
-          sha256(record),
+          JSON.stringify(persisted),
+          sha256(persisted),
           record.createdAt,
+          ...(observesUpdates ? [updatedAt] : []),
         );
       this.#database.exec("COMMIT;");
       return Number(result.changes) === 1;
@@ -4662,6 +5914,7 @@ export class CanonicalSqliteStore {
   public contextUseRecords(
     sessionId?: string,
   ): readonly ContextUseRecord[] {
+    this.#assertNoRestoreBarrier();
     const normalizedSessionId = sessionId?.trim();
     const rows = this.#database
       .prepare(
@@ -4691,6 +5944,7 @@ export class CanonicalSqliteStore {
   public contextUseRecordsForEpisodes(
     episodeIds: readonly string[],
   ): readonly ContextUseRecord[] {
+    this.#assertNoRestoreBarrier();
     const selected = [
       ...new Set(
         episodeIds
@@ -4747,7 +6001,7 @@ export class CanonicalSqliteStore {
     readonly recorded: boolean;
   } {
     this.#assertNoRestoreBarrier();
-    const event = feedbackEventSchema.parse(input.event);
+    const event = normalizedFeedbackEvent(input.event);
     if (event.targetType !== "knowledge") {
       throw new Error(
         "Knowledge feedback must target Knowledge.",
@@ -4756,6 +6010,9 @@ export class CanonicalSqliteStore {
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
+      if (this.#deletionIdentitiesBlocked(feedbackResolutionIdentities(event))) {
+        throw new Error("Feedback cannot reference deleted evidence.");
+      }
       if (this.hasActiveDeletion()) {
         throw new Error(
           "Knowledge feedback is blocked by an active deletion.",
@@ -4826,12 +6083,16 @@ export class CanonicalSqliteStore {
       if (event.kind === "mute_session") {
         this.#upsertSessionMute(event);
       }
-      const candidate =
+      const proposedCandidate =
         input.updateCandidate === undefined
           ? existing
           : normalizedKnowledgeCandidate(
               input.updateCandidate(existing),
             );
+      const candidate = this.#retainSupersededKnowledge([proposedCandidate])[0];
+      if (candidate === undefined) {
+        throw new InvalidCanonicalSchemaError("Knowledge feedback candidate is missing.");
+      }
       if (
         candidate.knowledgeId !== event.targetId ||
         JSON.stringify(candidate.sourceEpisodeIds) !==
@@ -4861,7 +6122,11 @@ export class CanonicalSqliteStore {
             candidate.knowledgeId,
           );
       }
-      if (input.updateContextUseRecord !== undefined) {
+      if (
+        input.updateContextUseRecord !== undefined ||
+        input.contextRequestId !== undefined ||
+        this.#hasObservedContextTimes()
+      ) {
         const contextRow = this.#database
           .prepare(
             `SELECT body_json
@@ -4871,36 +6136,20 @@ export class CanonicalSqliteStore {
           .get(input.contextRequestId ?? event.evidenceRef) as
           | Readonly<Record<string, unknown>>
           | undefined;
-        if (contextRow === undefined) {
+        if (
+          contextRow === undefined &&
+          (input.updateContextUseRecord !== undefined || input.contextRequestId !== undefined)
+        ) {
           throw new Error(
             "Knowledge feedback context request does not exist.",
           );
         }
-        const contextUseRecord = contextUseRecordSchema.parse(
-          input.updateContextUseRecord(
-            contextUseRecordSchema.parse(
-              JSON.parse(String(contextRow.body_json)) as unknown,
-            ),
-          ),
-        );
-        const updated = this.#database
-          .prepare(
-            `UPDATE context_use_records
-                SET body_json = ?,
-                    source_digest = ?
-              WHERE request_id = ?
-                AND session_id = ?`,
-          )
-          .run(
-            JSON.stringify(contextUseRecord),
-            sha256(contextUseRecord),
-            contextUseRecord.requestId,
-            contextUseRecord.sessionId,
+        if (contextRow !== undefined) {
+          const previousRecord = contextUseRecordSchema.parse(
+            JSON.parse(String(contextRow.body_json)) as unknown,
           );
-        if (Number(updated.changes) !== 1) {
-          throw new Error(
-            "Knowledge feedback context request does not exist.",
-          );
+          const updated = input.updateContextUseRecord?.(previousRecord) ?? previousRecord;
+          this.#updateContextUseRecord(previousRecord, contextUseRecordSchema.parse(updated));
         }
       }
       this.#database.exec("COMMIT;");
@@ -4914,9 +6163,236 @@ export class CanonicalSqliteStore {
     }
   }
 
+  public recordContextFeedback(input: {
+    readonly contextRequestId: string;
+    readonly event: FeedbackEvent;
+    readonly updateContextUseRecord: (
+      record: ContextUseRecord,
+    ) => ContextUseRecord;
+  }): { readonly recorded: boolean } {
+    return this.recordBranchContextFeedback(input);
+  }
+
+  public replaceKnowledgeWithConfirmedRule(input: {
+    readonly previousKnowledgeId: string;
+    readonly expectedDigest: string;
+    readonly candidate: KnowledgeCandidate;
+    readonly event: FeedbackEvent;
+  }): { readonly candidate: KnowledgeCandidate; readonly recorded: boolean } {
+    this.#assertNoRestoreBarrier();
+    const previousKnowledgeId = input.previousKnowledgeId.trim();
+    const candidate = normalizedKnowledgeCandidate(input.candidate);
+    const event = normalizedFeedbackEvent(input.event);
+    if (
+      !/^[a-f0-9]{64}$/u.test(input.expectedDigest) ||
+      event.targetType !== "knowledge" || event.targetId !== previousKnowledgeId ||
+      event.source !== "user" || event.kind !== "confirm" ||
+      candidate.knowledgeId === previousKnowledgeId ||
+      !candidate.knowledgeId.startsWith("manual-knowledge-") ||
+      !candidate.topicKey.startsWith("manual:") ||
+      candidate.supersedes !== previousKnowledgeId ||
+      candidate.evidenceTier !== "user_confirmed" ||
+      candidate.evidenceMarks.length !== 1 || candidate.evidenceMarks[0] !== "user_confirmed" ||
+      candidate.state !== "active" || candidate.expiresAt !== undefined ||
+      candidate.appliesWhen.length === 0 || candidate.conflictsWith.length !== 0 ||
+      candidate.sourceEpisodeIds.length !== 0 || candidate.sourceEvidenceIds.length !== 0 ||
+      candidate.createdAt !== event.timestamp || candidate.validatedAt !== event.timestamp ||
+      Object.values(candidate.utility).some((value) => value !== 0) ||
+      Object.values(candidate.coverage).some((value) => value !== 0)
+    ) {
+      throw new Error("Replacement requires a new explicitly user-confirmed manual rule and matching audit feedback.");
+    }
+    if (!this.#hasReplacementReceipts()) {
+      throw new Error("Atomic confirmed-rule replacement requires the current canonical schema.");
+    }
+    const receipt = {
+      formatVersion: 1,
+      previousKnowledgeId,
+      replacementKnowledgeId: candidate.knowledgeId,
+      expectedDigest: input.expectedDigest,
+      candidateIntentDigest: confirmedRuleIntentDigest(candidate),
+    };
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.hasActiveDeletion()) {
+        throw new Error("Knowledge replacement is blocked by an active deletion.");
+      }
+      if (
+        this.#knowledgeDeletionBlocked(previousKnowledgeId) ||
+        this.#knowledgeDeletionBlocked(candidate.knowledgeId) ||
+        this.#deletionIdentitiesBlocked(feedbackResolutionIdentities(event))
+      ) {
+        throw new Error("Knowledge replacement cannot restore forgotten Knowledge or deleted evidence.");
+      }
+      const previousRow = this.#database.prepare(
+        "SELECT body_json FROM knowledge_candidates WHERE knowledge_id = ?",
+      ).get(previousKnowledgeId);
+      if (previousRow === undefined) {
+        throw new Error("Knowledge replacement target does not exist.");
+      }
+      const previous = knowledgeCandidateSchema.parse(JSON.parse(String(previousRow.body_json)));
+      if (
+        previous.scope !== candidate.scope || previous.scopeId !== candidate.scopeId ||
+        (candidate.scope === "personal"
+          ? candidate.scopeId !== undefined
+          : candidate.scopeId === undefined || candidate.scopeId.trim().length === 0)
+      ) {
+        throw new Error("Knowledge replacement cannot change or omit the reviewed scope.");
+      }
+      if (this.knowledgeCandidatesWithDeletedSources([previous, candidate]).size > 0) {
+        throw new Error("Knowledge replacement contains deleted evidence.");
+      }
+      const existingFeedback = this.#database.prepare(
+        "SELECT body_json, replacement_json FROM feedback_events WHERE feedback_id = ?",
+      ).get(event.feedbackId);
+      const existingReplacement = this.#database.prepare(
+        "SELECT body_json FROM knowledge_candidates WHERE knowledge_id = ?",
+      ).get(candidate.knowledgeId);
+      if (existingFeedback !== undefined) {
+        if (
+          existingFeedback.replacement_json === null ||
+          sha256(JSON.parse(String(existingFeedback.replacement_json))) !== sha256(receipt) ||
+          feedbackIntentDigest(feedbackEventSchema.parse(JSON.parse(String(existingFeedback.body_json)))) !== feedbackIntentDigest(event) ||
+          existingReplacement === undefined
+        ) {
+          throw new Error("Replacement feedback ID already exists with different or incomplete content.");
+        }
+        const recorded = knowledgeCandidateSchema.parse(JSON.parse(String(existingReplacement.body_json)));
+        if (
+          recorded.supersedes !== previousKnowledgeId ||
+          recorded.scope !== candidate.scope || recorded.scopeId !== candidate.scopeId ||
+          !["superseded", "archived"].includes(previous.state)
+        ) {
+          throw new Error("Recorded Knowledge replacement changed; review it again.");
+        }
+        this.#database.exec("COMMIT;");
+        return { candidate: recorded, recorded: false };
+      }
+      if (existingReplacement !== undefined) {
+        throw new Error("Replacement Knowledge ID already exists without matching audit feedback.");
+      }
+      if (sha256(previous) !== input.expectedDigest) {
+        throw new Error("Knowledge changed after review. Review it again before confirming.");
+      }
+      if (previous.state === "superseded") {
+        throw new Error("Knowledge was already superseded; review its replacement instead.");
+      }
+      if (this.knowledgeCandidatesWithUnavailableSources([previous]).size > 0) {
+        throw new Error("Knowledge replacement target has unavailable source evidence.");
+      }
+      const superseded = knowledgeCandidateSchema.parse({ ...previous, state: "superseded" });
+      this.#database.prepare(
+        `INSERT INTO knowledge_candidates (
+           knowledge_id, schema_version, body_json, source_digest, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        candidate.knowledgeId, candidate.schemaVersion, JSON.stringify(candidate),
+        sha256(candidate), candidate.createdAt, event.timestamp,
+      );
+      this.#database.prepare(
+        "UPDATE knowledge_candidates SET body_json = ?, source_digest = ?, updated_at = ? WHERE knowledge_id = ?",
+      ).run(JSON.stringify(superseded), sha256(superseded), event.timestamp, previousKnowledgeId);
+      this.#database.prepare(
+        `INSERT INTO feedback_events (
+           feedback_id, schema_version, body_json, source_digest, created_at, replacement_json
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        event.feedbackId, event.schemaVersion, JSON.stringify(event),
+        sha256(event), event.timestamp, JSON.stringify(receipt),
+      );
+      this.#database.exec("COMMIT;");
+      return { candidate, recorded: true };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  public recordBranchContextFeedback(input: {
+    readonly event: FeedbackEvent;
+    readonly contextRequestId?: string;
+    readonly updateContextUseRecord?: (
+      record: ContextUseRecord,
+    ) => ContextUseRecord;
+  }): { readonly recorded: boolean } {
+    this.#assertNoRestoreBarrier();
+    const event = normalizedFeedbackEvent(input.event);
+    if (event.targetType !== "branch_context") {
+      throw new Error("Branch Context feedback must target Branch Context.");
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#assertNoRestoreBarrier();
+      if (this.#deletionIdentitiesBlocked(feedbackResolutionIdentities(event))) {
+        throw new Error("Feedback cannot reference deleted evidence.");
+      }
+      if (this.hasActiveDeletion()) {
+        throw new Error("Branch Context feedback is blocked by an active deletion.");
+      }
+      const row = this.#database.prepare(
+        "SELECT body_json FROM branch_contexts WHERE branch_context_id = ?",
+      ).get(event.targetId);
+      if (row === undefined) {
+        throw new Error("Branch Context feedback target does not exist.");
+      }
+      const context = branchContextSchema.parse(JSON.parse(String(row.body_json)));
+      if (this.#deletionIdentitiesBlocked([
+        ...context.sourceEpisodeIds.map((identifier) => ({
+          identifier, identityType: "episode" as const,
+        })),
+        ...[...context.sourceEventIds, ...context.recentVerificationEvidenceIds].map((identifier) => ({
+          identifier, identityType: "event" as const,
+        })),
+      ])) {
+        throw new Error("Branch Context feedback target contains deleted evidence.");
+      }
+      const existing = this.#database.prepare(
+        "SELECT body_json FROM feedback_events WHERE feedback_id = ?",
+      ).get(event.feedbackId);
+      if (existing !== undefined) {
+        const recorded = feedbackEventSchema.parse(JSON.parse(String(existing.body_json)));
+        if (feedbackIntentDigest(recorded) !== feedbackIntentDigest(event)) {
+          throw new Error("Feedback ID already exists with different content.");
+        }
+        this.#database.exec("COMMIT;");
+        return { recorded: false };
+      }
+      const requestId = input.contextRequestId ?? event.evidenceRef;
+      const requestRow = this.#database.prepare(
+        "SELECT body_json FROM context_use_records WHERE request_id = ?",
+      ).get(requestId);
+      if (requestRow === undefined) {
+        throw new Error("Branch Context feedback requires a recorded context request.");
+      }
+      const request = contextUseRecordSchema.parse(JSON.parse(String(requestRow.body_json)));
+      if (
+        !request.returnedKnowledgeIds.includes(`branch-context:${event.targetId}`) ||
+        this.deletionIdentityBlocked("session", request.sessionId)
+      ) {
+        throw new Error("Branch Context was not returned by the recorded request.");
+      }
+      this.#database.prepare(
+        `INSERT INTO feedback_events (
+           feedback_id, schema_version, body_json, source_digest, created_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+      ).run(event.feedbackId, event.schemaVersion, JSON.stringify(event), sha256(event), event.timestamp);
+      if (input.updateContextUseRecord !== undefined || this.#hasObservedContextTimes()) {
+        const updated = input.updateContextUseRecord?.(request) ?? request;
+        this.#updateContextUseRecord(request, contextUseRecordSchema.parse(updated));
+      }
+      this.#database.exec("COMMIT;");
+      return { recorded: true };
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
   public feedbackEvents(
     targetId?: string,
   ): readonly FeedbackEvent[] {
+    this.#assertNoRestoreBarrier();
     const normalizedTargetId = targetId?.trim();
     const rows = this.#database
       .prepare(
@@ -4944,6 +6420,7 @@ export class CanonicalSqliteStore {
   }
 
   public sessionMuted(sessionId: string): boolean {
+    this.#assertNoRestoreBarrier();
     const normalizedSessionId = sessionId.trim();
     if (normalizedSessionId.length === 0) {
       return false;
@@ -5064,6 +6541,7 @@ export class CanonicalSqliteStore {
   }
 
   public episodeAssociations(): readonly EpisodeAssociation[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -5085,6 +6563,7 @@ export class CanonicalSqliteStore {
 
   public episodeGroupingCorrections():
   readonly EpisodeGroupingCorrection[] {
+  this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -5105,6 +6584,7 @@ export class CanonicalSqliteStore {
   }
 
   public workEpisodes(): readonly WorkEpisode[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT body_json
@@ -5126,6 +6606,7 @@ export class CanonicalSqliteStore {
   }
 
   public parserErrors(): readonly CanonicalParserErrorRecord[] {
+    this.#assertNoRestoreBarrier();
     const rows = this.#database
       .prepare(
         `SELECT error_kind, message, queue_item_id
@@ -5143,6 +6624,7 @@ export class CanonicalSqliteStore {
   public queueProcessing(
     queueItemId: string,
   ): QueueProcessingRecord | undefined {
+    this.#assertNoRestoreBarrier();
     const row = this.#database
       .prepare(
         `SELECT queue_item_id, status
@@ -5224,13 +6706,19 @@ export class CanonicalSqliteStore {
   }
 
   #assertNoRestoreBarrier(): void {
-    if (
-      this.#path !== ":memory:" &&
-      existsSync(`${this.#path}.restore.lock`)
-    ) {
+    if (this.#path === ":memory:") {
+      return;
+    }
+    if (existsSync(`${this.#path}.restore.lock`)) {
       throw new Error(
         "Canonical writes are blocked by an active restore.",
       );
+    }
+    if (
+      readOptionalText(`${this.#path}.restore.generation`) !== this.#generation ||
+      readOptionalText(`${this.#path}.deletion.key`) !== this.#deletionIdentityKey
+    ) {
+      throw new StaleCanonicalStoreError();
     }
   }
 
@@ -5254,6 +6742,7 @@ export class CanonicalSqliteStore {
   #captureEnvelopeDeletionBlocked(
     envelope: CaptureEnvelope,
   ): boolean {
+    const sourceAlias = captureSourceAlias(envelope);
     return this.#deletionIdentitiesBlocked([
         {
           identifier: envelope.deduplicationKey,
@@ -5263,6 +6752,9 @@ export class CanonicalSqliteStore {
           identifier: envelope.event.eventId,
           identityType: "event" as const,
         },
+        ...(sourceAlias === undefined ? [] : [{
+          identifier: sourceAlias, identityType: "event" as const,
+        }]),
         ...(envelope.event.sessionId === undefined
           ? []
           : [
@@ -5271,14 +6763,10 @@ export class CanonicalSqliteStore {
                 identityType: "session" as const,
               },
             ]),
-        ...(envelope.event.parentEventId === undefined
-          ? []
-          : [
-              {
-                identifier: envelope.event.parentEventId,
-                identityType: "event" as const,
-              },
-            ]),
+        ...captureEvidenceReferences(envelope).map((identifier) => ({
+          identifier,
+          identityType: "event" as const,
+        })),
     ]);
   }
 
@@ -5290,8 +6778,12 @@ export class CanonicalSqliteStore {
     safeEnvelopeJson: string | undefined,
   ): boolean {
     const now = this.#now().toISOString();
+    const safeEnvelope = safeEnvelopeJson === undefined
+      ? undefined
+      : captureEnvelopeSchema.parse(JSON.parse(safeEnvelopeJson));
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      this.#assertNoRestoreBarrier();
       if (this.hasActiveDeletion()) {
         throw new Error(
           "Canonical ingestion is blocked by an active deletion.",
@@ -5299,6 +6791,7 @@ export class CanonicalSqliteStore {
       }
       if (
         this.#captureEnvelopeDeletionBlocked(item.envelope) ||
+        (safeEnvelope !== undefined && this.#captureEnvelopeDeletionBlocked(safeEnvelope)) ||
         this.deletionIdentityBlocked(
           "deduplication",
           deduplicationKey,
@@ -5403,6 +6896,7 @@ export class CanonicalSqliteStore {
       migrations.at(-1)?.version ?? 0;
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
+      this.#assertNoRestoreBarrier();
       const currentVersionRow = this.#database
         .prepare("PRAGMA user_version;")
         .get() as Readonly<Record<string, unknown>>;
@@ -5414,6 +6908,12 @@ export class CanonicalSqliteStore {
           currentVersion,
           latestVersion,
         );
+      }
+      if (
+        currentVersion > 0 && currentVersion < latestVersion &&
+        !this.#allowSchemaMigration
+      ) {
+        throw new CanonicalMigrationRequiredError(currentVersion, latestVersion);
       }
       for (const migration of migrations) {
         if (migration.version <= currentVersion) {
@@ -5490,6 +6990,7 @@ export class CanonicalSqliteStore {
       }
 
       const requiredTables = [
+        ...(expectedVersion >= 8 ? ["raw_event_enrichments"] : []),
         ...(expectedVersion >= 2 ? ["branch_contexts"] : []),
         ...(expectedVersion >= 3 ? ["knowledge_candidates"] : []),
         ...(expectedVersion >= 4 ? ["context_use_records"] : []),
@@ -5610,6 +7111,7 @@ export class CanonicalSqliteStore {
         RUNTIME_SCHEMA_COLUMNS,
       )) {
         if (
+          (table === "raw_event_enrichments" && expectedVersion < 8) ||
           (table === "branch_contexts" && expectedVersion < 2) ||
           (
             table === "knowledge_candidates" &&
@@ -5640,13 +7142,17 @@ export class CanonicalSqliteStore {
         CanonicalSqliteStore.#assertTableColumns(
           database,
           table,
-          expectedColumns,
+          expectedColumns.filter(([name]) =>
+            !(table === "feedback_events" && expectedVersion < 9 && name === "replacement_json") &&
+            !(table === "context_use_records" && expectedVersion < 10 && name === "updated_at"),
+          ),
         );
       }
       for (const [table, expectedIndexes] of Object.entries(
         RUNTIME_SCHEMA_INDEXES,
       )) {
         if (
+          (table === "raw_event_enrichments" && expectedVersion < 8) ||
           (table === "branch_contexts" && expectedVersion < 2) ||
           (
             table === "knowledge_candidates" &&
@@ -5674,17 +7180,24 @@ export class CanonicalSqliteStore {
         ) {
           continue;
         }
-        const versionedIndexes =
-          expectedVersion >= 7
-            ? expectedIndexes
-            : expectedIndexes.filter(
+        const versionedIndexes = expectedIndexes.filter(
                 (index) =>
                   !(
                     "name" in index &&
                     (
-                      index.name === "context_use_episode" ||
-                      index.name === "feedback_events_target" ||
-                      index.name === "raw_events_event_id"
+                      (expectedVersion < 7 && (
+                        index.name === "context_use_episode" ||
+                        index.name === "feedback_events_target" ||
+                        index.name === "raw_events_event_id"
+                      )) ||
+                      (expectedVersion < 8 && (
+                        index.name === "raw_events_time" ||
+                        index.name === "context_use_time"
+                      )) ||
+                      (expectedVersion < 10 && (
+                        index.name === "raw_events_observed" ||
+                        index.name === "context_use_observed"
+                      ))
                     )
                   ),
               );
@@ -5848,6 +7361,7 @@ export class CanonicalSqliteStore {
       [
         path,
         `${path}.deletion.key`,
+        `${path}.manifest.json`,
         `${path}-shm`,
         `${path}-wal`,
       ].map((file) =>

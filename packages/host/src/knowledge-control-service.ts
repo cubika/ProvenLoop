@@ -2,19 +2,27 @@ import {
   CURRENT_SCHEMA_VERSION,
   feedbackEventSchema,
   knowledgeCandidateSchema,
+  type CaptureEnvelope,
   type FeedbackEvent,
   type KnowledgeCandidate,
   type Scope,
 } from "@provenloop/contracts";
 import {
   containsPotentialSecret,
+  directKnowledgeCounterevidence,
+  knowledgeEvidenceState,
+  redactPotentialSecrets,
   sha256,
 } from "@provenloop/domain";
 
 export interface KnowledgeControlStore {
+  feedbackEvents?(targetId?: string): readonly FeedbackEvent[];
   knowledgeCandidates(
     ids?: readonly string[],
   ): readonly KnowledgeCandidate[];
+  knowledgeAdmissionEvidence?(
+    candidates: readonly KnowledgeCandidate[],
+  ): { readonly envelopes: readonly CaptureEnvelope[] };
   recordKnowledgeFeedback(input: {
     readonly event: FeedbackEvent;
     readonly updateCandidate?: (
@@ -27,6 +35,15 @@ export interface KnowledgeControlStore {
   upsertKnowledgeCandidates(
     candidates: readonly KnowledgeCandidate[],
   ): number;
+  replaceKnowledgeWithConfirmedRule?(input: {
+    readonly previousKnowledgeId: string;
+    readonly expectedDigest: string;
+    readonly candidate: KnowledgeCandidate;
+    readonly event: FeedbackEvent;
+  }): {
+    readonly candidate: KnowledgeCandidate;
+    readonly recorded: boolean;
+  };
 }
 
 export interface KnowledgeControlProjection {
@@ -55,6 +72,20 @@ export interface KnowledgeControlServiceOptions {
   readonly now?: () => Date;
   readonly projection: KnowledgeControlProjection;
   readonly store: KnowledgeControlStore;
+  readonly workflowScopeId?: string;
+}
+
+export interface KnowledgeReviewScope {
+  readonly scope: Scope;
+  readonly scopeId?: string;
+}
+
+export interface KnowledgeReview {
+  readonly candidate: KnowledgeCandidate;
+  readonly expectedDigest: string;
+  readonly contradictoryKnowledgeIds: readonly string[];
+  readonly feedback: readonly FeedbackEvent[];
+  readonly unresolvedEvidenceIds: readonly string[];
 }
 
 const normalizedStrings = (
@@ -91,11 +122,256 @@ export class KnowledgeControlService {
   readonly #now: () => Date;
   readonly #projection: KnowledgeControlProjection;
   readonly #store: KnowledgeControlStore;
+  readonly #workflowScopeId: string | undefined;
 
   public constructor(options: KnowledgeControlServiceOptions) {
     this.#now = options.now ?? (() => new Date());
     this.#projection = options.projection;
     this.#store = options.store;
+    this.#workflowScopeId = options.workflowScopeId;
+  }
+
+  public list(
+    input: KnowledgeReviewScope & {
+      readonly state?: KnowledgeCandidate["state"];
+    },
+  ): readonly KnowledgeReview[] {
+    const scopeId = validateScope(input.scope, input.scopeId);
+    const candidates = this.#store.knowledgeCandidates()
+      .filter((candidate) =>
+        candidate.scope === input.scope &&
+        candidate.scopeId === scopeId &&
+        (input.state === undefined || candidate.state === input.state) &&
+        ![
+          candidate.content,
+          candidate.scopeId ?? "",
+          ...candidate.appliesWhen,
+          ...candidate.nonApplicability,
+        ].some(containsPotentialSecret),
+      );
+    const envelopes = candidates.length === 0
+      ? []
+      : this.#store.knowledgeAdmissionEvidence?.(candidates).envelopes ?? [];
+    return candidates.map((candidate) => {
+      const feedback = this.#store.feedbackEvents?.(candidate.knowledgeId) ?? [];
+      const evidence = knowledgeEvidenceState({
+        counters: directKnowledgeCounterevidence(
+          envelopes,
+          new Set(candidate.sourceEvidenceIds),
+          candidate.createdAt,
+        ),
+        createdAt: candidate.createdAt,
+        feedbackEvents: feedback,
+        knowledgeId: candidate.knowledgeId,
+      });
+      return {
+        candidate,
+        contradictoryKnowledgeIds: candidate.conflictsWith,
+        expectedDigest: sha256(candidate),
+        unresolvedEvidenceIds: evidence.unresolvedEvidenceIds,
+        feedback: feedback
+          .map((event) => ({
+            ...event,
+            ...(event.reason === undefined ? {} : {
+              reason: redactPotentialSecrets(event.reason),
+            }),
+          })),
+      };
+    });
+  }
+
+  public review(
+    input: KnowledgeReviewScope & { readonly knowledgeId: string },
+  ): KnowledgeReview {
+    const result = this.list(input).find((item) =>
+      item.candidate.knowledgeId === input.knowledgeId.trim(),
+    );
+    if (result === undefined) {
+      throw new Error("Knowledge is unavailable in the selected scope.");
+    }
+    return result;
+  }
+
+  public async resolve(
+    input: KnowledgeReviewScope & {
+      readonly knowledgeId: string;
+      readonly expectedDigest: string;
+      readonly userConfirmed: boolean;
+      readonly content?: string;
+      readonly appliesWhen?: readonly string[];
+      readonly nonApplicability?: readonly string[];
+      readonly reason?: string;
+      readonly resolvesEvidenceIds?: readonly string[];
+    },
+  ): Promise<KnowledgeControlResult> {
+    if (!input.userConfirmed) {
+      throw new Error("Resolving Knowledge requires explicit user confirmation.");
+    }
+    const lease = await this.#projection.acquireLease();
+    try {
+      const review = this.review(input);
+      const { candidate: previous, expectedDigest: currentDigest } = review;
+      const expectedDigest = input.expectedDigest;
+      const resolvesEvidenceIds = normalizedStrings(input.resolvesEvidenceIds ?? []).slice().sort();
+      const content = (input.content ?? previous.content).trim();
+      const appliesWhen = normalizedStrings(input.appliesWhen ?? previous.appliesWhen);
+      const nonApplicability = normalizedStrings(
+        input.nonApplicability ?? previous.nonApplicability,
+      );
+      const reason = input.reason?.trim();
+      if (
+        content.length === 0 ||
+        appliesWhen.length === 0 ||
+        [content, ...appliesWhen, ...nonApplicability, reason ?? ""]
+          .some(containsPotentialSecret)
+      ) {
+        throw new Error("The confirmed rule needs non-empty, secret-free content and applicability.");
+      }
+      if (
+        input.scope === "workflow" &&
+        this.#workflowScopeId !== input.scopeId
+      ) {
+        throw new Error("Workflow-scoped Knowledge requires a configured trusted workflow.");
+      }
+      const timestamp = this.#now().toISOString();
+      const identity = {
+        content,
+        appliesWhen,
+        nonApplicability,
+        scope: input.scope,
+        scopeId: input.scopeId,
+        previousKnowledgeId: previous.knowledgeId,
+        expectedDigest,
+        resolvesEvidenceIds,
+      };
+      const knowledgeId = `manual-knowledge-${sha256(identity).slice(0, 24)}`;
+      const candidate = knowledgeCandidateSchema.parse({
+        ...previous,
+        content,
+        appliesWhen,
+        nonApplicability,
+        conflictsWith: [],
+        createdAt: timestamp,
+        evidenceMarks: ["user_confirmed"],
+        evidenceTier: "user_confirmed",
+        expiresAt: undefined,
+        knowledgeId,
+        sourceEpisodeIds: [],
+        sourceEvidenceIds: [],
+        state: "active",
+        supersedes: previous.knowledgeId,
+        topicKey: `manual:${sha256(identity).slice(0, 24)}`,
+        utility: { applied: 0, helpful: 0, harmful: 0 },
+        coverage: { applicableOpportunities: 0, observedOutcomes: 0 },
+        validatedAt: timestamp,
+      });
+      const existing = this.#store.knowledgeCandidates([knowledgeId])[0];
+      if (existing?.supersedes === previous.knowledgeId) {
+        await this.#projection.rebuild();
+        return { candidate: existing, changed: false };
+      }
+      if (currentDigest !== expectedDigest) {
+        throw new Error("Knowledge changed after review. Review it again before confirming.");
+      }
+      if (
+        review.unresolvedEvidenceIds.some((id) => !resolvesEvidenceIds.includes(id)) ||
+        resolvesEvidenceIds.some((id) => !review.unresolvedEvidenceIds.includes(id)) ||
+        (previous.state === "disputed" && review.unresolvedEvidenceIds.length === 0)
+      ) {
+        throw new Error("Review and explicitly resolve the current counterevidence IDs before confirming.");
+      }
+      const feedbackId = `feedback-${sha256(identity).slice(0, 24)}`;
+      const event = feedbackEventSchema.parse({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        evidenceRef: `control:${feedbackId}`,
+        feedbackId,
+        kind: "confirm",
+        resolvesEvidenceIds,
+        ...(reason ? { reason } : {}),
+        source: "user",
+        targetId: previous.knowledgeId,
+        targetType: "knowledge",
+        timestamp,
+      });
+      if (this.#store.replaceKnowledgeWithConfirmedRule === undefined) {
+        throw new Error("Atomic Knowledge resolution is unavailable in this store.");
+      }
+      const result = this.#store.replaceKnowledgeWithConfirmedRule({
+        candidate,
+        event,
+        expectedDigest,
+        previousKnowledgeId: previous.knowledgeId,
+      });
+      await this.#projection.rebuild();
+      return {
+        candidate: result.candidate,
+        changed: result.recorded,
+        feedbackId,
+      };
+    } finally {
+      await lease.release();
+    }
+  }
+
+  public async revoke(
+    input: KnowledgeReviewScope & {
+      readonly knowledgeId: string;
+      readonly expectedDigest: string;
+      readonly userConfirmed: boolean;
+      readonly reason?: string;
+    },
+  ): Promise<KnowledgeControlResult> {
+    if (!input.userConfirmed) {
+      throw new Error("Revoking Knowledge requires explicit user confirmation.");
+    }
+    const reason = input.reason?.trim();
+    if (reason !== undefined && containsPotentialSecret(reason)) {
+      throw new Error("Revoke rejected a reason that may contain a secret.");
+    }
+    const lease = await this.#projection.acquireLease();
+    try {
+      const review = this.review(input);
+      if (review.candidate.state === "archived") {
+        await this.#projection.rebuild();
+        return { candidate: review.candidate, changed: false };
+      }
+      if (review.expectedDigest !== input.expectedDigest) {
+        throw new Error("Knowledge changed after review. Review it again before revoking.");
+      }
+      const timestamp = this.#now().toISOString();
+      const feedbackId = `feedback-${sha256({
+        action: "revoke",
+        knowledgeId: input.knowledgeId,
+        expectedDigest: input.expectedDigest,
+      }).slice(0, 24)}`;
+      const result = this.#store.recordKnowledgeFeedback({
+        event: feedbackEventSchema.parse({
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          evidenceRef: `control:${feedbackId}`,
+          feedbackId,
+          kind: "revoke",
+          ...(reason ? { reason } : {}),
+          source: "user",
+          targetId: input.knowledgeId,
+          targetType: "knowledge",
+          timestamp,
+        }),
+        updateCandidate: (candidate) => {
+          if (sha256(candidate) !== input.expectedDigest) {
+            throw new Error("Knowledge changed while revoking it.");
+          }
+          return { ...candidate, state: "archived", validatedAt: timestamp };
+        },
+      });
+      await this.#projection.rebuild();
+      return {
+        candidate: result.candidate,
+        changed: result.recorded,
+        feedbackId,
+      };
+    } finally {
+      await lease.release();
+    }
   }
 
   public async remember(
@@ -123,6 +399,12 @@ export class KnowledgeControlService {
       throw new Error(
         "Remember rejected content that may contain a secret.",
       );
+    }
+    if (
+      input.scope === "workflow" &&
+      this.#workflowScopeId !== scopeId
+    ) {
+      throw new Error("Workflow-scoped Knowledge requires a configured trusted workflow.");
     }
     const now = this.#now().toISOString();
     const identity = {

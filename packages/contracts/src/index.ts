@@ -48,6 +48,14 @@ export {
   type CaptureQueueState,
 } from "./capture-queue.js";
 export {
+  captureEvidenceSchema,
+  captureQualitySchema,
+  repositoryStateSchema,
+  type CaptureEvidence,
+  type CaptureQuality,
+  type RepositoryState,
+} from "./capture-metadata.js";
+export {
   CURRENT_SCHEMA_VERSION,
   isoTimestampSchema,
   scopeSchema,
@@ -55,7 +63,9 @@ export {
 } from "./common.js";
 export {
   contextFeedbackSchema,
+  contextRetrievalStatusSchema,
   contextUseRecordSchema,
+  type ContextRetrievalStatus,
   type ContextUseRecord,
 } from "./context-use-record.js";
 export {
@@ -154,10 +164,12 @@ export {
   SUPPORTED_ADAPTER_VERSIONS,
   SUPPORTED_EVENT_TYPES,
   trustLabelSchema,
+  verificationBindingSchema,
   type RawEvent,
   type RawEventClassification,
   type SupportedEventType,
   type SupportedRawEvent,
+  type VerificationBinding,
 } from "./raw-event.js";
 export {
   PROVENLOOP_VERSION,

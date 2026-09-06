@@ -14,6 +14,7 @@ import {
   type KnowledgeBackend,
   type KnowledgeRecord,
 } from "@provenloop/retrieval";
+import { proofEnvelopes, verificationFixture } from "./domain-proof-fixture.js";
 
 const candidate = (
   sourceEvidenceIds: readonly string[],
@@ -99,6 +100,7 @@ const envelope = (
     sourceEventId,
     timestamp,
     trust,
+    worktree: "C:\\repo",
   });
 
 const correctionEnvelope = envelope(
@@ -143,6 +145,10 @@ const episode: WorkEpisode = {
   sourceEventIds: [
     correctionEnvelope.event.eventId,
     verificationEnvelope.event.eventId,
+    verificationFixture(
+      correctionEnvelope,
+      verificationEnvelope,
+    ).operation.event.eventId,
   ],
   startedAt: "2026-09-01T00:00:00.000Z",
 };
@@ -177,6 +183,10 @@ describe("CanonicalKnowledgeRetriever correction admission", () => {
     const knowledge = candidate([
       correctionEnvelope.event.eventId,
       verificationEnvelope.event.eventId,
+      verificationFixture(
+        correctionEnvelope,
+        verificationEnvelope,
+      ).operation.event.eventId,
     ]);
     let keys: readonly CorrectionKey[] = [];
     const retriever = new CanonicalKnowledgeRetriever({
@@ -188,10 +198,10 @@ describe("CanonicalKnowledgeRetriever correction admission", () => {
           correctionSourceEventIds: new Set([
             correctionEnvelope.event.eventId,
           ]),
-          envelopes: [
+          envelopes: proofEnvelopes([
             correctionEnvelope,
             verificationEnvelope,
-          ],
+          ], [[correctionEnvelope, verificationEnvelope]]),
           feedbackEvents: [],
           workEpisodes: [
             episode,

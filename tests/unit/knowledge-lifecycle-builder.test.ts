@@ -12,6 +12,7 @@ import {
   KnowledgeLifecycleBuilder,
   createCaptureEnvelope,
 } from "@provenloop/domain";
+import { proofEnvelopes } from "./domain-proof-fixture.js";
 
 const envelope = (
   sourceEventId: string,
@@ -39,10 +40,11 @@ const envelope = (
           parentEventId: input.parentEventId,
         }),
     repoId: "repo-1",
-    sessionId: sourceEventId,
+    sessionId: "session-test",
     sourceEventId,
     timestamp,
     trust: input.trust ?? "system",
+    worktree: "C:\\repo",
   });
 
 const key = (input: {
@@ -212,12 +214,12 @@ describe("KnowledgeLifecycleBuilder", () => {
           outcomeKnown: true,
         }),
       ],
-      envelopes: [
+      envelopes: proofEnvelopes([
         correctionOne,
         correctionTwo,
         verificationOne,
         verificationTwo,
-      ],
+      ], [[correctionOne, verificationOne], [correctionTwo, verificationTwo]]),
       feedbackEvents: [],
       workEpisodes: [
         episode({
@@ -257,7 +259,7 @@ describe("KnowledgeLifecycleBuilder", () => {
       utility: {
         applied: 1,
         harmful: 0,
-        helpful: 1,
+        helpful: 0,
       },
     });
     expect(result.candidates[0]?.sourceEpisodeIds).toEqual([
@@ -349,11 +351,11 @@ describe("KnowledgeLifecycleBuilder", () => {
         }),
       ],
       correctionOpportunities: [],
-      envelopes: [
+      envelopes: proofEnvelopes([
         firstCorrection,
         verification,
         laterCorrection,
-      ],
+      ], [[firstCorrection, verification]]),
       feedbackEvents: [],
       workEpisodes: [
         episode({
@@ -447,12 +449,12 @@ describe("KnowledgeLifecycleBuilder", () => {
         }),
       ],
       correctionOpportunities: [],
-      envelopes: [
+      envelopes: proofEnvelopes([
         oldCorrection,
         oldVerification,
         newCorrection,
         newVerification,
-      ],
+      ], [[oldCorrection, oldVerification], [newCorrection, newVerification]]),
       feedbackEvents: [],
       workEpisodes: [
         episode({
@@ -537,11 +539,11 @@ describe("KnowledgeLifecycleBuilder", () => {
         correctionKey,
       ],
       correctionOpportunities: [],
-      envelopes: [
+      envelopes: proofEnvelopes([
         correction,
         verification,
         counter,
-      ],
+      ], [[correction, verification]]),
       feedbackEvents: [],
       workEpisodes: [],
     };
@@ -624,10 +626,10 @@ describe("KnowledgeLifecycleBuilder", () => {
         correctionKey,
       ],
       correctionOpportunities: [],
-      envelopes: [
+      envelopes: proofEnvelopes([
         correction,
         verification,
-      ],
+      ], [[correction, verification]]),
       feedbackEvents: [],
       workEpisodes: [
         workEpisode,

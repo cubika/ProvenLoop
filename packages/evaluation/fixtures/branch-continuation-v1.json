@@ -1,4 +1,6 @@
 {
+  "evidenceKind": "synthetic",
+  "evaluationPurpose": "regression",
   "datasetId": "branch-continuation",
   "datasetVersion": 1,
   "tokenBudget": 500,

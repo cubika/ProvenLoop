@@ -13,6 +13,7 @@ import {
   createCaptureEnvelope,
   KnowledgeAdmissionPolicy,
 } from "@provenloop/domain";
+import { proofEnvelopes, verificationFixture } from "./domain-proof-fixture.js";
 
 const envelope = (
   sourceEventId: string,
@@ -36,6 +37,7 @@ const envelope = (
     sourceEventId,
     timestamp,
     trust,
+    worktree: "C:\\repo",
   });
 
 const correction = envelope(
@@ -125,6 +127,7 @@ const candidate = (
       input.sourceEvidenceIds ?? [
         correction.event.eventId,
         verification().event.eventId,
+        verificationFixture(correction, verification()).operation.event.eventId,
       ]
     ),
   ],
@@ -191,10 +194,10 @@ const evaluate = (input: {
     correctionSourceEventIds: new Set([
       correction.event.eventId,
     ]),
-    envelopes: [
+    envelopes: proofEnvelopes([
       correction,
       verificationEvent,
-    ],
+    ], [[correction, verificationEvent]]),
     feedbackEvents: input.feedbackEvents ?? [],
     workEpisodes: input.workEpisodes ?? [
       episode(verificationEvent),
@@ -366,6 +369,8 @@ describe("KnowledgeAdmissionPolicy", () => {
         verification().event.eventId,
         laterCorrection.event.eventId,
         laterVerification.event.eventId,
+        verificationFixture(correction, verification()).operation.event.eventId,
+        verificationFixture(laterCorrection, laterVerification).operation.event.eventId,
       ],
     });
     const earlierRecall: ContextUseRecord = {
@@ -411,12 +416,12 @@ describe("KnowledgeAdmissionPolicy", () => {
         correction.event.eventId,
         laterCorrection.event.eventId,
       ]),
-      envelopes: [
+      envelopes: proofEnvelopes([
         correction,
         verification(),
         laterCorrection,
         laterVerification,
-      ],
+      ], [[correction, verification()], [laterCorrection, laterVerification]]),
       feedbackEvents: [],
       workEpisodes: [
         episode(),

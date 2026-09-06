@@ -27,7 +27,7 @@ import {
   WindowsCaptureQueue,
 } from "@provenloop/platform-windows";
 import {
-  ContextRetrievalService,
+  ContextRetrievalService as BaseContextRetrievalService,
   KnowledgeProjectionManager,
   MAX_CONTEXT_TOKENS,
   SqliteFtsKnowledgeBackend,
@@ -40,6 +40,19 @@ import {
 import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
+
+class ContextRetrievalService extends BaseContextRetrievalService {
+  public override feedback(
+    request: Parameters<BaseContextRetrievalService["feedback"]>[0],
+  ) {
+    return super.feedback({
+      source: "user",
+      userReportedApplied:
+        request.action === "helpful" || request.action === "wrong",
+      ...request,
+    });
+  }
+}
 
 const temporaryDirectories: string[] = [];
 

@@ -35,6 +35,7 @@ import {
   type M0AcceptanceEvidence,
 } from "./m0-acceptance-evidence.js";
 import { runEvaluation } from "./runner.js";
+import { verifyExternalReportArtifacts } from "./external-report-binding.js";
 import {
   containsKnownSecret,
   redactKnownSecrets,
@@ -76,6 +77,8 @@ export interface M0SuiteResult {
 }
 
 export interface M0ReleaseReport {
+  readonly acceptanceEvidenceKind?: "maintainer_attestation";
+  readonly artifactIntegrity?: "verified" | "not_supplied" | "unverified";
   readonly acceptanceEvidence?: M0AcceptanceEvidence;
   readonly checks: readonly M0ReleaseGateCheck[];
   readonly codeVersion: string;
@@ -92,6 +95,7 @@ export interface M0ReleaseReport {
 }
 
 export interface RunM0ReleaseGateOptions {
+  readonly evidenceRoot?: string;
   readonly acceptanceEvidence?: M0AcceptanceEvidence;
   readonly codeVersion?: string;
   readonly cwd?: string;
@@ -112,6 +116,8 @@ export interface RunM0ReleaseGateResult {
 
 const m0ReleaseReportSchema = z
   .object({
+    acceptanceEvidenceKind: z.literal("maintainer_attestation").default("maintainer_attestation"),
+    artifactIntegrity: z.enum(["verified", "not_supplied", "unverified"]).optional(),
     acceptanceEvidence: m0AcceptanceEvidenceSchema.optional(),
     checks: z.array(
       z
@@ -474,11 +480,12 @@ const evidenceReportDigests = (
   evidence.providerDegradation.reportDigest,
 ];
 
-const validateEvidenceBinding = (
+const validateEvidenceBinding = async (
   evidence: M0AcceptanceEvidence,
   codeVersion: string,
   runtimeDigest: string,
-): void => {
+  evidenceRoot: string | undefined,
+): Promise<void> => {
   if (evidence.binding.codeVersion !== codeVersion) {
     throw new M0AcceptanceEvidenceInputError(
       "M0 acceptance evidence code version does not match the evaluated code.",
@@ -497,6 +504,17 @@ const validateEvidenceBinding = (
   ) {
     throw new M0AcceptanceEvidenceInputError(
       "M0 acceptance evidence references an unretained report digest.",
+    );
+  }
+  try {
+    await verifyExternalReportArtifacts(
+      evidence.binding.reportArtifacts ?? [],
+      evidence.binding.reportDigests,
+      evidenceRoot,
+    );
+  } catch {
+    throw new M0AcceptanceEvidenceInputError(
+      "M0 external report artifacts are missing, unsafe, or do not match their digests.",
     );
   }
 };
@@ -831,7 +849,11 @@ const writeM0Reports = async (
   report: M0ReleaseReport,
 ): Promise<M0ReleaseReport> => {
   const sanitized = m0ReleaseReportSchema.parse(
-    sanitizeM0Report(report),
+    {
+      ...sanitizeM0Report(report),
+      artifactIntegrity: report.artifactIntegrity ??
+        (report.acceptanceEvidence === undefined ? "not_supplied" : "verified"),
+    },
   ) as M0ReleaseReport;
   const json = `${JSON.stringify(sanitized, null, 2)}\n`;
   const markdown = renderM0ReleaseReport(sanitized);
@@ -945,10 +967,11 @@ export const runM0ReleaseGate = async (
       );
     }
     if (acceptanceEvidence !== undefined) {
-      validateEvidenceBinding(
+      await validateEvidenceBinding(
         acceptanceEvidence,
         codeVersion,
         runtimeDigest,
+        options.evidenceRoot ?? (evidencePath === undefined ? undefined : resolve(evidencePath, "..")),
       );
     }
     const runSuite = options.runSuite ?? runEvaluation;
@@ -1096,6 +1119,8 @@ export const runM0ReleaseGate = async (
           status: "fail",
         },
       ],
+      artifactIntegrity: evidencePath !== undefined || options.acceptanceEvidence !== undefined
+        ? "unverified" : "not_supplied",
       codeVersion,
       completedAt: now().toISOString(),
       exitCode: invalidInput ? 2 : 3,

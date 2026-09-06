@@ -2,6 +2,56 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.8] - 2026-09-06
+
+Windows Design Partner Preview evidence candidate, not an M0/MVP-approved
+quality release. Controlled field benefit remains unestablished, and
+`0.1.0-alpha.1` remains an unapproved target.
+
+### Added
+
+- Explicit Knowledge review, confirmation, replacement, and revocation, with
+  reviewed digests and separately acknowledged counterevidence.
+- Local observation summaries and privacy-bounded exports that distinguish
+  provided context, user-reported adoption, and unknown outcomes.
+- Task-start context instructions and live SDK workspace identity shared by
+  capture, MCP, and workflow-scoped Knowledge controls.
+- Native SDK causal verification bridge and `assistant.turn_start` mapping.
+- Bounded current-session reconciliation in the installed Extension background
+  loop, using matched SDK identity/workspace, a join-time lower bound, and
+  state/path/lease checks. Worker/admission runs first, then reconciliation and
+  observations every 30 seconds, with two-second catch-up on progress or budget
+  exhaustion; runtime shutdown stops the loop.
+
+### Fixed
+
+- Bind correction verification to the actual tool operation and source
+  workspace; prevent older confirmations from erasing newer counterevidence.
+- Require trusted live SDK context, cross-process reader-probe guards, and
+  explicit real-user confirmation for persistent MCP feedback. Workflow
+  Knowledge controls require matching live `SESSION_ID`, workflow, and cwd.
+- Preserve bounded capture metadata and reconcile incomplete session events
+  with two-pass redaction and append-only enrichment, without overwriting
+  original evidence or resurrecting deleted sources.
+- Isolate corrupt queue items and prune acknowledged items without deleting
+  pending work. Guard deletion/projection transactions and restore tombstones.
+- Require explicit schema-10 maintenance migration with verified pre-upgrade
+  snapshots and guarded recovery rather than silently downgrading data.
+- Retrieve ordinary English and Chinese queries without allowing short
+  queries to spuriously match more specific exclusion conditions.
+- Bound test-runner process contention without relaxing runtime deadlines.
+
+### Known limitations
+
+- Missing or mismatched SDK workspace metadata produces a diagnostic and skips
+  automatic backfill. Capture is best effort, not lossless or full-history ingestion.
+- M0 platform, latency, provider-degradation, and remote-upgrade evidence remains
+  open. MVP remains No-Go; synthetic fixtures and local observations cannot clear
+  the blocked controlled-field-effect gate.
+- Distribution uses GitHub Release tarball/checksum assets, with npm only as the
+  local installer; this candidate is not being published to the public npm registry.
+- Prior source validation is not validation of the new versioned artifacts.
+
 ## [0.1.0-alpha.0.7] - 2026-09-05
 
 ### Fixed

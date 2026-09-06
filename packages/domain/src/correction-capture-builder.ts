@@ -12,6 +12,10 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import {
+  boundVerificationOperation,
+  verificationOutcome,
+} from "./verification-proof.js";
 
 export type CorrectionCaptureIssueCode =
   | "ambiguous_field"
@@ -69,6 +73,46 @@ const normalizeDisplay = (value: string): string =>
 
 const normalizeIdentity = (value: string): string =>
   normalizeDisplay(value).toLocaleLowerCase("en-US");
+
+export interface ExplicitCorrectionFields {
+  readonly expectedBehavior: string;
+  readonly scope: Scope;
+  readonly scopeId?: string;
+  readonly subsystem?: string;
+  readonly taskFamily?: string;
+  readonly trigger: string;
+  readonly violatedConstraint: string;
+}
+
+export const formatExplicitCorrectionMessage = (
+  input: ExplicitCorrectionFields,
+): string => {
+  const field = (label: string, value: string): string => {
+    const normalized = normalizeDisplay(value);
+    if (normalized.length === 0) {
+      throw new Error(`Correction field ${label} must be non-empty.`);
+    }
+    return `${label}: ${normalized}`;
+  };
+  if (!["personal", "workflow", "repository", "branch"].includes(input.scope)) {
+    throw new Error("Correction scope is unsupported.");
+  }
+  if (input.scope === "workflow" && input.scopeId === undefined) {
+    throw new Error("Workflow corrections require a scope identity.");
+  }
+  if (input.scope === "personal" && input.scopeId !== undefined) {
+    throw new Error("Personal corrections cannot carry a scope identity.");
+  }
+  return [
+    field("Violated Constraint", input.violatedConstraint),
+    field("Expected Behavior", input.expectedBehavior),
+    field("Trigger", input.trigger),
+    field("Scope", input.scope),
+    ...(input.scopeId === undefined ? [] : [field("Scope Id", input.scopeId)]),
+    ...(input.taskFamily === undefined ? [] : [field("Task Family", input.taskFamily)]),
+    ...(input.subsystem === undefined ? [] : [field("Subsystem", input.subsystem)]),
+  ].join("\n");
+};
 
 const sortedUnique = (values: Iterable<string>): string[] =>
   [...new Set(values)].sort();
@@ -245,9 +289,7 @@ const parseCorrection = (
   const scopeInput = fieldValue(fields, "scope").value;
   const resolvedScope =
     scopeInput === undefined
-      ? event.repoId === undefined
-        ? "personal"
-        : "repository"
+      ? "repository"
       : scopeInput.toLocaleLowerCase("en-US");
   if (
     resolvedScope !== "personal" &&
@@ -337,35 +379,7 @@ const parseCorrection = (
 
 const isVerificationSuccess = (
   envelope: CaptureEnvelope,
-): boolean => {
-  const event = envelope.event;
-  if (
-    event.eventType !== "test.completed" &&
-    event.eventType !== "build.completed" &&
-    event.eventType !== "verification.completed"
-  ) {
-    return false;
-  }
-  if (
-    event.trust !== "system" &&
-    event.trust !== "tool"
-  ) {
-    return false;
-  }
-  if (
-    event.completionStatus !== undefined &&
-    event.completionStatus !== "succeeded"
-  ) {
-    return false;
-  }
-  if (event.exitCode !== undefined && event.exitCode !== 0) {
-    return false;
-  }
-  return (
-    event.completionStatus === "succeeded" ||
-    event.exitCode === 0
-  );
-};
+): boolean => verificationOutcome(envelope) === "succeeded";
 
 const episodeEvents = (
   episode: WorkEpisode,
@@ -399,7 +413,8 @@ const occurrenceFor = (
       (envelope) =>
         Date.parse(envelope.event.timestamp) >
           Date.parse(parsed.event.event.timestamp) &&
-        isVerificationSuccess(envelope),
+        isVerificationSuccess(envelope) &&
+        boundVerificationOperation(parsed.event, envelope, eventsById) !== undefined,
     ),
   };
 };

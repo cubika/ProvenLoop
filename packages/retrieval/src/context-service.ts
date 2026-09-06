@@ -4,6 +4,7 @@ import {
 
 import {
   CURRENT_SCHEMA_VERSION,
+  PROVENLOOP_VERSION,
   type BranchContext,
   type ContextUseRecord,
   type FeedbackEvent,
@@ -12,11 +13,14 @@ import {
 } from "@provenloop/contracts";
 import {
   containsPotentialSecret,
+  directKnowledgeCounterevidence,
+  knowledgeEvidenceState,
   redactPotentialSecrets,
   sha256,
 } from "@provenloop/domain";
 
 import { CanonicalKnowledgeRetriever } from "./retriever.js";
+import { retrievalTokens } from "./search-text.js";
 import { branchScopeIdFor } from "./types.js";
 import type {
   CanonicalContextStore,
@@ -33,7 +37,7 @@ import type {
 
 const MAX_CONTEXT_ITEMS = 3;
 const SEARCH_RESULT_LIMIT = 20;
-const SEARCH_TERM_LIMIT = 8;
+const SEARCH_TERM_LIMIT = 24;
 export const DEFAULT_CONTEXT_TIMEOUT_MS = 150;
 export const MAX_CONTEXT_TOKENS = 1_200;
 
@@ -73,27 +77,38 @@ const stopWords = new Set([
   "this",
   "that",
   "with",
+  "please",
+  "could",
+  "would",
+  "should",
+  "using",
+  "need",
+  "want",
+  "help",
 ]);
 
 const normalizedTokens = (input: string): readonly string[] =>
-  input
-    .normalize("NFKC")
-    .toLocaleLowerCase("en-US")
-    .match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  retrievalTokens(input);
 
 const distinct = <T>(input: readonly T[]): T[] =>
   [...new Set(input)];
 
-const searchTerms = (request: ContextRequest): readonly string[] =>
-  distinct(
-    normalizedTokens([
-      request.prompt,
-      ...(request.fileHints ?? []),
-    ].join("\n"))
-      .filter((token) =>
-        token.length >= 2 && !stopWords.has(token),
-      ),
-  ).slice(0, SEARCH_TERM_LIMIT);
+const searchTerms = (request: ContextRequest): readonly string[] => {
+  const hints = normalizedTokens((request.fileHints ?? []).join("\n"))
+    .filter((token) => token.length >= 2 && token.length <= 64)
+    .slice(0, 8);
+  const prompt = distinct(normalizedTokens(request.prompt).filter((token) =>
+    token.length >= 2 && token.length <= 64 && !stopWords.has(token),
+  ));
+  const available = SEARCH_TERM_LIMIT - hints.length;
+  const selected = prompt.length <= available
+    ? prompt
+    : [
+        ...prompt.slice(0, Math.ceil(available / 2)),
+        ...prompt.slice(-Math.floor(available / 2)),
+      ];
+  return distinct([...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
+};
 
 const overlapRatio = (
   left: readonly string[],
@@ -126,12 +141,16 @@ const nonApplicabilityMatches = (
       .normalize("NFKC")
       .toLocaleLowerCase("en-US");
     const conditionTokens = normalizedTokens(condition);
+    const requestTokenSet = new Set(requestTokens);
+    const matchedConditionTokens = conditionTokens.filter((token) =>
+      requestTokenSet.has(token),
+    ).length;
     return (
       normalizedCondition.length > 0 &&
       normalizedRequest.includes(normalizedCondition)
     ) || (
       conditionTokens.length >= 2 &&
-      overlapRatio(conditionTokens, requestTokens) >= 0.6
+      matchedConditionTokens / conditionTokens.length >= 0.6
     );
   });
 };
@@ -522,15 +541,18 @@ const updatedCandidate = (
   request: ContextFeedbackRequest,
   now: Date,
 ): KnowledgeCandidate | undefined => {
-  const timestamp = now.toISOString();
+  const timestamp = new Date(Math.max(
+    now.getTime(),
+    Date.parse(candidate.validatedAt ?? candidate.createdAt),
+  )).toISOString();
   switch (request.action) {
     case "helpful":
       return {
         ...candidate,
         utility: {
           ...candidate.utility,
-          applied: candidate.utility.applied + 1,
-          helpful: candidate.utility.helpful + 1,
+          applied: candidate.utility.applied + (request.userReportedApplied === true ? 1 : 0),
+          helpful: candidate.utility.helpful + (request.userReportedApplied === true ? 1 : 0),
         },
         validatedAt: timestamp,
       };
@@ -541,8 +563,8 @@ const updatedCandidate = (
         state: "disputed",
         utility: {
           ...candidate.utility,
-          applied: candidate.utility.applied + 1,
-          harmful: candidate.utility.harmful + 1,
+          applied: candidate.utility.applied + (request.userReportedApplied === true ? 1 : 0),
+          harmful: candidate.utility.harmful + (request.userReportedApplied === true ? 1 : 0),
         },
         validatedAt: timestamp,
       };
@@ -609,6 +631,7 @@ const updatedCandidate = (
 export interface ContextRetrievalServiceOptions {
   readonly backend: KnowledgeBackend;
   readonly clockMs?: () => number;
+  readonly codeVersion?: string;
   readonly idGenerator?: () => string;
   readonly now?: () => Date;
   readonly store: CanonicalContextStore;
@@ -621,6 +644,7 @@ export interface ContextRetrievalServiceOptions {
 export class ContextRetrievalService {
   readonly #backend: KnowledgeBackend;
   readonly #clockMs: () => number;
+  readonly #codeVersion: string;
   readonly #idGenerator: () => string;
   readonly #now: () => Date;
   readonly #retriever: CanonicalKnowledgeRetriever;
@@ -640,6 +664,7 @@ export class ContextRetrievalService {
     }
     this.#backend = options.backend;
     this.#clockMs = options.clockMs ?? Date.now;
+    this.#codeVersion = options.codeVersion ?? PROVENLOOP_VERSION;
     this.#idGenerator = options.idGenerator ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
     this.#retriever = new CanonicalKnowledgeRetriever({
@@ -698,6 +723,11 @@ export class ContextRetrievalService {
       MAX_CONTEXT_TOKENS,
     );
     const requestId = `context-${this.#idGenerator()}`;
+    const recordContext = {
+      codeVersion: this.#codeVersion,
+      ...(request.repoId === undefined ? {} : { repoId: request.repoId }),
+      ...(request.branch === undefined ? {} : { branch: request.branch }),
+    };
     if (deadline <= Date.now()) {
       return {
         items: [],
@@ -727,12 +757,14 @@ export class ContextRetrievalService {
       );
       this.#store.appendContextUseRecord({
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        ...recordContext,
         appliedKnowledgeIds: [],
         candidateKnowledgeIds: [],
         createdAt: now.toISOString(),
         latencyMs,
         renderedTokens: 0,
         requestId,
+        retrievalStatus: "muted",
         returnedKnowledgeIds: [],
         sessionId,
       });
@@ -778,12 +810,14 @@ export class ContextRetrievalService {
       );
       this.#store.appendContextUseRecord({
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        ...recordContext,
         appliedKnowledgeIds: [],
         candidateKnowledgeIds: [],
         createdAt: now.toISOString(),
         latencyMs,
         renderedTokens: 0,
         requestId,
+        retrievalStatus: "degraded",
         returnedKnowledgeIds: [],
         sessionId,
       });
@@ -877,6 +911,7 @@ export class ContextRetrievalService {
     );
     const record: ContextUseRecord = {
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      ...recordContext,
       appliedKnowledgeIds: [],
       candidateKnowledgeIds: knowledge.map(
         (input) => input.candidate.knowledgeId,
@@ -885,6 +920,7 @@ export class ContextRetrievalService {
       latencyMs,
       renderedTokens,
       requestId,
+      retrievalStatus: items.length > 0 ? "provided" : "no_match",
       returnedKnowledgeIds: items.map(
         (item) => item.explanationRef,
       ),
@@ -1041,6 +1077,7 @@ export class ContextRetrievalService {
       explanationRef,
       id: candidate.knowledgeId,
       kind: "knowledge",
+      unresolvedEvidenceIds: this.#knowledgeEvidenceState(candidate).unresolvedEvidenceIds,
       provenance: {
         sourceEpisodes: candidate.sourceEpisodeIds.map(
           (episodeId) => {
@@ -1083,6 +1120,9 @@ export class ContextRetrievalService {
     const requestId = request.requestId.trim();
     const sessionId = request.sessionId.trim();
     const targetId = request.targetId.trim();
+    const targetKind = request.targetKind ?? "knowledge";
+    const targetRef = `${targetKind === "knowledge" ? "knowledge" : "branch-context"}:${targetId}`;
+    const source = request.source ?? "analyzer";
     if (
       requestId.length === 0 ||
       sessionId.length === 0 ||
@@ -1115,11 +1155,76 @@ export class ContextRetrievalService {
     if (
       useRecord === undefined ||
       !useRecord.returnedKnowledgeIds.includes(
-        `knowledge:${targetId}`,
+        targetRef,
       )
     ) {
       return {
         status: "not_previously_retrieved",
+      };
+    }
+    if (
+      source !== "user" &&
+      ["confirm", "revoke", "set_scope", "mute_session"].includes(request.action)
+    ) {
+      throw new Error("This action requires explicit user feedback.");
+    }
+    if (
+      targetKind === "branch_context" &&
+      ["confirm", "revoke", "set_scope", "mute_session"].includes(request.action)
+    ) {
+      throw new Error("Branch Context supports helpful, irrelevant, wrong, and stale feedback.");
+    }
+    const marksApplied = source === "user" && request.userReportedApplied === true;
+    const responseObservation = {
+      adoption: marksApplied ? "user_reported" as const : "not_reported" as const,
+      outcome: "unknown" as const,
+    };
+    if (targetKind === "branch_context") {
+      const context = this.#store.branchContexts().find((item) =>
+        item.branchContextId === targetId,
+      );
+      if (context === undefined || branchContextContainsPotentialSecret(context)) {
+        return { status: "not_found" };
+      }
+      if (this.#store.recordContextFeedback === undefined) {
+        throw new Error("Atomic Branch Context feedback is unavailable in this store.");
+      }
+      const feedbackId = `feedback-${sha256({
+        action: request.action,
+        evidenceRef: request.evidenceRef,
+        requestId,
+        source,
+        targetRef,
+        userReportedApplied: marksApplied,
+      }).slice(0, 24)}`;
+      const kind = feedbackKind(request.action);
+      const feedback = source === "user" ? contextFeedback(request.action) : undefined;
+      const result = this.#store.recordContextFeedback({
+        contextRequestId: requestId,
+        event: {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          evidenceRef: request.evidenceRef ?? requestId,
+          feedbackId,
+          kind,
+          ...(reason ? { reason } : {}),
+          source,
+          targetId,
+          targetType: "branch_context",
+          timestamp: this.#now().toISOString(),
+        },
+        updateContextUseRecord: (current) => ({
+          ...current,
+          appliedKnowledgeIds: marksApplied
+            ? distinct([...current.appliedKnowledgeIds, targetRef])
+            : current.appliedKnowledgeIds,
+          ...(feedback === undefined ? {} : { feedback }),
+        }),
+      });
+      return {
+        ...responseObservation,
+        feedbackId,
+        recordedKind: kind,
+        status: result.recorded ? "recorded" : "already_recorded",
       };
     }
     const candidate = this.#store
@@ -1143,11 +1248,15 @@ export class ContextRetrievalService {
     const scopeChange = feedbackScopeChange(request);
     const feedbackId = `feedback-${sha256({
       action: request.action,
+      evidenceRef: request.evidenceRef,
       branchScopeId: request.branchScopeId,
       repositoryScopeId: request.repositoryScopeId,
       requestId,
+      resolvesEvidenceIds: request.resolvesEvidenceIds,
+      source,
       scope: request.scope,
       targetId,
+      userReportedApplied: marksApplied,
       workflowScopeId: request.workflowScopeId,
     }).slice(0, 24)}`;
     const event: FeedbackEvent = {
@@ -1155,9 +1264,12 @@ export class ContextRetrievalService {
       evidenceRef:
         request.action === "mute_session"
           ? sessionId
-          : requestId,
+          : request.evidenceRef ?? requestId,
       feedbackId,
       kind,
+      ...(request.resolvesEvidenceIds === undefined ? {} : {
+        resolvesEvidenceIds: distinct(request.resolvesEvidenceIds).sort(),
+      }),
       ...(reason === undefined || reason.length === 0
         ? {}
         : {
@@ -1175,16 +1287,14 @@ export class ContextRetrievalService {
                   }),
             },
           }),
-      source: "user",
+      source,
       targetId,
       targetType: "knowledge",
       timestamp: now.toISOString(),
     };
-    const feedback = contextFeedback(request.action);
-    const marksApplied =
-      request.action === "helpful" ||
-      request.action === "wrong";
+    const feedback = source === "user" ? contextFeedback(request.action) : undefined;
     const updatesCandidate =
+      source === "user" &&
       request.action !== "irrelevant" &&
       request.action !== "mute_session";
     const result = this.#store.recordKnowledgeFeedback({
@@ -1202,6 +1312,40 @@ export class ContextRetrievalService {
                 throw new Error(
                   "Feedback action did not produce a Knowledge update.",
                 );
+              }
+              if (request.action === "confirm") {
+                const previousEvidence = this.#knowledgeEvidenceState(
+                  current,
+                  undefined,
+                  event.feedbackId,
+                );
+                const evidence = this.#knowledgeEvidenceState(current, event);
+                if ((request.resolvesEvidenceIds ?? []).some((id) =>
+                  !previousEvidence.unresolvedEvidenceIds.includes(id),
+                )) {
+                  throw new Error("Resolution must reference the current unresolved evidence IDs.");
+                }
+                if (
+                  previousEvidence.unresolvedEvidenceIds.length === 0 &&
+                  ["disputed", "archived", "superseded"].includes(current.state)
+                ) {
+                  return {
+                    ...updated,
+                    evidenceTier: current.evidenceTier,
+                    state: current.state,
+                  };
+                }
+                if (
+                  evidence.unresolvedEvidenceIds.length > 0
+                ) {
+                  return {
+                    ...updated,
+                    evidenceTier: "disputed",
+                    state: evidence.archived || current.state === "archived"
+                      ? "archived"
+                      : "disputed",
+                  };
+                }
               }
               return updated;
             },
@@ -1230,6 +1374,7 @@ export class ContextRetrievalService {
         try {
           await this.#syncKnowledge(result.candidate);
           return {
+            ...responseObservation,
             candidate: result.candidate,
             feedbackId,
             projectionStatus: "synchronized",
@@ -1238,6 +1383,7 @@ export class ContextRetrievalService {
           };
         } catch (error) {
           return {
+            ...responseObservation,
             candidate: result.candidate,
             feedbackId,
             projectionStatus: "degraded",
@@ -1251,6 +1397,7 @@ export class ContextRetrievalService {
         }
       }
       return {
+        ...responseObservation,
         feedbackId,
         recordedKind: kind,
         status: "already_recorded",
@@ -1266,6 +1413,7 @@ export class ContextRetrievalService {
         await this.#syncKnowledge(nextCandidate);
       } catch (error) {
         return {
+          ...responseObservation,
           candidate: nextCandidate,
           feedbackId,
           projectionStatus: "degraded",
@@ -1279,6 +1427,7 @@ export class ContextRetrievalService {
       }
     }
     return {
+      ...responseObservation,
       ...(nextCandidate === undefined
         ? {}
         : {
@@ -1293,7 +1442,37 @@ export class ContextRetrievalService {
           }),
       recordedKind: kind,
       status: "recorded",
+      ...(request.action === "confirm" &&
+        (nextCandidate?.state === "disputed" || nextCandidate?.state === "archived")
+        ? {
+            statusDetail: "Confirmation did not clear unresolved evidence. Review and explicitly resolve the evidence IDs.",
+          }
+        : {}),
     };
+  }
+
+  #knowledgeEvidenceState(
+    candidate: KnowledgeCandidate,
+    proposed?: FeedbackEvent,
+    excludeFeedbackId?: string,
+  ) {
+    const evidence = this.#store.knowledgeAdmissionEvidence([candidate]);
+    return knowledgeEvidenceState({
+      counters: directKnowledgeCounterevidence(
+        evidence.envelopes,
+        new Set(candidate.sourceEvidenceIds),
+        candidate.createdAt,
+      ),
+      createdAt: candidate.createdAt,
+      feedbackEvents: [
+        ...this.#store.feedbackEvents(candidate.knowledgeId).filter((event) =>
+          event.feedbackId !== proposed?.feedbackId &&
+          event.feedbackId !== excludeFeedbackId,
+        ),
+        ...(proposed === undefined ? [] : [proposed]),
+      ],
+      knowledgeId: candidate.knowledgeId,
+    });
   }
 
   async #search(
@@ -1305,20 +1484,13 @@ export class ContextRetrievalService {
     if (terms.length === 0) {
       return [];
     }
-    const anchorTerm = [...terms].sort(
-      (left, right) =>
-        right.length - left.length ||
-        left.localeCompare(right),
-    )[0];
-    if (anchorTerm === undefined) {
-      return [];
-    }
     const hits = await withTimeout(
       this.#retriever.search(
         {
           limit: SEARCH_RESULT_LIMIT,
+          match: "any",
           now,
-          text: anchorTerm,
+          text: terms.join(" "),
           ...(request.branch === undefined
             ? {}
             : {

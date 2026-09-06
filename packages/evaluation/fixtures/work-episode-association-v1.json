@@ -1,4 +1,6 @@
 {
+  "evidenceKind": "synthetic",
+  "evaluationPurpose": "regression",
   "datasetId": "work-episode-association",
   "datasetVersion": 1,
   "cases": [

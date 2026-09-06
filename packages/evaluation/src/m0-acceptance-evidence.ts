@@ -59,6 +59,10 @@ export const m0AcceptanceEvidenceSchema = z
           .array(digestSchema)
           .min(1)
           .max(50),
+        reportArtifacts: z.array(z.object({
+          path: z.string().min(1).max(512),
+          sha256: digestSchema,
+        }).strict()).max(50).optional(),
         runtimeDigest: digestSchema,
       })
       .strict(),

@@ -146,6 +146,23 @@ const seedLifecycle = async (
     sourceEventId: "correction",
     timestamp: "2026-09-01T00:10:00.000Z",
     trust: "user",
+    worktree: "C:\\repo",
+  });
+  const operation = await queue.enqueue({
+    adapter: "copilot-cli",
+    adapterVersion: "1.0.82-0",
+    branch: "feat/testing",
+    eventType: "tool.started",
+    content: { toolArguments: { command: "npm test -- --run tests\\logging.test.ts" } },
+    operationId: "verify-correction",
+    parentEventId: correction.envelope.event.eventId,
+    repoId: "repo-1",
+    sessionId: "session-correction",
+    sourceEventId: "verification-start",
+    timestamp: "2026-09-01T00:15:00.000Z",
+    toolName: "powershell",
+    trust: "tool",
+    worktree: "C:\\repo",
   });
   const verification = await queue.enqueue({
     adapter: "copilot-cli",
@@ -153,14 +170,22 @@ const seedLifecycle = async (
     branch: "feat/testing",
     completionStatus: "succeeded",
     eventType: "test.completed",
+    operationId: "verify-correction",
+    parentEventId: operation.envelope.event.eventId,
     repoId: "repo-1",
     sessionId: "session-correction",
     sourceEventId: "verification",
     timestamp: "2026-09-01T00:20:00.000Z",
     trust: "tool",
+    worktree: "C:\\repo",
+    verificationBinding: {
+      correctionEventId: correction.envelope.event.eventId,
+      operationEventId: operation.envelope.event.eventId,
+    },
   });
   for (const item of [
     correction,
+    operation,
     verification,
   ]) {
     expect(store.ingestQueueItem(item).status).toBe("stored");
@@ -171,6 +196,7 @@ const seedLifecycle = async (
     episodes: [
       workEpisode([
         correction.envelope.event.eventId,
+        operation.envelope.event.eventId,
         verification.envelope.event.eventId,
       ]),
     ],

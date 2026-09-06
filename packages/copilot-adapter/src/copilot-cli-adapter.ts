@@ -341,6 +341,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
   readonly #paths: WindowsProvenLoopPaths;
   readonly #platform: NodeJS.Platform;
   readonly #writeLocalMarketplaceAssets: boolean;
+  #storageMaintenanceActive = false;
 
   public constructor(options: CopilotCliAdapterOptions) {
     this.#paths = resolveWindowsProvenLoopPaths(options.dataRoot);
@@ -439,7 +440,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
                 state.installed &&
                 registration.pluginInstalled &&
                 registration.pluginEnabled &&
-                registration.registrationError === undefined
+                registration.registrationError === undefined &&
+                pluginIssue === undefined
               )
             ),
           ...(lastError === undefined
@@ -482,7 +484,55 @@ implements AgentAdapter<CopilotEventMappingResult> {
   }
 
   async #upgrade(): Promise<AdapterOperationResult> {
-    await this.#initializeCoreStorage();
+    if (!await pathExists(this.#paths.database) && !(await this.#readState()).installed) {
+      return this.#install();
+    }
+    await this.#ensureOwnedDataRoot();
+    const workerLease = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsCaptureWorkerLeaseName(this.#paths.root),
+    ).tryAcquire();
+    if (workerLease === undefined) {
+      throw new Error("Cannot upgrade while the capture worker is active; retry after it finishes.");
+    }
+    let projectionLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
+    let observationsLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
+    let shutdown: Awaited<ReturnType<typeof beginExtensionShutdown>> | undefined;
+    try {
+      projectionLease = await new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "knowledge-projection"),
+      ).tryAcquire();
+      if (projectionLease === undefined) {
+        throw new Error("Cannot upgrade while retrieval, deletion, or projection is active.");
+      }
+      observationsLease = await new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "observations"),
+      ).tryAcquire();
+      if (observationsLease === undefined) {
+        throw new Error("Cannot upgrade while an observation collector is active.");
+      }
+      shutdown = await beginExtensionShutdown(this.#paths.root);
+      await waitForActiveExtensionsToStop(this.#paths.root, EXTENSION_SHUTDOWN_TIMEOUT_MS);
+      this.#storageMaintenanceActive = true;
+      return await this.#upgradeInMaintenance();
+    } finally {
+      this.#storageMaintenanceActive = false;
+      try {
+        await shutdown?.cancel();
+      } finally {
+        try {
+          await observationsLease?.release();
+        } finally {
+          try {
+            await projectionLease?.release();
+          } finally {
+            await workerLease.release();
+          }
+        }
+      }
+    }
+  }
+
+  async #upgradeInMaintenance(): Promise<AdapterOperationResult> {
     const version = await this.#detectCopilotVersion();
     if (
       version === undefined ||
@@ -500,21 +550,42 @@ implements AgentAdapter<CopilotEventMappingResult> {
     await this.#prepareMarketplaceSource();
     const registration = await this.#requireRegistrationStatus();
     const stateBefore = await this.#readState();
-    if (
-      !registration.marketplaceRegistered ||
-      !registration.pluginInstalled
-    ) {
-      return this.#install();
-    }
-    if (registration.marketplaceSource === undefined) {
+    if (registration.marketplaceRegistered && registration.marketplaceSource === undefined) {
       throw new Error(
         "Cannot safely upgrade because the current ProvenLoop marketplace source is unavailable.",
       );
     }
+    const previousSchema = await pathExists(this.#paths.database)
+      ? CanonicalSqliteStore.databaseVersion(this.#paths.database)
+      : 0;
+    const schemaChanges = previousSchema > 0 &&
+      previousSchema < (DEFAULT_SQLITE_MIGRATIONS.at(-1)?.version ?? 0);
+    const snapshotPath = schemaChanges
+      ? join(this.#paths.data, "backups", `pre-upgrade-${randomUUID()}.db`)
+      : undefined;
+    if (snapshotPath !== undefined) {
+      await CanonicalSqliteStore.backupDatabase(
+        this.#paths.database, snapshotPath,
+        { runtimeVersion: registration.pluginVersion ?? "unknown" },
+      );
+      if (await pathExists(this.#integrationLocatorPath)) {
+        await writeFile(
+          `${snapshotPath}.runtime.json`,
+          await readFile(this.#integrationLocatorPath, "utf8"),
+          "utf8",
+        );
+      }
+    }
+    await this.#initializeCoreStorage();
+    if (schemaChanges) {
+      await this.#markProjectionDirty();
+    }
+    const migratedDigest = snapshotPath === undefined ? undefined :
+      CanonicalSqliteStore.databaseFingerprint(this.#paths.database);
     let replacementStarted = false;
     try {
       if (
-        marketplaceSourceMatches(
+        registration.marketplaceRegistered && marketplaceSourceMatches(
           registration.marketplaceSource,
           this.#marketplaceSource,
         )
@@ -530,6 +601,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         );
       }
       replacementStarted = true;
+      if (registration.pluginInstalled) {
       await this.#runRequired(
         [
           "plugin",
@@ -538,6 +610,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
         ],
         "plugin uninstall before upgrade",
       );
+      }
+      if (registration.marketplaceRegistered) {
       await this.#runRequired(
         [
           "plugin",
@@ -547,6 +621,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         ],
         "marketplace replacement before upgrade",
       );
+      }
       await this.#ensureMarketplaceRegistered();
       await this.#runRequired(
         [
@@ -568,21 +643,57 @@ implements AgentAdapter<CopilotEventMappingResult> {
       await this.#writeState(state);
       await this.#writeRuntimeLocator();
       return {
-        message: "ProvenLoop Copilot integration upgraded.",
+        message: "ProvenLoop Copilot integration upgraded. Restart existing Copilot sessions to load the matching runtime.",
         status: "changed",
       };
     } catch (error) {
-      if (!replacementStarted) {
+      if (!replacementStarted && snapshotPath === undefined) {
         throw error;
       }
       let restorationError: unknown;
       try {
-        await this.#restoreRegistration(registration);
+        if (snapshotPath !== undefined) {
+          if (
+            CanonicalSqliteStore.databaseFingerprint(this.#paths.database) !== migratedDigest
+          ) {
+            let safeState = stateBefore;
+            for (const capability of PROVENLOOP_CAPABILITIES) {
+              safeState = setPersistedCapability(safeState, capability, {
+                enabled: false,
+                lastError: "Upgrade recovery requires review; canonical data changed after migration.",
+              }, this.#now());
+            }
+            await this.#writeState(safeState);
+            throw new Error(
+              `New canonical writes were preserved. Automatic database rollback was refused; verified snapshot: ${snapshotPath}.`,
+              { cause: error },
+            );
+          }
+          await CanonicalSqliteStore.restoreFromBackup(snapshotPath, this.#paths.database, {
+            migrations: DEFAULT_SQLITE_MIGRATIONS.slice(0, previousSchema),
+            ...(migratedDigest === undefined ? {} : {
+              expectedTargetFingerprint: migratedDigest,
+            }),
+          });
+        }
+        if (replacementStarted) {
+          await this.#restoreRegistration(registration);
+        }
         await this.#writeState(stateBefore);
       } catch (restoreError) {
         restorationError = restoreError;
       }
       if (restorationError !== undefined) {
+        if (snapshotPath !== undefined) {
+          let paused = stateBefore;
+          for (const capability of PROVENLOOP_CAPABILITIES) {
+            paused = setPersistedCapability(paused, capability, {
+              enabled: false,
+              lastError: "Schema upgrade recovery is incomplete; review the retained snapshot before resuming.",
+            }, this.#now());
+          }
+          await this.#writeState(paused);
+        }
         throw new Error(
           "ProvenLoop upgrade failed and could not restore the prior integration: " +
             sanitizeDiagnostic(restorationError),
@@ -592,7 +703,9 @@ implements AgentAdapter<CopilotEventMappingResult> {
         );
       }
       throw new Error(
-        "ProvenLoop upgrade failed; the prior integration was restored: " +
+        (snapshotPath === undefined
+          ? "ProvenLoop upgrade failed; the prior integration was restored: "
+          : `ProvenLoop upgrade failed; registration and schema ${previousSchema} were restored. Use the previous runtime recorded at ${snapshotPath}.manifest.json or retry upgrade: `) +
           sanitizeDiagnostic(error),
         {
           cause: error,
@@ -604,8 +717,21 @@ implements AgentAdapter<CopilotEventMappingResult> {
   async #install(
     options: AdapterInstallOptions = {},
   ): Promise<AdapterOperationResult> {
-    await this.#initializeCoreStorage();
     let state = await this.#readState();
+    if (await this.#databaseNeedsMigration()) {
+      const result = await this.#upgrade();
+      if (result.status === "incompatible") {
+        return result;
+      }
+      if (!state.installed && options.autoCollect !== false) {
+        await this.#enable("capture");
+        await this.#enable("worker");
+      } else if (options.autoCollect === false) {
+        await this.#disable("capture");
+        await this.#disable("worker");
+      }
+      return result;
+    }
     if (state.installed) {
       const registration = await this.#requireRegistrationStatus();
       if (
@@ -627,6 +753,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
         return result;
       }
     }
+    await this.#initializeCoreStorage();
     await this.#writeRuntimeLocator();
     const stateWasInstalled = state.installed;
     const collectionBefore = {
@@ -830,18 +957,20 @@ implements AgentAdapter<CopilotEventMappingResult> {
       };
     }
     const alreadyEnabled = current.enabled;
-    if (capability === "capture") {
+    if (PLUGIN_CAPABILITIES.has(capability)) {
       await this.#assertOwnedDataRoot();
       try {
         await this.#assertPluginCommandSupport();
-        const experimentalSetting = await ensureExperimentalSetting(
-          this.#settingsPath(),
-          state.experimentalSetting,
-        );
-        state = stateWith(state, this.#now(), {
-          experimentalSetting,
-        });
-        await this.#writeState(state);
+        if (capability === "capture") {
+          const experimentalSetting = await ensureExperimentalSetting(
+            this.#settingsPath(),
+            state.experimentalSetting,
+          );
+          state = stateWith(state, this.#now(), {
+            experimentalSetting,
+          });
+          await this.#writeState(state);
+        }
         await this.#writeRuntimeLocator();
         await this.#prepareMarketplaceSource();
         await this.#ensureMarketplaceRegistered();
@@ -926,6 +1055,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
         state.experimentalSetting,
       );
       state = clearExperimentalSettingState(state, this.#now());
+    }
+    if (PLUGIN_CAPABILITIES.has(capability)) {
       const pluginCapabilityEnabled = [...PLUGIN_CAPABILITIES].some(
         (candidate) => state.capabilities[candidate].enabled,
       );
@@ -974,6 +1105,9 @@ implements AgentAdapter<CopilotEventMappingResult> {
     let knowledgeLease: Awaited<
       ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
     >;
+    let observationsLease: Awaited<
+      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
+    >;
     let extensionShutdown:
       | Awaited<ReturnType<typeof beginExtensionShutdown>>
       | undefined;
@@ -1001,6 +1135,12 @@ implements AgentAdapter<CopilotEventMappingResult> {
           throw new Error(
             "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
           );
+        }
+        observationsLease = await new WindowsNamedPipeLeaseProvider(
+          await resolveWindowsProvenLoopLeaseName(this.#paths.root, "observations"),
+        ).tryAcquire();
+        if (observationsLease === undefined) {
+          throw new Error("Cannot purge while an observation collector is active.");
         }
         extensionShutdown = await beginExtensionShutdown(
           this.#paths.root,
@@ -1094,9 +1234,19 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: changed || options.purge ? "changed" : "unchanged",
       };
     } finally {
-      await extensionShutdown?.cancel();
-      await knowledgeLease?.release();
-      await workerLease?.release();
+      try {
+        await extensionShutdown?.cancel();
+      } finally {
+        try {
+          await observationsLease?.release();
+        } finally {
+          try {
+            await knowledgeLease?.release();
+          } finally {
+            await workerLease?.release();
+          }
+        }
+      }
     }
   }
 
@@ -1589,8 +1739,19 @@ implements AgentAdapter<CopilotEventMappingResult> {
     ]);
     const queue = new WindowsCaptureQueue(this.#paths.queue);
     await queue.initialize();
-    const store = new CanonicalSqliteStore(this.#paths.database);
+    if (!this.#storageMaintenanceActive && await this.#databaseNeedsMigration()) {
+      throw new Error("A database migration requires a maintenance upgrade and verified snapshot; run provenloop upgrade.");
+    }
+    const store = new CanonicalSqliteStore(this.#paths.database, {
+      allowSchemaMigration: this.#storageMaintenanceActive,
+    });
     store.close();
+  }
+
+  async #databaseNeedsMigration(): Promise<boolean> {
+    return await pathExists(this.#paths.database) &&
+      CanonicalSqliteStore.databaseVersion(this.#paths.database) <
+        (DEFAULT_SQLITE_MIGRATIONS.at(-1)?.version ?? 0);
   }
 
   async #detectCopilotVersion(): Promise<string | undefined> {

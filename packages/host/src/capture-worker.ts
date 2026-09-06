@@ -76,6 +76,7 @@ export type CaptureWorkerRunResult =
       readonly status: "completed";
       readonly stored: number;
       readonly unsupported: number;
+      readonly quarantinedItems?: number;
     };
 
 export class InvalidCaptureWorkerConfigurationError extends Error {
@@ -182,7 +183,6 @@ export class CaptureWorker {
     let retried = 0;
     let stored = 0;
     let unsupported = 0;
-    let queuePressureDrainUsed = false;
     try {
       const recoveredClaims =
         (await this.#queue.recoverExpiredClaims()).length;
@@ -192,11 +192,7 @@ export class CaptureWorker {
         }
         const admission = await this.#admission();
         if (!admission.allowed) {
-          if (
-            queuePressureOnly(admission) &&
-            !queuePressureDrainUsed
-          ) {
-            queuePressureDrainUsed = true;
+          if (queuePressureOnly(admission)) {
             circuitOpenReasons = admission.reasons;
           } else {
             circuitOpenReasons = admission.reasons;

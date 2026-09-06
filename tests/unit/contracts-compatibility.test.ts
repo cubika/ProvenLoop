@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 import {
   ARTIFACT_FORMAT_VERSIONS,
   classifyRawEvent,
+  contextUseRecordSchema,
   CURRENT_SCHEMA_VERSIONS,
   evidenceLedgerEntrySchema,
+  feedbackEventSchema,
   gateResultSchema,
   rawEventSchema,
   replaySpecSchema,
@@ -173,6 +175,145 @@ describe("schema version compatibility", () => {
 
     expect(result.associationEvidenceIds).toEqual([]);
     expect(result.sourceEventIds).toEqual([]);
+  });
+
+  it("leaves legacy context observations unknown instead of assuming delivery", () => {
+    const record = contextUseRecordSchema.parse({
+      schemaVersion: 1,
+      appliedKnowledgeIds: [],
+      candidateKnowledgeIds: [],
+      createdAt: "2026-09-05T00:00:00.000Z",
+      latencyMs: 0,
+      renderedTokens: 0,
+      requestId: "request-legacy",
+      returnedKnowledgeIds: [],
+      sessionId: "session-legacy",
+    });
+
+    expect(record.retrievalStatus).toBeUndefined();
+    expect(record.repoId).toBeUndefined();
+    expect(record.codeVersion).toBeUndefined();
+    expect(record.updatedAt).toBeUndefined();
+    expect(
+      contextUseRecordSchema.parse({
+        ...record,
+        branch: "main",
+        codeVersion: "revision-1",
+        repoId: "repo-1",
+        retrievalStatus: "disabled",
+      }),
+    ).toMatchObject({
+      retrievalStatus: "disabled",
+      repoId: "repo-1",
+    });
+    expect(
+      contextUseRecordSchema.safeParse({
+        ...record,
+        retrievalStatus: "successful_task",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts typed branch context feedback without treating it as knowledge", () => {
+    const feedback = feedbackEventSchema.parse({
+      schemaVersion: 1,
+      evidenceRef: "request-1",
+      feedbackId: "feedback-branch-1",
+      kind: "strengthen",
+      source: "user",
+      targetId: "branch-1",
+      targetType: "branch_context",
+      timestamp: "2026-09-05T00:00:00.000Z",
+    });
+
+    expect(feedback.targetType).toBe("branch_context");
+  });
+
+  it("preserves explicit proof and dispute-resolution references", () => {
+    const input = {
+      schemaVersion: 1,
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      eventId: "verification-1",
+      eventType: "test.completed",
+      timestamp: "2026-09-05T00:00:00.000Z",
+      trust: "tool",
+      verificationBinding: {
+        correctionEventId: "correction-1",
+        operationEventId: "operation-1",
+      },
+    };
+    expect(rawEventSchema.parse(input).verificationBinding).toEqual({
+      correctionEventId: "correction-1",
+      operationEventId: "operation-1",
+    });
+    expect(
+      rawEventSchema.safeParse({
+        ...input,
+        verificationBinding: {
+          correctionEventId: "correction-1",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      feedbackEventSchema.parse({
+        schemaVersion: 1,
+        evidenceRef: "user-confirmation-1",
+        feedbackId: "confirmation-1",
+        kind: "confirm",
+        resolvesEvidenceIds: ["counterevidence-1"],
+        source: "user",
+        targetId: "knowledge-1",
+        targetType: "knowledge",
+        timestamp: "2026-09-05T00:00:00.000Z",
+      }).resolvesEvidenceIds,
+    ).toEqual(["counterevidence-1"]);
+    expect(
+      classifyRawEvent({
+        ...input,
+        eventType: "git.head_changed",
+        trust: "system",
+        verificationBinding: undefined,
+      }).status,
+    ).toBe("supported");
+  });
+
+  it("retains bounded capture completeness and operation evidence", () => {
+    const record = rawEventSchema.parse({
+      schemaVersion: 1,
+      adapter: "copilot-cli",
+      adapterVersion: "1.0.82-0",
+      eventId: "event-quality",
+      eventType: "tool.completed",
+      timestamp: "2026-09-05T00:00:00.000Z",
+      trust: "tool",
+      repositoryState: "known_repo",
+      captureQuality: {
+        schemaVersion: 1,
+        omittedFields: [],
+        truncatedFields: ["tool.result"],
+        originalLengths: { "tool.result": 10_000 },
+      },
+      evidence: {
+        schemaVersion: 1,
+        kind: "command_verification",
+        repositoryState: "known_repo",
+        sourceStartEventId: "operation-1",
+        sourceCompleteEventId: "completed-1",
+        commandFamily: "npm-test",
+        exitCode: 0,
+      },
+    });
+
+    expect(record.captureQuality?.originalLengths["tool.result"]).toBe(10_000);
+    expect(record.evidence?.sourceStartEventId).toBe("operation-1");
+    expect(rawEventSchema.safeParse({
+      ...record,
+      captureQuality: {
+        ...record.captureQuality,
+        originalLengths: { "tool.result": -1 },
+      },
+    }).success).toBe(false);
   });
 });
 

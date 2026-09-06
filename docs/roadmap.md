@@ -1,16 +1,26 @@
 # ProvenLoop Implementation Roadmap
 
-**Status:** Proposed execution plan  
-**Updated:** 2026-08-29
+**Status:** Milestone plan; implementation is not release acceptance
+
+**Updated:** 2026-09-06
 
 ## 1. Delivery strategy
 
 Build the learning loop in evidence order. Do not begin with automatic Skill
-generation. First prove that ProvenLoop can capture work safely, reconstruct a
-task, link it to real outcomes, and retrieve useful knowledge without adding
-noise.
+generation. First deliver a narrow useful path: an explicitly confirmed scoped
+rule, retrieval in a later Session, explanation, explicit feedback, and local
+observations. Safe capture and strict evidence qualification support that
+path; automated delayed outcome discovery is not a prerequisite.
 
-## 2. Phase 0: Observation foundation
+The `0.1.0-alpha.0.8` Windows Design Partner Preview evidence candidate includes
+M0-M2 repairs, Knowledge review, trusted feedback, local observations, and
+bounded current-session reconciliation. `0.1.0-alpha.1` remains an unapproved
+quality-release target; new-version validation and field acceptance require
+retained evidence. Synthetic replay validates regressions, observational use
+records behavior, and controlled comparisons establish benefit. These are
+different evidence levels.
+
+## 2. M0: Observation foundation
 
 Deliver:
 
@@ -19,7 +29,7 @@ Deliver:
 - Copilot Extension session-event ingestion;
 - canonical event schema and validation;
 - write-time secret redaction;
-- persistent queue and single shared worker;
+- bounded persistent queue processing and a leased shared worker;
 - SQLite event store;
 - repository, branch, session, commit, and tool identities;
 - lightweight evaluation runner contract;
@@ -45,19 +55,21 @@ This phase does not build a full sandbox, dashboard, annotation platform, or
 M3-M6 evaluation suite. It establishes the stable evaluation protocol that
 later phases extend.
 
-## 3. Phase 1: Work Episodes and safe memory
+## 3. M1: Trusted continuity memory
 
 Deliver:
 
 - Work Episode builder;
 - branch context extraction;
-- explicit remember/correct/forget operations;
+- explicit remember/correct/forget and review/confirm/replace/revoke operations;
 - topic-keyed Knowledge Cards;
 - SQLite FTS5 retrieval;
 - scope filtering;
 - `provenloop_context`;
 - `provenloop_explain`;
-- per-session deduplication and token ceiling.
+- per-session deduplication and token ceiling;
+- trusted live Session identity, MCP instructions, and explicit feedback approval;
+- privacy-minimized observation summaries and export.
 
 Acceptance:
 
@@ -67,59 +79,65 @@ Acceptance:
 - context returns no more than the configured budget;
 - users can trace and delete every retrieved item.
 
-## 4. Phase 2: Outcome Linker
+## 4. M2: Evidence-backed correction learning
 
 Deliver:
 
-- test and build result normalization;
-- commit, PR, review, issue, fix, and revert links;
-- user-correction detection;
-- outcome confidence model;
-- retrospective analyzer;
-- strengthen, weaken, dispute, and supersede feedback;
-- baseline behavior metrics.
+- explicit Correction Keys and predeclared Correction Opportunities;
+- supported native event normalization through the production capture path;
+- trusted correction/operation/verification binding with complete parent evidence;
+- evidence tiers, deterministic admission, and explainable supersession;
+- direct linked counterevidence and current explicit user resolution;
+- synthetic recurrence regressions and separate real-use observation.
 
 Acceptance:
 
-- a later revert weakens the earlier episode;
-- a review correction identifies the earlier missing check;
+- unrelated tests, incomplete targets, and unknown workspace identity cannot verify a rule;
+- old user confirmation cannot resolve new counterevidence;
 - conflicting evidence pauses automatic retrieval;
-- every retrospective conclusion cites concrete evidence;
-- unsupported model inference cannot become active knowledge.
+- recalled guidance cannot become independent support for itself;
+- offered context, reported adoption, and successful outcomes stay distinct.
 
-This phase is ProvenLoop's first major product differentiator.
+M1 + M2 form the first product-validation scope. Built-in 32-pair continuation
+and 24-pair recurrence datasets are synthetic; their percentages do not satisfy
+the real-effect acceptance requirement.
 
-## 5. Phase 3: Skill Candidate preview
+## 5. M3: Delayed Outcome Evidence Learning — future
 
 Deliver:
 
-- cross-episode pattern mining;
-- stable Skill keys;
-- generated Skill draft with triggers, negative triggers, procedure,
-  permissions, validation, and provenance;
-- secret and prompt-injection scans;
-- candidate diff;
-- approve, reject, edit, and expire actions;
-- no automatic activation.
+- automated PR, review, CI, fix, bug, and revert discovery/association;
+- direct, plausible, uncertain, and unrelated link strengths;
+- configurable outcome qualification and censored windows;
+- strengthen, weaken, dispute, and supersede from linked evidence.
 
 Acceptance:
 
-- single-event lessons remain Knowledge Cards;
-- repeated verified workflows may produce one consolidated candidate;
-- a candidate contains no temporary path or credential;
-- candidate source episodes are inspectable;
-- rejection prevents repeated regeneration without new evidence.
+- later same-cause failures can revise earlier apparent success;
+- uncertain links cannot independently change Knowledge authority;
+- uncompleted observation windows do not count as final success;
+- every outcome link is explainable and correctable.
 
-## 6. Phase 4: Evaluation, canary, and rollback
+## 6. M4: Deep Retrospective — future
+
+Deliver cross-Episode comparisons, multiple hypotheses, local evidence
+expansion, opt-in external research, counterexample search, and Insight
+Candidates. Evaluate evidence completeness, unsupported causality, and
+held-out usefulness. A plausible summary cannot activate Knowledge.
+
+## 7. M5: Evaluated Playbooks — future
 
 Deliver:
 
+- cross-Episode pattern mining and versioned Skill drafts;
+- triggers, negative triggers, permissions, validation, and provenance;
+- secret/prompt-injection scans and human-readable candidate diffs;
 - historical replay dataset using the existing evaluation runner;
 - held-out episode selection;
 - no-memory, memory-only, old-Skill, and candidate-Skill comparisons;
 - trigger negative tests;
 - sandbox execution provider for the existing runner;
-- immutable Skill registry;
+- explicit approval and an immutable Playbook registry;
 - canary activation;
 - one-command rollback.
 
@@ -129,9 +147,16 @@ Acceptance:
 - promotion requires measurable improvement over baseline;
 - safety and scope regressions block promotion;
 - approved versions are immutable;
-- rollback restores the prior active version and records an audit event.
+- rollback restores the prior active version and records an audit event;
+- single-event lessons remain Knowledge; no automatic activation is allowed.
 
-## 7. Phase 5: Optional ecosystem expansion
+### M6: Additional Agent adapters — future
+
+Add Reader and Observer adapters, shared scope/feedback semantics,
+cross-Agent identity and deduplication, and capability-specific degradation.
+No adapter may invent events it cannot observe.
+
+### Other optional expansion
 
 Possible work:
 
@@ -146,27 +171,27 @@ Possible work:
 
 None of these is required to validate the core product.
 
-## 8. MVP cut
+## 8. First-use cut and MVP validation
 
 The recommended first demonstrable product includes:
 
 ```text
-Copilot events + Git + tests
+explicitly user-confirmed scoped rule
           |
           v
-     Work Episode
+canonical Knowledge + Explain
           |
           v
-     Outcome Linker
+retrieval in a later Session
           |
           v
-evidence-backed Knowledge Card
+explicit user feedback / reported adoption
           |
           v
-retrieval in a later session
+local observational summary
           |
           v
-measured reduction in correction
+later controlled evaluation of benefit
 ```
 
 Must-have:
@@ -174,29 +199,37 @@ Must-have:
 - one-command plugin installation;
 - non-blocking capture;
 - repository and branch identity;
-- cross-session Work Episode;
-- correction and test outcome recognition;
+- safe cross-session identity and Work Episode projection;
+- correction and test recognition with strict operation proof;
 - scoped Knowledge Card;
 - MCP retrieval and explanation;
 - feedback and deletion;
-- metrics for corrections, retries, and repeated context.
+- review/confirm/replace/revoke and explicit adoption controls;
+- bounded observation with missing outcomes represented as unknown.
 
-Demonstration-only extension:
+Not required for the first useful demonstration:
 
-- generate one Skill Candidate and show its evidence;
-- do not automatically activate it.
+- automated delayed Outcome linking or retrospective analysis;
+- a Skill Candidate;
+- productivity numbers unsupported by controlled measurements.
 
 ## 9. Demonstration scenario
 
-1. In the first session, Copilot assumes Jest. The user corrects it to inspect
-   package scripts and use targeted Vitest. The test succeeds.
-2. ProvenLoop links the correction and successful test into one Work Episode,
-   then qualifies repository-scoped testing guidance.
-3. In a new session, Copilot receives only that relevant guidance and chooses
-   the correct targeted test without another correction.
-4. Metrics show fewer failed commands and zero repeated user correction.
-5. After another independent success, ProvenLoop may show a Skill Candidate,
-   but it remains inactive pending evaluation and approval.
+1. In the repository, explicitly remember “inspect package scripts and use the
+   targeted test” with a narrow applicability condition.
+2. Review the rule, source, scope, and current digest. Correct, replace, revoke,
+   or forget it if needed.
+3. In a later Copilot Session, request relevant Context and Explain. Absence of
+   a match or trusted identity is reported honestly.
+4. After trying the rule, approve the exact feedback proposal yourself. Report
+   adoption separately from helpfulness.
+5. Inspect local observations. They show recorded use, not a counterfactual
+   claim of fewer errors or time saved.
+
+See the [executable workflow](../README.md#first-useful-workflow). An optional
+automatic-learning demonstration must capture the real user correction,
+trusted operation, parent chain, and successful bound verification through the
+installed producer path. A domain fixture or same-Episode success is insufficient.
 
 ## 10. Explicitly deferred
 
@@ -228,7 +261,7 @@ Demonstration-only extension:
 - repository identity;
 - event normalization;
 - episode builder;
-- outcome linker.
+- correction proof and admission; delayed Outcome linking remains M3.
 
 ### Package C: Retrieval
 
@@ -257,7 +290,7 @@ Demonstration-only extension:
 
 ## 12. Go/no-go criteria
 
-Continue beyond Phase 2 only if real usage demonstrates:
+Broader rollout and increasingly autonomous learning require real evidence of:
 
 - correct cross-session episode reconstruction;
 - useful retrieval precision;
@@ -266,5 +299,8 @@ Continue beyond Phase 2 only if real usage demonstrates:
 - acceptable interactive latency;
 - reliable provenance and deletion.
 
-If these are not achieved, Skill generation would only automate low-quality
-learning and should remain disabled.
+These requirements do not prevent a safe, explicitly bounded first-use
+observation pilot. They do prevent claims of demonstrated benefit or quality
+release approval. The current MVP gate retains a blocked controlled-field-effect
+check; neither synthetic fixtures nor observational exports can clear it.
+Skill generation remains deferred rather than automating unproven learning.

@@ -21,6 +21,7 @@ import {
 
 import {
   createDefaultCopilotAdapterState,
+  setPersistedCapability,
   writeCopilotAdapterState,
 } from "@provenloop/copilot-adapter";
 import {
@@ -76,7 +77,12 @@ describe("M0 daily acceptance", () => {
     );
     await writeCopilotAdapterState(
       paths.adapterState,
-      createDefaultCopilotAdapterState(now),
+      setPersistedCapability(
+        { ...createDefaultCopilotAdapterState(now), installed: true },
+        "worker",
+        { enabled: true },
+        now,
+      ),
     );
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
@@ -176,7 +182,7 @@ describe("M0 daily acceptance", () => {
     expect(completed).toMatchObject({
       runDirectory: started.runDirectory,
       runId: started.runId,
-      status: "incomplete",
+      status: "pass",
     });
     for (const name of [
       "capture-metrics.json",
@@ -193,7 +199,23 @@ describe("M0 daily acceptance", () => {
       ).resolves.toBeUndefined();
     }
     const report = await readFile(completed.reportPath, "utf8");
-    expect(report).toContain('"status": "incomplete"');
+    expect(JSON.parse(report)).toMatchObject({
+      status: "pass",
+      evidenceKind: "observational",
+      observationCompleted: true,
+      releaseReadiness: "not_evaluated",
+    });
+    expect(JSON.parse(await readFile(
+      join(completed.runDirectory, "guardrails.json"),
+      "utf8",
+    ))).toMatchObject({
+      foregroundBlockingFailureCount: null,
+      missingRequiredEventCount: null,
+      malformedEventCount: 0,
+      reconciliationFailureCount: 0,
+      crossRepositoryLeakageCount: null,
+      deletionPropagationFailureCount: null,
+    });
     expect(report).not.toContain("Prompt");
     expect(report).not.toContain("tool arguments");
     const retainedRun = await readFile(

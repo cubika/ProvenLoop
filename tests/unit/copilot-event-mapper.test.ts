@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { captureQualitySchema } from "@provenloop/contracts";
+import { createCaptureEnvelope } from "@provenloop/domain";
 import {
   BoundedCaptureBuffer,
   captureGapEvent,
@@ -82,6 +84,15 @@ describe("Copilot event mapping", () => {
         messageId: "message-1",
       },
       "agent.message",
+    ],
+    [
+      "assistant.turn_start",
+      {
+        turnId: "turn-1",
+        interactionId: "interaction-1",
+        model: "gpt-5.6-sol",
+      },
+      "agent.turn_started",
     ],
     [
       "assistant.turn_end",
@@ -193,8 +204,7 @@ describe("Copilot event mapping", () => {
         completionStatus: "running",
         content: {
           toolArguments: {
-            kind: "object",
-            status: "omitted_in_callback",
+            command: "npm test",
           },
         },
         eventType: "tool.started",
@@ -262,7 +272,7 @@ describe("Copilot event mapping", () => {
     }
   });
 
-  it("marks structured tool result fields as omitted", () => {
+  it("preserves known content blocks and marks unknown structured fields as omitted", () => {
     const result = createMapper().map(
       event("tool.execution_complete", {
         result: {
@@ -270,6 +280,7 @@ describe("Copilot event mapping", () => {
           contents: [
             {
               type: "text",
+              text: "displayed output",
             },
           ],
           structuredContent: {
@@ -287,10 +298,7 @@ describe("Copilot event mapping", () => {
         content: {
           toolResult: {
             content: "ok",
-            contentBlocks: {
-              itemCount: 1,
-              status: "omitted_in_callback",
-            },
+            contents: [{ type: "text", text: "displayed output" }],
             structuredContent: {
               kind: "object",
               status: "omitted_in_callback",
@@ -317,6 +325,42 @@ describe("Copilot event mapping", () => {
         completionStatus: "cancelled",
       },
     });
+  });
+
+  it.each(["truncated", "omitted"] as const)("bounds %s quality fields before envelope validation", (kind) => {
+    const text = "x".repeat(128);
+    const arrays = Object.fromEntries(["paths", "files", "targets", "changedFiles"].map((key) => [
+      key, Array.from({ length: 32 }, () => kind === "truncated" ? text : {}),
+    ]));
+    const mapped = createMapper().map(event("tool.execution_complete", {
+      success: true,
+      toolCallId: "quality-limit",
+      result: {
+        ...arrays, content: text, detailedContent: text,
+        structuredContent: { ...arrays, command: text },
+        contents: Array.from({ length: 32 }, () => ({
+          type: "terminal", text, cwd: text, shellId: text, outputFilePath: text, outputPreview: text,
+          ...(kind === "omitted" ? { exitCode: "invalid" } : {}),
+        })),
+      },
+    }));
+    if (mapped.status !== "mapped") throw new Error("Expected a mapped completion.");
+    const quality = captureQualitySchema.parse(mapped.value.captureQuality);
+    const field = kind === "truncated" ? "truncatedFields" : "omittedFields";
+    expect(quality[field]).toHaveLength(256);
+    expect(quality[field]).toContain(`captureQuality.${field}`);
+    expect(quality.originalLengths[`captureQuality.${field}`]).toBeGreaterThan(256);
+    expect(Object.keys(quality.originalLengths).length).toBeLessThanOrEqual(256);
+    const envelope = createCaptureEnvelope(mapped.value);
+    expect(envelope.event.captureQuality?.[field]).toContain(`captureQuality.${field}`);
+    const buffer = new BoundedCaptureBuffer({
+      maxBytes: Buffer.byteLength(JSON.stringify(mapped.value)) - 1,
+      maxItems: 10, maxGapContexts: 1, maxGapBytes: 4_096,
+    });
+    expect(buffer.offer(mapped.value).status).toBe("degraded");
+    const degraded = buffer.shift();
+    if (degraded === undefined) throw new Error("Expected a metadata-only event.");
+    expect(createCaptureEnvelope(degraded).event.captureQuality?.omittedFields).toContain("content");
   });
 
   it.each([
@@ -442,7 +486,7 @@ describe("Copilot event mapping", () => {
     });
   });
 
-  it("defers preliminary pending Git context updates", () => {
+  it("does not attribute a pending workspace switch to the old repository", () => {
     const mapper = createMapper();
     const pending = mapper.map(
       event("session.context_changed", {
@@ -461,8 +505,8 @@ describe("Copilot event mapping", () => {
     expect(next).toMatchObject({
       status: "mapped",
       value: {
-        branch: "feat/batch3-extension-capture",
-        worktree: "worktree-1",
+        repositoryState: "unknown",
+        worktree: "C:\\repo\\other",
       },
     });
   });
@@ -495,6 +539,12 @@ describe("Copilot event mapping", () => {
       issues: [
         "toolCallId must be a non-empty string.",
       ],
+    });
+  });
+
+  it.each([undefined, "", 42])("requires the native assistant turn-start turnId (%s)", (turnId) => {
+    expect(createMapper().map(event("assistant.turn_start", { turnId }))).toMatchObject({
+      status: "malformed", issues: ["turnId must be a non-empty string."],
     });
   });
 

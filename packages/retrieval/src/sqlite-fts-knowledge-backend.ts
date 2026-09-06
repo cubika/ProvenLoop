@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
+import { searchableText } from "./search-text.js";
 
 import type {
   KnowledgeBackend,
@@ -146,8 +147,8 @@ const validateProjection = (
   };
 };
 
-const ftsQuery = (text: string): string | undefined => {
-  const tokens = text
+const ftsQuery = (query: KnowledgeQuery): string | undefined => {
+  const tokens = query.text
     .normalize("NFKC")
     .toLocaleLowerCase("en-US")
     .match(/[\p{L}\p{N}_-]+/gu);
@@ -156,7 +157,7 @@ const ftsQuery = (text: string): string | undefined => {
   }
   return [...new Set(tokens)]
     .map((token) => `"${token.replaceAll("\"", "\"\"")}"`)
-    .join(" AND ");
+    .join(query.match === "any" ? " OR " : " AND ");
 };
 
 export interface SqliteFtsKnowledgeBackendOptions {
@@ -213,7 +214,28 @@ implements KnowledgeBackend {
         non_applicability UNINDEXED,
         tokenize = 'unicode61 remove_diacritics 2'
       );
+      CREATE TABLE IF NOT EXISTS knowledge_search_metadata (
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) STRICT;
     `);
+    const searchVersion = this.#database.prepare(
+      "SELECT value FROM knowledge_search_metadata WHERE name = 'format'",
+    ).get();
+    if (searchVersion?.value !== "2") {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        this.#rebuildFts();
+        this.#database.prepare(
+          "INSERT OR REPLACE INTO knowledge_search_metadata (name, value) VALUES ('format', '2')",
+        ).run();
+        this.#database.exec("COMMIT;");
+      } catch (error) {
+        this.#database.exec("ROLLBACK;");
+        this.#database.close();
+        throw error;
+      }
+    }
     this.#startReadWorker();
   }
 
@@ -506,7 +528,7 @@ implements KnowledgeBackend {
         new RangeError("Knowledge search limit must be positive."),
       );
     }
-    const match = ftsQuery(query.text);
+    const match = ftsQuery(query);
     if (match === undefined) {
       return Promise.resolve([]);
     }
@@ -556,7 +578,7 @@ implements KnowledgeBackend {
         "Knowledge search limit must be positive.",
       );
     }
-    const match = ftsQuery(query.text);
+    const match = ftsQuery(query);
     if (match === undefined) {
       return [];
     }
@@ -678,9 +700,9 @@ implements KnowledgeBackend {
     for (const record of records) {
       insert.run(
         record.knowledgeId,
-        record.topicKey,
-        record.content,
-        record.appliesWhen.join("\n"),
+        searchableText(record.topicKey),
+        searchableText(record.content),
+        searchableText(record.appliesWhen.join("\n")),
         record.nonApplicability.join("\n"),
       );
     }

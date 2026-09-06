@@ -55,6 +55,8 @@ const branchContinuationCaseSchema = z
 
 export const branchContinuationDatasetSchema = z
   .object({
+    evidenceKind: z.literal("synthetic").default("synthetic"),
+    evaluationPurpose: z.literal("regression").default("regression"),
     cases: z.array(branchContinuationCaseSchema).min(30).max(100),
     datasetId: z.string().min(1),
     datasetVersion: z.number().int().positive(),
@@ -124,6 +126,9 @@ export interface BranchContinuationMetrics {
 }
 
 export interface BranchContinuationEvaluationReport {
+  readonly evidenceKind: "synthetic";
+  readonly evaluationPurpose: "regression";
+  readonly fieldEffect: "not_established";
   readonly cases: readonly BranchContinuationCaseResult[];
   readonly datasetId: string;
   readonly datasetVersion: number;
@@ -584,6 +589,9 @@ export const evaluateBranchContinuationDataset = async (
       wrongInjections,
     };
     return {
+      evidenceKind: "synthetic",
+      evaluationPurpose: "regression",
+      fieldEffect: "not_established",
       cases: results,
       datasetId: parsed.datasetId,
       datasetVersion: parsed.datasetVersion,
@@ -618,6 +626,8 @@ export const renderBranchContinuationReport = (
   report: BranchContinuationEvaluationReport,
 ): string => [
   "# Branch Continuation Evaluation",
+  "",
+  "Synthetic regression only. Token, TTV and success observations are fixture inputs, not measured user benefits.",
   "",
   `- Dataset: \`${report.datasetId}\` v${report.datasetVersion}`,
   `- Status: **${report.status.toUpperCase()}**`,

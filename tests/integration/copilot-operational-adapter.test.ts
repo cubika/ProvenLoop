@@ -12,8 +12,10 @@ import {
   join,
   resolve,
 } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { PROVENLOOP_VERSION } from "@provenloop/contracts";
 
 import {
   CopilotCliAdapter,
@@ -32,8 +34,13 @@ import {
   waitForActiveExtensionsToStop,
   WindowsNamedPipeLeaseProvider,
 } from "@provenloop/platform-windows";
+import {
+  CanonicalSqliteStore,
+  DEFAULT_SQLITE_MIGRATIONS,
+} from "@provenloop/storage-sqlite";
 
 const temporaryDirectories: string[] = [];
+const releaseMarketplaceSource = `cubika/ProvenLoop#v${PROVENLOOP_VERSION}`;
 
 const createTemporaryDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(
@@ -65,7 +72,7 @@ class FakeCommandRunner implements CommandRunner {
   public marketplaceSource: string | undefined;
   public pluginEnabled = false;
   public pluginInstalled = false;
-  public pluginVersion = "0.1.0-alpha.0.7";
+  public pluginVersion: string = PROVENLOOP_VERSION;
   public providerResult: CommandResult = {
     exitCode: 0,
     stderr: "",
@@ -296,6 +303,24 @@ class BlockingVersionCommandRunner extends FakeCommandRunner {
   }
 }
 
+const installPreviousSchema = async (
+  root: string,
+  databasePath: string,
+): Promise<void> => {
+  const legacyPath = join(root, "legacy.db");
+  const backupPath = join(root, "legacy-backup.db");
+  const migrations = DEFAULT_SQLITE_MIGRATIONS.slice(0, -1);
+  const legacy = new CanonicalSqliteStore(legacyPath, { migrations });
+  await legacy.backupTo(backupPath);
+  legacy.close();
+  await CanonicalSqliteStore.restoreFromBackup(backupPath, databasePath, { migrations });
+  const data = new DatabaseSync(databasePath);
+  data.prepare(
+    "INSERT INTO metrics(metric_name,metric_value,dimensions_json,recorded_at) VALUES(?,?,?,?)",
+  ).run("retained", 1, "{}", "2026-09-01T00:00:00.000Z");
+  data.close();
+};
+
 describe("Copilot operational adapter", () => {
   it("installs idempotently and preserves JSONC settings", async () => {
     const root = await createTemporaryDirectory();
@@ -519,7 +544,7 @@ describe("Copilot operational adapter", () => {
     });
     expect(runner.calls).toContain(
       "copilot plugin marketplace add " +
-        "cubika/ProvenLoop#v0.1.0-alpha.0.7",
+        releaseMarketplaceSource,
     );
     const status = await adapter.status();
     expect(status.pluginInstalled).toBe(true);
@@ -561,6 +586,47 @@ describe("Copilot operational adapter", () => {
         enabled: false,
       }),
     ]);
+  });
+
+  it("re-enables retrieval without restarting capture after both were disabled", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+    await adapter.install();
+    await adapter.enable("retrieval");
+    await adapter.disable("retrieval");
+    await adapter.disable("capture");
+    expect(runner.pluginEnabled).toBe(false);
+    await adapter.enable("retrieval");
+    expect(runner.pluginEnabled).toBe(true);
+    const capabilities = (await adapter.capabilities()).capabilities;
+    expect(capabilities.find((entry) => entry.capability === "retrieval")
+      ?.enabled).toBe(true);
+    expect(capabilities.find((entry) => entry.capability === "capture")
+      ?.enabled).toBe(false);
+    await adapter.disable("retrieval");
+    expect(runner.pluginEnabled).toBe(false);
+  });
+
+  it("does not report plugin capabilities enabled after an external version mismatch", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"), environment: {}, platform: "win32",
+    });
+    await adapter.install();
+    await adapter.enable("retrieval");
+    runner.pluginVersion = "0.1.0-alpha.0.4";
+    const capabilities = (await adapter.capabilities()).capabilities;
+    expect(capabilities.find((entry) => entry.capability === "capture")?.enabled).toBe(false);
+    expect(capabilities.find((entry) => entry.capability === "retrieval")?.enabled).toBe(false);
   });
 
   it("serializes concurrent capability changes", async () => {
@@ -637,7 +703,7 @@ describe("Copilot operational adapter", () => {
       runner.marketplaceSource = "cubika/ProvenLoop#v0.1.0-alpha.0.4";
       runner.pluginVersion = "0.1.0-alpha.0.4";
       runner.failures.set(
-        "copilot plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.7",
+        `copilot plugin marketplace add ${releaseMarketplaceSource}`,
         {
           exitCode: 1,
           stderr: "network unavailable",
@@ -658,6 +724,114 @@ describe("Copilot operational adapter", () => {
         previousLocator,
       );
   });
+
+  it("snapshots the prior runtime/schema pair and restores it after a migration upgrade fails", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32",
+    });
+    await adapter.install();
+    await installPreviousSchema(root, databasePath);
+    runner.marketplaceSource = "cubika/ProvenLoop#v0.1.0-alpha.0.4";
+    runner.pluginVersion = "0.1.0-alpha.0.4";
+    runner.failures.set(
+      `copilot plugin marketplace add ${releaseMarketplaceSource}`,
+      { exitCode: 1, stderr: "simulated upgrade failure", stdout: "" },
+    );
+    await expect(adapter.upgrade()).rejects.toThrow("registration and schema");
+    expect(CanonicalSqliteStore.databaseVersion(databasePath)).toBe(
+      DEFAULT_SQLITE_MIGRATIONS.length - 1,
+    );
+    const backupRoot = join(dataRoot, "data", "backups");
+    const snapshot = (await readdir(backupRoot)).find((name) => name.endsWith(".db"));
+    if (snapshot === undefined) throw new Error("Expected the prior schema snapshot.");
+    expect(await CanonicalSqliteStore.verifyBackup(join(backupRoot, snapshot)))
+      .toMatchObject({
+        runtimeVersion: "0.1.0-alpha.0.4",
+        schemaVersion: DEFAULT_SQLITE_MIGRATIONS.length - 1,
+      });
+    const data = new DatabaseSync(databasePath);
+    try {
+      expect(data.prepare("SELECT metric_name FROM metrics").all())
+        .toEqual([{ metric_name: "retained" }]);
+    } finally {
+      data.close();
+    }
+  });
+
+  it("preserves new canonical writes instead of rolling back a failed schema upgrade", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32",
+    });
+    await adapter.install();
+    await installPreviousSchema(root, databasePath);
+    runner.marketplaceSource = "cubika/ProvenLoop#v0.1.0-alpha.0.4";
+    runner.pluginVersion = "0.1.0-alpha.0.4";
+    const run = runner.run.bind(runner);
+    runner.run = async (executable, args, options) => {
+      if (args.join(" ") === `plugin marketplace add ${releaseMarketplaceSource}`) {
+        const data = new DatabaseSync(databasePath);
+        try {
+          data.prepare(
+            "INSERT INTO metrics(metric_name,metric_value,dimensions_json,recorded_at) VALUES(?,?,?,?)",
+          ).run("new-write", 2, "{}", "2026-09-01T00:01:00.000Z");
+        } finally {
+          data.close();
+        }
+        return { exitCode: 1, stderr: "simulated replacement failure", stdout: "" };
+      }
+      return run(executable, args, options);
+    };
+    await expect(adapter.upgrade()).rejects.toThrow("New canonical writes were preserved");
+    expect(CanonicalSqliteStore.databaseVersion(databasePath))
+      .toBe(DEFAULT_SQLITE_MIGRATIONS.length);
+    const data = new DatabaseSync(databasePath);
+    try {
+      expect(data.prepare("SELECT metric_name FROM metrics ORDER BY metric_name").all())
+        .toEqual([{ metric_name: "new-write" }, { metric_name: "retained" }]);
+    } finally {
+      data.close();
+    }
+    expect((await adapter.capabilities()).capabilities.every((capability) =>
+      !capability.enabled,
+    )).toBe(true);
+  });
+
+  it.each(["capture-worker", "observations"] as const)(
+    "refuses upgrade while %s holds its maintenance lease",
+    async (purpose) => {
+      const root = await createTemporaryDirectory();
+      const dataRoot = join(root, "data-root");
+      const runner = new FakeCommandRunner();
+      const adapter = new CopilotCliAdapter({
+        commandRunner: runner, copilotHome: join(root, "copilot-home"),
+        dataRoot, environment: {}, platform: "win32",
+      });
+      await adapter.install();
+      const lease = await new WindowsNamedPipeLeaseProvider(
+        purpose === "capture-worker"
+          ? await resolveWindowsCaptureWorkerLeaseName(dataRoot)
+          : await resolveWindowsProvenLoopLeaseName(dataRoot, purpose),
+      ).tryAcquire();
+      try {
+        await expect(adapter.upgrade()).rejects.toThrow(
+          purpose === "capture-worker" ? "capture worker is active" : "observation collector is active",
+        );
+      } finally {
+        await lease?.release();
+      }
+      await expect(adapter.upgrade()).resolves.toMatchObject({ status: "changed" });
+    },
+  );
 
   it("validates managed Copilot settings before uninstalling", async () => {
       const root = await createTemporaryDirectory();
@@ -774,7 +948,16 @@ describe("Copilot operational adapter", () => {
     });
   });
 
-  it("refuses to purge while retrieval or deletion holds the projection lease", async () => {
+  it.each([
+    {
+      purpose: "knowledge-projection",
+      error: "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
+    },
+    {
+      purpose: "observations",
+      error: "Cannot purge while an observation collector is active.",
+    },
+  ] as const)("refuses to purge while $purpose holds its lease", async ({ purpose, error }) => {
     const root = await createTemporaryDirectory();
     const dataRoot = join(root, "data-root");
     const adapter = new CopilotCliAdapter({
@@ -788,13 +971,13 @@ describe("Copilot operational adapter", () => {
     const provider = new WindowsNamedPipeLeaseProvider(
       await resolveWindowsProvenLoopLeaseName(
         dataRoot,
-        "knowledge-projection",
+        purpose,
       ),
     );
     const lease = await provider.tryAcquire();
     if (lease === undefined) {
       throw new Error(
-        "Expected to acquire the Knowledge projection lease.",
+        `Expected to acquire the ${purpose} lease.`,
       );
     }
     try {
@@ -803,7 +986,7 @@ describe("Copilot operational adapter", () => {
           purge: true,
         }),
       ).rejects.toThrow(
-        "Cannot purge while retrieval, deletion, or Knowledge projection is active.",
+        error,
       );
       await expect(access(dataRoot)).resolves.toBeUndefined();
       await expect(adapter.status()).resolves.toMatchObject({
@@ -1183,7 +1366,7 @@ describe("Copilot operational adapter", () => {
     });
 
     await expect(adapter.install()).rejects.toThrow(
-      "does not match runtime 0.1.0-alpha.0.7",
+      `does not match runtime ${PROVENLOOP_VERSION}`,
     );
     await expect(adapter.status()).resolves.toMatchObject({
       installed: false,
@@ -1214,7 +1397,7 @@ describe("Copilot operational adapter", () => {
         "copilot plugin uninstall provenloop@provenloop-marketplace",
         "copilot plugin marketplace remove provenloop-marketplace",
         "copilot plugin marketplace add " +
-          "cubika/ProvenLoop#v0.1.0-alpha.0.7",
+          releaseMarketplaceSource,
       ]),
     );
   });
@@ -1231,7 +1414,7 @@ describe("Copilot operational adapter", () => {
         extraKnownMarketplaces: {
           "provenloop-marketplace": {
             source: {
-              ref: "v0.1.0-alpha.0.7",
+              ref: `v${PROVENLOOP_VERSION}`,
               repo: "cubika/ProvenLoop",
               source: "github",
             },

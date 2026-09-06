@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "report-digest.ps1")
 
 if (-not $DataRoot) {
     if (-not $env:LOCALAPPDATA) {
@@ -24,13 +25,11 @@ if (-not $OutputPath) {
     $OutputPath = Join-Path $probeRoot "paired-latency-report.json"
 }
 
-$baseline = @(
-    Get-Content -LiteralPath $BaselineSamples -Raw |
-        ConvertFrom-Json
+$baseline = ConvertFrom-Json -InputObject (
+    Get-Content -LiteralPath $BaselineSamples -Raw
 )
-$enabled = @(
-    Get-Content -LiteralPath $ProvenLoopSamples -Raw |
-        ConvertFrom-Json
+$enabled = ConvertFrom-Json -InputObject (
+    Get-Content -LiteralPath $ProvenLoopSamples -Raw
 )
 if (
     $baseline.Count -lt 100 -or
@@ -40,11 +39,18 @@ if (
 }
 
 $deltas = for ($index = 0; $index -lt $baseline.Count; $index += 1) {
+    foreach ($sample in @($baseline[$index], $enabled[$index])) {
+        if ($null -eq $sample -or $sample -is [bool] -or $sample -is [string]) {
+            throw "Latency samples must be numeric observations, not missing values or strings."
+        }
+    }
     $left = [double]$baseline[$index]
     $right = [double]$enabled[$index]
     if (
         [double]::IsNaN($left) -or
         [double]::IsNaN($right) -or
+        [double]::IsInfinity($left) -or
+        [double]::IsInfinity($right) -or
         $left -lt 0 -or
         $right -lt 0
     ) {
@@ -61,10 +67,15 @@ $p95 = [Math]::Round([double]$sorted[$p95Index], 3)
 $report = [ordered]@{
     schemaVersion = 1
     probeVersion = 1
+    evidenceKind = "supplied_measurements"
+    pairing = "caller_supplied_order"
+    baselineDigest = Get-ReportDigest $BaselineSamples
+    enabledDigest = Get-ReportDigest $ProvenLoopSamples
     capturedAt = [DateTimeOffset]::UtcNow.ToString("o")
     operatingSystemVersion = [Environment]::OSVersion.VersionString
     sampleCount = $sorted.Count
-    foregroundAddedLatencyP95Ms = $p95
+    foregroundAddedLatencyP95Ms = [Math]::Max(0, $p95)
+    pairedDeltaP95Ms = $p95
     status = if ($p95 -le 10) { "pass" } else { "fail" }
 }
 

@@ -12,6 +12,17 @@ import {
   type KnowledgeCandidate,
   type WorkEpisode,
 } from "@provenloop/contracts";
+import {
+  directKnowledgeCounterevidence,
+  knowledgeEvidenceState,
+} from "./knowledge-evidence.js";
+import {
+  boundVerificationOperation,
+  independentlyVerifiedCorrections,
+  verificationBinding,
+  verificationOutcome,
+  verificationProofEventIds,
+} from "./verification-proof.js";
 
 export type KnowledgeAdmissionReason =
   | "content_mismatch"
@@ -25,6 +36,9 @@ export type KnowledgeAdmissionReason =
   | "scope_mismatch"
   | "unpaired_verification_evidence"
   | "unverified_correction_occurrence"
+  | "unbound_verification_evidence"
+  | "insufficient_independent_verification"
+  | "unresolved_counterevidence"
   | "untrusted_verification_evidence";
 
 export interface KnowledgeAdmissionInput {
@@ -97,29 +111,7 @@ const validScope = (
 
 const validVerificationEvent = (
   envelope: CaptureEnvelope,
-): boolean => {
-  const event = envelope.event;
-  if (
-    event.eventType !== "test.completed" &&
-    event.eventType !== "build.completed" &&
-    event.eventType !== "verification.completed"
-  ) {
-    return false;
-  }
-  if (
-    event.completionStatus !== undefined &&
-    event.completionStatus !== "succeeded"
-  ) {
-    return false;
-  }
-  if (event.exitCode !== undefined && event.exitCode !== 0) {
-    return false;
-  }
-  return (
-    event.completionStatus === "succeeded" ||
-    event.exitCode === 0
-  );
-};
+): boolean => verificationOutcome(envelope) === "succeeded";
 
 const recalledReferences = (
   records: readonly ContextUseRecord[],
@@ -225,6 +217,7 @@ interface PreparedKnowledgeAdmissionContext {
     readonly ContextUseRecord[]
   >;
   readonly envelopesById: ReadonlyMap<string, CaptureEnvelope>;
+  readonly feedbackEvents: readonly FeedbackEvent[];
   readonly explicitUserScopesByKnowledgeId: ReadonlyMap<
     string,
     readonly {
@@ -325,6 +318,7 @@ const prepareContext = (
         envelope,
       ]),
     ),
+    feedbackEvents,
     explicitUserScopesByKnowledgeId,
     knownCorrectionSourceEventIds: new Set([
       ...input.correctionSourceEventIds,
@@ -344,6 +338,19 @@ const evaluateCandidate = (
   const candidate = knowledgeCandidateSchema.parse(input);
   const reasons = new Set<KnowledgeAdmissionReason>();
   const sourceEvidence = new Set(candidate.sourceEvidenceIds);
+  const evidenceState = knowledgeEvidenceState({
+    counters: directKnowledgeCounterevidence(
+      [...context.envelopesById.values()],
+      sourceEvidence,
+      candidate.createdAt,
+    ),
+    createdAt: candidate.createdAt,
+    feedbackEvents: context.feedbackEvents,
+    knowledgeId: candidate.knowledgeId,
+  });
+  if (evidenceState.unresolvedEvidenceIds.length > 0) {
+    reasons.add("unresolved_counterevidence");
+  }
   if (
       candidate.sourceEvidenceIds.some((evidenceId) =>
         context.recalledReferences.has(evidenceId),
@@ -393,6 +400,19 @@ const evaluateCandidate = (
   const expectedProof = [
       ...expectedCorrectionIds,
       ...verificationIds,
+      ...verificationIds.flatMap((eventId) => {
+        const event = context.envelopesById.get(eventId);
+        const binding = event === undefined ? undefined : verificationBinding(event);
+        const correction = binding === undefined
+          ? undefined
+          : context.envelopesById.get(binding.correctionEventId);
+        return binding === undefined ? [] : [
+          binding.operationEventId,
+          ...(correction === undefined || event === undefined
+            ? []
+            : verificationProofEventIds(correction, event, context.envelopesById)),
+        ];
+      }),
   ];
   if (
       expectedProof.some((eventId) => !sourceEvidence.has(eventId))
@@ -482,6 +502,11 @@ const evaluateCandidate = (
             ) &&
             validVerificationEvent(verification) &&
             envelope !== undefined &&
+            boundVerificationOperation(
+              envelope,
+              verification,
+              context.envelopesById,
+            ) !== undefined &&
             Date.parse(envelope.event.timestamp) <
               Date.parse(verification.event.timestamp)
           );
@@ -516,6 +541,13 @@ const evaluateCandidate = (
       if (!validVerificationEvent(verification)) {
         reasons.add("invalid_verification_evidence");
       }
+      if (!expectedCorrectionIds.some((correctionId) => {
+        const correction = context.envelopesById.get(correctionId);
+        return correction !== undefined &&
+          boundVerificationOperation(correction, verification, context.envelopesById) !== undefined;
+      })) {
+        reasons.add("unbound_verification_evidence");
+      }
       if (
         context.recalledReferences.has(verificationId) ||
         (
@@ -531,7 +563,10 @@ const evaluateCandidate = (
         .filter((key) =>
           key.verificationEvidenceIds.includes(verificationId),
         )
-        .flatMap((key) => key.sourceCorrectionEventIds);
+        .flatMap((key) => key.sourceCorrectionEventIds)
+        .filter((correctionId) =>
+          correctionId === verificationBinding(verification)?.correctionEventId,
+        );
       const pairedEpisode = (
         context.workEpisodesByEventId.get(verificationId) ?? []
       ).find(
@@ -545,6 +580,11 @@ const evaluateCandidate = (
               context.envelopesById.get(correctionId);
             return (
               correction !== undefined &&
+              boundVerificationOperation(
+                correction,
+                verification,
+                context.envelopesById,
+              ) !== undefined &&
               Date.parse(correction.event.timestamp) <
                 Date.parse(verification.event.timestamp)
             );
@@ -591,6 +631,25 @@ const evaluateCandidate = (
       }
   }
 
+  if (
+    candidate.evidenceMarks.includes("repeated_evidence") ||
+    candidate.evidenceTier === "repeated_evidence"
+  ) {
+    const independent = independentlyVerifiedCorrections(
+      expectedCorrectionIds.flatMap((id) => {
+        const event = context.envelopesById.get(id);
+        return event === undefined ? [] : [event];
+      }),
+      verificationIds.flatMap((id) => {
+        const event = context.envelopesById.get(id);
+        return event === undefined ? [] : [event];
+      }),
+      context.envelopesById,
+    );
+    if (independent.length < 2) {
+      reasons.add("insufficient_independent_verification");
+    }
+  }
   return decision(candidate, relatedKeyIds, reasons);
 };
 

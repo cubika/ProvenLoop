@@ -2,6 +2,7 @@ import type {
   CaptureEnvelope,
   JsonValue,
 } from "@provenloop/contracts";
+import { trustedExecution } from "./verification-proof.js";
 
 export interface CommitAncestryQuery {
   readonly ancestorCommit: string;
@@ -150,7 +151,8 @@ export const commitAncestryEdgesFromEnvelopes = (
   for (const envelope of envelopes) {
     const event = envelope.event;
     if (
-      event.eventType !== "git.commit" ||
+      (event.eventType !== "git.commit" && event.eventType !== "git.head_changed") ||
+      !trustedExecution(envelope) ||
       event.repoId === undefined ||
       event.commitSha === undefined
     ) {

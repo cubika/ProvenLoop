@@ -12,6 +12,7 @@ import {
   readdir,
   realpath,
   rename,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -90,6 +91,12 @@ export interface WindowsCaptureQueueOptions {
   readonly processLeaseTimeoutMs?: number;
   readonly retryBaseDelayMs?: number;
   readonly retryMaxDelayMs?: number;
+  readonly onDiagnostic?: (message: string) => void;
+}
+
+export interface CaptureQueueIssue {
+  readonly queueItemId: string;
+  readonly error: string;
 }
 
 export class CaptureQueueNotInitializedError extends Error {
@@ -221,12 +228,16 @@ export class WindowsCaptureQueue {
   readonly #retryBaseDelayMs: number;
   readonly #retryMaxDelayMs: number;
   readonly #root: string;
+  readonly #onDiagnostic: ((message: string) => void) | undefined;
+  #claimCandidates: string[] = [];
+  #claimCandidateIndex = 0;
 
   public constructor(
     root: string,
     options: WindowsCaptureQueueOptions = {},
   ) {
     this.#root = resolve(root);
+    this.#onDiagnostic = options.onDiagnostic;
     this.#acknowledgedRetentionMs = positiveInteger(
       options.acknowledgedRetentionMs ?? 7 * 24 * 60 * 60 * 1_000,
       "acknowledgedRetentionMs",
@@ -271,6 +282,28 @@ export class WindowsCaptureQueue {
     this.#processLease =
       new WindowsNamedPipeLeaseProvider(`capture-queue-${leaseId}`);
     this.#initialized = true;
+    await this.#runExclusive(async () => {
+      await mkdir(join(this.#root, ".active"), { recursive: true });
+      await mkdir(join(this.#root, ".acknowledged"), { recursive: true });
+      const marker = join(this.#root, ".indexes-v2");
+      try {
+        await access(marker);
+        return;
+      } catch (error) {
+        if (!this.#isMissing(error)) {
+          throw error;
+        }
+      }
+      for await (const item of this.#iterateItems()) {
+        await this.#updateStateIndex(item);
+        await this.#claimSourceIndex(
+          this.#sourceIndexPath(item.envelope.deduplicationKey),
+          item.queueItemId,
+          item.envelope.deduplicationKey,
+        );
+      }
+      await writeFile(marker, "2\n", "utf8");
+    });
   }
 
   public enqueue(
@@ -321,7 +354,17 @@ export class WindowsCaptureQueue {
       ) {
         throw new DeletedCaptureSourceError();
       }
-      await this.#write(item);
+      const indexPath = this.#sourceIndexPath(item.envelope.deduplicationKey);
+      const existing = await this.#validatedSourceIndex(indexPath, item.envelope.deduplicationKey);
+      if (existing === undefined) await this.#writeSourceIndex(indexPath, queueItemId);
+      try {
+        await this.#write(item);
+      } catch (error) {
+        if (existing === undefined && !await this.#exists(queueItemId)) {
+          await this.#removeSourceIndexIfOwned(indexPath, queueItemId);
+        }
+        throw error;
+      }
       return item;
     });
   }
@@ -390,37 +433,15 @@ export class WindowsCaptureQueue {
         };
       }
 
-      const existing = (await this.#readAll()).find(
-        (candidate) =>
-          candidate.envelope.deduplicationKey ===
-          item.envelope.deduplicationKey,
-      );
-      if (existing !== undefined) {
-        await this.#claimSourceIndex(
-          indexPath,
-          existing.queueItemId,
-          item.envelope.deduplicationKey,
-        );
-        return {
-          status: "duplicate",
-        };
-      }
-
-      await this.#write(item);
+      // Reserve the source before publishing the item. A crash can leave an
+      // orphan index, but never an unindexed published item.
+      await this.#writeSourceIndex(indexPath, queueItemId);
       try {
-        const claim = await this.#claimSourceIndex(
-          indexPath,
-          queueItemId,
-          item.envelope.deduplicationKey,
-        );
-        if (claim === "duplicate") {
-          await unlink(this.#path(queueItemId));
-          return {
-            status: "duplicate",
-          };
-        }
+        await this.#write(item);
       } catch (error) {
-        await unlink(this.#path(queueItemId)).catch(() => undefined);
+        if (!await this.#exists(queueItemId)) {
+          await this.#removeSourceIndexIfOwned(indexPath, queueItemId);
+        }
         throw error;
       }
       return {
@@ -449,6 +470,33 @@ export class WindowsCaptureQueue {
     });
   }
 
+  public depth(): Promise<number> {
+    return this.#runExclusive(async () =>
+      (await readdir(join(this.#root, ".active"))).length,
+    );
+  }
+
+  public quarantineIssues(): Promise<readonly CaptureQueueIssue[]> {
+    return this.#runExclusive(async () => {
+      const root = join(this.#root, ".quarantine");
+      let names: string[];
+      try {
+        names = await readdir(root);
+      } catch (error) {
+        if (this.#isMissing(error)) {
+          return [];
+        }
+        throw error;
+      }
+      return names.filter((name) => name.endsWith(".json")).sort().map(
+        (name) => ({
+          queueItemId: name.slice(0, -5),
+          error: "Malformed queue item was isolated; healthy items remain available.",
+        }),
+      );
+    });
+  }
+
   public claimNext(
     claimOwnerId: string,
   ): Promise<CaptureQueueItem | undefined> {
@@ -461,14 +509,26 @@ export class WindowsCaptureQueue {
         throw new InvalidQueueItemIdError();
       }
       const now = this.#now();
-      const item = (await this.#readAll()).find(
-        (candidate) =>
-          candidate.state === "pending" ||
-          (
-            candidate.state === "retry" &&
-            Date.parse(candidate.nextAttemptAt) <= now.getTime()
-          ),
-      );
+      if (this.#claimCandidateIndex >= this.#claimCandidates.length) {
+        this.#claimCandidates = await this.#activeNames();
+        this.#claimCandidateIndex = 0;
+      }
+      let item: CaptureQueueItem | undefined;
+      while (this.#claimCandidateIndex < this.#claimCandidates.length) {
+        const name = this.#claimCandidates[this.#claimCandidateIndex++];
+        if (name === undefined) {
+          break;
+        }
+        const candidate = await this.#readIndexed(".active", name);
+        if (
+          candidate?.state === "pending" ||
+          (candidate?.state === "retry" &&
+            Date.parse(candidate.nextAttemptAt) <= now.getTime())
+        ) {
+          item = candidate;
+          break;
+        }
+      }
       if (item === undefined) {
         return undefined;
       }
@@ -561,7 +621,7 @@ export class WindowsCaptureQueue {
         return [];
       }
       const now = this.#now();
-      const expired = (await this.#readAll()).filter(
+      const expired = (await this.#readActive()).filter(
         (
           item,
         ): item is Extract<
@@ -591,13 +651,21 @@ export class WindowsCaptureQueue {
       this.#assertInitialized();
       const cutoff =
         this.#now().getTime() - this.#acknowledgedRetentionMs;
-      const acknowledged = (await this.#readAll()).filter(
-        (item) =>
-          item.state === "acknowledged" &&
-          Date.parse(item.acknowledgedAt) <= cutoff,
-      );
+      const acknowledged: CaptureQueueItem[] = [];
+      const names = await readdir(join(this.#root, ".acknowledged"));
+      for (const name of names.sort()) {
+        if (Number(name.slice(0, 16)) > cutoff) {
+          break;
+        }
+        const item = await this.#readIndexed(".acknowledged", name);
+        if (item?.state === "acknowledged" &&
+            Date.parse(item.acknowledgedAt) <= cutoff) {
+          acknowledged.push(item);
+        }
+      }
       for (const item of acknowledged) {
         await unlink(this.#path(item.queueItemId));
+        await this.#removeStateIndexes(item);
         await this.#removeSourceIndexIfOwned(
           this.#sourceIndexPath(
             item.envelope.deduplicationKey,
@@ -724,6 +792,16 @@ export class WindowsCaptureQueue {
           queueItemIds: [],
         };
       }
+      try {
+        const quarantined = await readdir(join(this.#root, ".quarantine"));
+        if (quarantined.some((name) => name.endsWith(".json"))) {
+          throw new Error(
+            "Targeted deletion requires reviewing quarantined capture files; their identities cannot be safely determined.",
+          );
+        }
+      } catch (error) {
+        if (!this.#isMissing(error)) throw error;
+      }
       const entries = await readdir(this.#root, {
         withFileTypes: true,
       });
@@ -848,6 +926,7 @@ export class WindowsCaptureQueue {
             }
           },
         );
+        await this.#removeStateIndexes(item);
         await this.#removeSourceIndexIfOwned(
           this.#sourceIndexPath(
             item.envelope.deduplicationKey,
@@ -1514,20 +1593,33 @@ export class WindowsCaptureQueue {
     });
   }
 
-  async #readAll(): Promise<readonly CaptureQueueItem[]> {
+  async *#iterateItems(): AsyncGenerator<CaptureQueueItem> {
     const entries = await readdir(this.#root, {
       withFileTypes: true,
     });
-    const items = await Promise.all(
-      entries
-        .filter(
-          (entry) =>
-            entry.isFile() && entry.name.endsWith(".json"),
-        )
-        .map((entry) =>
-          this.#read(entry.name.slice(0, -".json".length)),
-        ),
-    );
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+      const queueItemId = entry.name.slice(0, -5);
+      try {
+        yield await this.#read(queueItemId);
+      } catch (error) {
+        if (error instanceof CaptureQueueItemNotFoundError) {
+          continue;
+        }
+        if (!(error instanceof CorruptCaptureQueueItemError ||
+              error instanceof InvalidQueueItemIdError)) {
+          throw error;
+        }
+        await this.#quarantine(queueItemId, entry.name);
+      }
+    }
+  }
+
+  async #readAll(): Promise<readonly CaptureQueueItem[]> {
+    const items: CaptureQueueItem[] = [];
+    for await (const item of this.#iterateItems()) items.push(item);
     return items.sort(
       (left, right) =>
         left.createdAt.localeCompare(right.createdAt) ||
@@ -1539,6 +1631,9 @@ export class WindowsCaptureQueue {
     this.#validateQueueItemId(queueItemId);
     let serialized: string;
     try {
+      if ((await stat(this.#path(queueItemId))).size > 2 * 1024 * 1024) {
+        throw new CorruptCaptureQueueItemError(queueItemId);
+      }
       serialized = await readFile(this.#path(queueItemId), "utf8");
     } catch (error) {
       if (
@@ -1566,13 +1661,17 @@ export class WindowsCaptureQueue {
 
   async #write(item: CaptureQueueItem): Promise<void> {
     const parsed = captureQueueItemSchema.parse(item);
+    const serialized = `${JSON.stringify(parsed)}\n`;
+    if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) {
+      throw new Error("Capture queue item exceeds the 2 MiB safety limit.");
+    }
     const temporaryPath = join(
       this.#root,
       `.queue-${parsed.queueItemId}-${randomUUID()}.tmp`,
     );
     const handle = await open(temporaryPath, "wx");
     try {
-      await handle.writeFile(`${JSON.stringify(parsed)}\n`, "utf8");
+      await handle.writeFile(serialized, "utf8");
       await handle.sync();
     } catch (error) {
       await handle.close();
@@ -1582,7 +1681,13 @@ export class WindowsCaptureQueue {
 
     await handle.close();
     try {
+      if (parsed.state !== "acknowledged" && parsed.state !== "dead-letter") {
+        await this.#touchIndex(".active", parsed.createdAt, parsed.queueItemId);
+      }
       await rename(temporaryPath, this.#path(parsed.queueItemId));
+      if (parsed.state === "acknowledged" || parsed.state === "dead-letter") {
+        await this.#updateStateIndex(parsed);
+      }
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
@@ -1666,7 +1771,9 @@ export class WindowsCaptureQueue {
         return queueItemId;
       }
     } catch (error) {
-      if (!(error instanceof CaptureQueueItemNotFoundError)) {
+      if (error instanceof CorruptCaptureQueueItemError) {
+        await this.#quarantine(queueItemId, `${queueItemId}.json`);
+      } else if (!(error instanceof CaptureQueueItemNotFoundError)) {
         throw error;
       }
     }
@@ -1760,6 +1867,104 @@ export class WindowsCaptureQueue {
       "code" in error &&
       error.code === "EEXIST"
     );
+  }
+
+  #isMissing(error: unknown): boolean {
+    return error instanceof Error && "code" in error && error.code === "ENOENT";
+  }
+
+  #indexName(timestamp: string, queueItemId: string): string {
+    return `${String(Date.parse(timestamp)).padStart(16, "0")}-${queueItemId}`;
+  }
+
+  async #touchIndex(directory: string, timestamp: string, queueItemId: string): Promise<void> {
+    const path = join(this.#root, directory, this.#indexName(timestamp, queueItemId));
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(path, "wx");
+    } catch (error) {
+      if (this.#isAlreadyExists(error)) return;
+      throw error;
+    }
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async #updateStateIndex(item: CaptureQueueItem): Promise<void> {
+    if (item.state === "acknowledged") {
+      await this.#touchIndex(".acknowledged", item.acknowledgedAt, item.queueItemId);
+    }
+    if (item.state === "acknowledged" || item.state === "dead-letter") {
+      await unlink(join(this.#root, ".active", this.#indexName(item.createdAt, item.queueItemId)))
+        .catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+    } else {
+      await this.#touchIndex(".active", item.createdAt, item.queueItemId);
+    }
+  }
+
+  async #removeStateIndexes(item: CaptureQueueItem): Promise<void> {
+    await unlink(join(this.#root, ".active", this.#indexName(item.createdAt, item.queueItemId)))
+      .catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+    if (item.state === "acknowledged") {
+      await unlink(join(this.#root, ".acknowledged", this.#indexName(item.acknowledgedAt, item.queueItemId)))
+        .catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+    }
+  }
+
+  async #activeNames(): Promise<string[]> {
+    return (await readdir(join(this.#root, ".active"))).sort();
+  }
+
+  async #readIndexed(directory: string, name: string): Promise<CaptureQueueItem | undefined> {
+    const queueItemId = name.slice(17);
+    try {
+      const item = await this.#read(queueItemId);
+      if (directory === ".active" &&
+          (item.state === "acknowledged" || item.state === "dead-letter")) {
+        await this.#updateStateIndex(item);
+        return undefined;
+      }
+      if (directory === ".acknowledged" && item.state !== "acknowledged") {
+        await unlink(join(this.#root, directory, name));
+        return undefined;
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CorruptCaptureQueueItemError) {
+        await this.#quarantine(queueItemId, `${queueItemId}.json`);
+      } else if (!(error instanceof CaptureQueueItemNotFoundError ||
+                   error instanceof InvalidQueueItemIdError)) {
+        throw error;
+      }
+      await unlink(join(this.#root, directory, name)).catch(() => undefined);
+      return undefined;
+    }
+  }
+
+  async #readActive(): Promise<CaptureQueueItem[]> {
+    const items: CaptureQueueItem[] = [];
+    for (const name of await this.#activeNames()) {
+      const item = await this.#readIndexed(".active", name);
+      if (item !== undefined) items.push(item);
+    }
+    return items;
+  }
+
+  async #quarantine(queueItemId: string, fileName: string): Promise<void> {
+    const root = join(this.#root, ".quarantine");
+    await mkdir(root, { recursive: true });
+    await rename(join(this.#root, fileName), join(root, fileName))
+      .catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+    try {
+      this.#onDiagnostic?.(sanitizeDiagnostic(
+        `Malformed capture queue item ${queueItemId} was quarantined.`,
+      ));
+    } catch {
+      // Diagnostics cannot stop healthy queue traffic.
+    }
   }
 
   #validateQueueItemId(queueItemId: string): void {

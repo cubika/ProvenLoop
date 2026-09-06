@@ -7,6 +7,7 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import { verificationBinding } from "./verification-proof.js";
 import {
   redactCaptureContent,
   redactCaptureMetadata,
@@ -62,6 +63,87 @@ const sanitizeRedactionMetadata = (
       values.map((value) => redactPotentialSecrets(value)),
     ),
   ].sort();
+
+const redactCaptureProvenance = (event: RawEvent) => {
+  const fields: Record<string, string> = {};
+  const locations: Record<string, string> = {};
+  const identifiers = new Set<string>();
+  let sequence = 0;
+  const collect = (value: string, location: string, identifier = false): string => {
+    const key = `captureField${sequence++}`;
+    fields[key] = value;
+    locations[key] = location;
+    if (identifier) identifiers.add(key);
+    return key;
+  };
+  const quality = event.captureQuality;
+  const truncated = quality?.truncatedFields.map((value, index) =>
+    collect(value, `event.captureQuality.truncatedFields[${index}]`),
+  );
+  const omitted = quality?.omittedFields.map((value, index) =>
+    collect(value, `event.captureQuality.omittedFields[${index}]`),
+  );
+  const lengths = quality === undefined ? undefined
+    : Object.entries(quality.originalLengths).map(([key, length], index) => ({
+      key: collect(key, `event.captureQuality.originalLengths.keys[${index}]`),
+      length,
+    }));
+  const evidence = event.evidence;
+  const evidenceFields = [
+    "sourceStartEventId",
+    "sourceCompleteEventId",
+    "operationId",
+    "commandFamily",
+    "workingDirectory",
+  ] as const;
+  const evidenceKeys: Partial<Record<typeof evidenceFields[number], string>> = {};
+  for (const field of evidenceFields) {
+    const value = evidence?.[field];
+    if (value !== undefined) {
+      evidenceKeys[field] = collect(value, `event.evidence.${field}`,
+        field === "sourceStartEventId" || field === "sourceCompleteEventId" || field === "operationId");
+    }
+  }
+  const targets = evidence?.targetPaths?.map((value, index) =>
+    collect(value, `event.evidence.targetPaths[${index}]`),
+  );
+  const redacted = redactCaptureMetadata(fields, identifiers);
+  const safe = (key: string): string => {
+    const value = redacted.values[key];
+    if (value === undefined) {
+      throw new Error("Capture provenance redaction did not return an expected field.");
+    }
+    return value;
+  };
+  return {
+    appliedRules: redacted.appliedRules,
+    redactedPaths: redacted.redactedPaths.map((path) =>
+      locations[path.replace(/^event\./u, "")] ?? path,
+    ),
+    metadata: {
+      ...definedField("repositoryState", event.repositoryState),
+      ...(quality === undefined ? {} : {
+        captureQuality: {
+          ...quality,
+          truncatedFields: (truncated ?? []).map(safe),
+          omittedFields: (omitted ?? []).map(safe),
+          originalLengths: Object.fromEntries(
+            (lengths ?? []).map(({ key, length }) => [safe(key), length]),
+          ),
+        },
+      }),
+      ...(evidence === undefined ? {} : {
+        evidence: {
+          ...evidence,
+          ...Object.fromEntries(
+            Object.entries(evidenceKeys).map(([field, key]) => [field, safe(key)]),
+          ),
+          ...(targets === undefined ? {} : { targetPaths: targets.map(safe) }),
+        },
+      }),
+    },
+  };
+};
 
 export class InternalCaptureEventError extends Error {
   public override readonly name = "InternalCaptureEventError";
@@ -132,6 +214,10 @@ export const createCaptureEnvelope = (
     toolName: input.toolName,
     trust: input.trust,
     worktree: input.worktree,
+    ...definedField("verificationBinding", input.verificationBinding),
+    ...definedField("captureQuality", input.captureQuality),
+    ...definedField("evidence", input.evidence),
+    ...definedField("repositoryState", input.repositoryState),
   });
   if (normalizedEvent.sessionId === undefined) {
     throw new InvalidCaptureIdentityError("sessionId");
@@ -183,16 +269,30 @@ export const createCaptureEnvelope = (
       "sourceEventId",
     ]),
   );
+  const proofMetadata = redactCaptureMetadata(
+    {
+      correctionEventId: input.verificationBinding?.correctionEventId,
+      operationEventId: input.verificationBinding?.operationEventId,
+    },
+    new Set(["correctionEventId", "operationEventId"]),
+  );
+  const provenance = redactCaptureProvenance(normalizedEvent);
   const appliedRules = [
     ...new Set([
       ...redacted.redaction.appliedRules,
       ...metadata.appliedRules,
+      ...proofMetadata.appliedRules,
+      ...provenance.appliedRules,
     ]),
   ].sort();
   const redactedPaths = [
     ...new Set([
       ...redacted.redaction.redactedPaths,
       ...metadata.redactedPaths,
+      ...proofMetadata.redactedPaths.map((path) =>
+        path.replace("event.", "event.verificationBinding."),
+      ),
+      ...provenance.redactedPaths,
     ]),
   ].sort();
   const {
@@ -202,7 +302,16 @@ export const createCaptureEnvelope = (
   const event = rawEventSchema.parse({
     ...normalizedEvent,
     ...safeEventMetadata,
+    ...provenance.metadata,
     eventId: `event-${deduplicationKey}`,
+    ...(input.verificationBinding === undefined
+      ? {}
+      : {
+          verificationBinding: {
+            correctionEventId: proofMetadata.values["correctionEventId"],
+            operationEventId: proofMetadata.values["operationEventId"],
+          },
+        }),
     ...(redacted.redactedArguments === undefined
       ? {}
       : {
@@ -312,6 +421,10 @@ export const redactCaptureEnvelopeForPersistence = (
       ...definedField("toolName", event.toolName),
       trust: event.trust,
       ...definedField("worktree", event.worktree),
+      ...definedField("verificationBinding", verificationBinding(parsed)),
+      ...definedField("captureQuality", event.captureQuality),
+      ...definedField("evidence", event.evidence),
+      ...definedField("repositoryState", event.repositoryState),
     },
     {
       capturedAt: parsed.capturedAt,

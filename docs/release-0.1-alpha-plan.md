@@ -1,19 +1,25 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** Proposed execution plan  
-**Target:** `0.1.0-alpha.1`  
+**Status:** 0.8 evidence candidate; quality-release acceptance remains open
+**Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
-**Updated:** 2026-09-02
+**Updated:** 2026-09-06
 
-**Evidence candidate:** `0.1.0-alpha.0.7` supersedes the earlier
-`0.1.0-alpha.0.x` packages and collects the real Windows,
-provider-degradation, and remote-upgrade evidence required to approve the
-target `0.1.0-alpha.1`. It is a prerelease and must not be described as
-M0-approved.
+**Evidence candidate:** `0.1.0-alpha.0.8` is the Windows Design Partner Preview
+for collecting the real Windows, provider-degradation, and remote-upgrade
+evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
+approval or evidence of controlled benefit. See the
+[0.8 release notes](releases/0.1.0-alpha.0.8.md).
+
+Knowledge review, automatic local observations, trusted Session approval,
+strict native proof binding, bounded current-session reconciliation, and
+storage/capture repairs are included in the 0.8 candidate scope. Checked
+engineering items below refer to previously recorded work; the versioned 0.8
+artifacts require a fresh retained validation and publication record.
 
 ## 1. Goal
 
-The first release is a Windows and GitHub Copilot CLI Design Partner Preview.
+The evidence candidate is a Windows and GitHub Copilot CLI Design Partner Preview.
 It should let a user install ProvenLoop without cloning the source repository,
 use it during ordinary coding work, collect bounded M0 acceptance evidence, and
 remove it without losing or corrupting unrelated Copilot configuration.
@@ -21,15 +27,23 @@ remove it without losing or corrupting unrelated Copilot configuration.
 This release does not add M3-M6 product capabilities. Its job is to turn the
 implemented M0-M2 code into an installable, observable, and reversible product.
 
-The release is complete only when:
+The planned quality release is complete only when:
 
 - installation uses a published package rather than a source checkout;
 - the Copilot Extension and MCP run from installed assets;
 - M0 blockers are evaluated from retained evidence instead of hard-coded
   `blocked` checks;
-- normal daily work can produce a privacy-safe acceptance report;
+- normal daily work can produce privacy-minimized observations without daily
+  start/stop rituals;
 - installation, upgrade, disable, uninstall, and rollback are reproducible;
 - the MVP aggregate gate reaches at least `Conditional Go`.
+
+An explicitly bounded observation candidate may be distributed with a disclosed
+No-Go to collect missing evidence; it is not an approved quality release.
+The 0.8 MVP gate keeps `field-effect-evidence` blocked, so
+neither synthetic regression, ordinary observations, nor maintainer attestation
+can currently yield Go/Conditional Go. Controlled-effect evaluation is an
+additional requirement, not a box that packaging work can close.
 
 ## 2. Release scope
 
@@ -43,10 +57,14 @@ The release is complete only when:
 - M1 Branch Context and scoped retrieval;
 - MCP Context, Explain, and Feedback;
 - explicit Remember, Correct, Mute, Forget, Delete, and Purge;
+- Knowledge list/show/confirm/replace/revoke with reviewed digests and explicit
+  confirmation; workflow controls require a matching live SDK Session and cwd;
 - M2 verified correction learning;
 - Knowledge lifecycle and counterevidence handling;
 - M0, M1, M2, and MVP evaluation gates;
-- daily M0 evidence collection scripts;
+- automatic local observations and safe export;
+- bounded current-session reconciliation in the installed background loop;
+- explicit bounded M0 acceptance and maintainer-controlled probes;
 - package installation, upgrade, disable, uninstall, and rollback.
 
 ### Excluded
@@ -68,7 +86,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.8/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
@@ -82,8 +100,9 @@ install the local tarball without registry resolution, register the Copilot
 integration, enable the in-scope learning capabilities, run Doctor, and clean
 all temporary package files.
 
-Public npm and a future governed Azure Artifacts path are optional secondary
-channels. If O365 internal distribution later uses Azure Artifacts, the
+The 0.8 preview is not being published to the public npm registry. A separate
+public npm channel or a future governed Azure Artifacts path is not part of
+this publication. If O365 internal distribution later uses Azure Artifacts, the
 expected model is an approved producer pipeline and Feed, normally Common,
 with consumption through Enzyme; direct Enzyme publishing requires explicit
 owner approval.
@@ -110,14 +129,16 @@ Alpha may require the pinned Node.js 22 runtime.
 release package
   -> remote marketplace
   -> M0 evidence contract
-  -> daily acceptance scripts
+  -> narrow first-use workflow + automatic observations
+  -> explicit maintainer acceptance experiments
   -> capture and degradation evidence
   -> capability isolation
   -> M0 Gate
   -> MVP Gate
-  -> Alpha release
+  -> quality-release decision
 ```
 
+Evidence candidates precede that final decision and retain their limitations.
 Recommended branches:
 
 ```text
@@ -240,29 +261,58 @@ Required sections:
   `2` for invalid evidence, and `3` for infrastructure failure.
 - [x] Publish the complete run through an atomic staging directory.
 - [x] Add tests for stale, forged, incomplete, and mismatched evidence.
+- [ ] Revalidate repaired artifact loading, digest matching, input schemas,
+  and runtime/code binding for the final source.
 
-## 8. Workstream D: daily acceptance scripts
+Read and validate actual referenced reports rather than trusting supplied
+“passed” booleans or matching file names. External runner reports,
+caller-supplied measurements, and maintainer attestations remain separately
+labeled evidence. A digest binds an artifact; it does not prove that the
+experiment or human judgment behind it was valid.
 
-Daily evidence collection should require little more than starting a run,
-working normally, and completing the run.
+## 8. Workstream D: observations and explicit acceptance
 
-Planned commands:
+Ordinary preview users should start with one explicit rule, later-session
+retrieval, Explain, and approved feedback. See the
+[first-use workflow](../README.md#first-useful-workflow).
+Local observations should not require daily acceptance windows:
 
 ```powershell
-.\spikes\f0\start-daily-acceptance.ps1
-
-# Use Copilot normally for several hours.
-
-.\spikes\f0\complete-daily-acceptance.ps1
+provenloop observations show
+provenloop observations export --date 2026-09-06 |
+  Set-Content -Encoding utf8 .\provenloop-observations.json
 ```
 
-Optional controlled probes:
+These commands use UTC dates, retain unknown outcomes, and export
+only current-code-version observational records. They do not measure controlled
+benefit or grant release approval.
+
+For an explicit maintainer experiment, the installed CLI provides:
 
 ```powershell
-.\spikes\f0\run-paired-latency-probe.ps1
+provenloop acceptance start
+
+# Use Copilot normally; close the experiment's Sessions before completion.
+
+provenloop acceptance complete
+```
+
+The window bounds evidence, not whether collection is enabled. Source-checkout
+scripts wrap these commands. Optional source-checkout controlled probes:
+
+```powershell
+.\spikes\f0\run-paired-latency-probe.ps1 `
+  -BaselineSamples .provenloop\foreground-baseline-ms.json `
+  -ProvenLoopSamples .provenloop\foreground-provenloop-ms.json
 .\spikes\f0\run-fault-isolation-probe.ps1
-.\spikes\f0\run-capability-isolation-probe.ps1
+.\spikes\f0\run-capability-isolation-probe.ps1 `
+  -AutomatedTestReport .provenloop\capability-tests.json
 ```
+
+The latency probe requires at least 100 equal-length paired finite,
+non-negative numeric samples; it analyzes supplied measurements, not actual
+benchmark execution. The capability probe checks installed switches and
+references a separately executed automated-test report.
 
 ### Start script
 
@@ -281,14 +331,15 @@ Optional controlled probes:
 - [x] Compare queue and canonical high-water marks.
 - [x] Calculate event counts by supported event type.
 - [x] Calculate callback work duration and delivery-latency distributions.
-- [x] Detect capture gaps, missing events, duplicate facts, retry items, and
-  dead letters.
+- [x] Report recorded capture gaps, supported-file reconciliation differences,
+  duplicate facts, retry items, and dead letters.
+  Missing source-file coverage cannot be converted into a known zero-loss count.
 - [x] Run seeded-secret and internal-Session persistence checks.
 - [x] Write stable JSON and Markdown reports.
 - [x] Never include raw Prompt, code, tool arguments, or tool results in the
   acceptance report.
 
-Planned output:
+Acceptance output layout:
 
 ```text
 %LOCALAPPDATA%\ProvenLoop\evaluation\m0-daily\<run-id>\
@@ -368,6 +419,8 @@ provenloop doctor --online
 - [x] Test rate limiting.
 - [x] Test provider unavailability.
 - [x] Test an unsupported Copilot version.
+- [ ] Retain actual isolated-profile observations for each provider state,
+  separately from automated classification tests.
 - [ ] Verify backlog remains durable and retry remains bounded.
 - [ ] Verify foreground Copilot remains usable.
 
@@ -411,6 +464,10 @@ Required capability checks:
 - [x] Remove the hard-coded M0 capability-isolation blocker only after both
   tests pass.
 
+These engineering checks do not prove the current installed-host matrix passed.
+Retain version-bound native results; an external automated-test report is not
+itself evidence that the capability probe ran those tests.
+
 ## 12. Daily-use evidence period
 
 The initial collection period should last several working days.
@@ -419,9 +476,10 @@ The initial collection period should last several working days.
 
 - install the packaged Alpha candidate;
 - run `provenloop doctor`;
-- start a daily acceptance run;
 - verify capture, worker, and retrieval status;
 - record the exact Copilot and Windows versions.
+- remember one narrowly scoped rule and inspect its source and applicability;
+- inspect the local observations entry point.
 
 ### Days 1-3
 
@@ -431,7 +489,12 @@ The initial collection period should last several working days.
 - perform real tests and builds;
 - include at least one explicit correction;
 - include at least one failed command followed by recovery;
-- complete one acceptance report per day.
+- retrieve the rule in a later Session, inspect Explain, and approve explicit
+  feedback after use;
+- inspect observations without interpreting offered context as adoption or benefit.
+
+Maintainers may additionally choose a bounded `acceptance start/complete`
+window. It is not a daily prerequisite for ordinary users.
 
 ### Controlled fault window
 
@@ -449,12 +512,11 @@ Provider degradation tests require an isolated profile or test account.
 
 ## 13. What to return after several days
 
-Share only:
+After reviewing the selected files, share only what the investigation needs:
 
-- `report.json`;
-- `report.md`;
-- M0 evidence JSON;
-- observed error messages;
+- the privacy-minimized observation export;
+- selected acceptance `report.json` / `report.md` or validated M0 evidence;
+- redacted diagnostic codes and a minimal reproduction, not arbitrary raw errors;
 - Windows and Copilot versions;
 - a description of user-visible slowdown or incorrect behavior.
 
@@ -466,6 +528,11 @@ Do not share:
 - raw Session files;
 - Prompt or tool-result logs;
 - credentials or Copilot configuration containing secrets.
+- backups, recovery snapshots, local observation keys, or whole evaluation directories.
+
+Stable digests and counts can still reveal usage patterns; export minimization
+is not an assurance of complete anonymity. Never attach raw databases or backups
+as a shortcut.
 
 The follow-up review should classify each failure as:
 
@@ -500,7 +567,7 @@ an explicit warning and checksum.
 
 ## 15. Release decision
 
-Before publishing:
+Before approving the planned quality release (not merely an observation candidate):
 
 ```powershell
 provenloop eval m0 `
@@ -520,8 +587,11 @@ M0: PASS
 MVP: GO or explicitly bounded CONDITIONAL GO
 ```
 
-`No-Go`, missing evidence, stale evidence, an unverified rollback target, or a
-non-zero safety count blocks publication.
+`No-Go`, missing/stale evidence, an unverified recovery target, or non-zero or
+unknown safety counts block quality-release approval. The 0.8
+`field-effect-evidence` is blocked and cannot be cleared by synthetic or
+observational inputs. Keep any bounded evidence-candidate distribution
+explicitly separate; never relabel it M0/MVP-approved.
 
 ## 16. Definition of done
 
@@ -531,7 +601,11 @@ non-zero safety count blocks publication.
 - [ ] A clean profile can install, upgrade, disable, uninstall, and reinstall.
 - [ ] Normal uninstall preserves user data.
 - [ ] Purge removes only the owned ProvenLoop data root.
-- [ ] Daily work produces bounded, privacy-safe M0 evidence.
+- [ ] Daily work produces bounded local observations; explicit maintainer
+  experiments produce the required M0 evidence.
+- [ ] The installed 0.8 two-Session rule/Explain/approval workflow is observed.
+- [ ] Controlled field-effect evidence is independently established and supported
+  by the release evaluator, not inferred from synthetic or observational inputs.
 - [ ] F0-001, F0-002, and F0-003 are closed with retained evidence.
 - [ ] Capability isolation passes in tests and an installed environment.
 - [ ] M0 exits with code `0`.

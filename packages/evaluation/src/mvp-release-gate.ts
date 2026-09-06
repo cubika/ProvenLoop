@@ -52,6 +52,14 @@ import {
   redactPotentialSecrets,
 } from "./secret-detection.js";
 
+import {
+  loadObservationManifest,
+  observationManifestSchema,
+  ObservationManifestInputError,
+  SYNTHETIC_REGRESSION_LIMITATION,
+  type ObservationManifest,
+} from "./observation-manifest.js";
+
 export type MvpReleaseDecision =
   | "conditional_go"
   | "go"
@@ -161,6 +169,10 @@ export interface MvpSubgateSummary {
 }
 
 export interface MvpReleaseReport {
+  readonly automatedEvidenceKind?: "synthetic_regression";
+  readonly fieldEffect?: "not_established";
+  readonly reviewEvidenceKind?: "maintainer_attestation";
+  readonly observationEvidence?: ObservationManifest;
   readonly checks: readonly MvpReleaseCheck[];
   readonly codeVersion: string;
   readonly completedAt: string;
@@ -178,6 +190,7 @@ export interface MvpReleaseReport {
 }
 
 export interface RunMvpReleaseGateOptions {
+  readonly observationManifestPath?: string;
   readonly codeVersion?: string;
   readonly cwd?: string;
   readonly evidencePath?: string;
@@ -414,6 +427,10 @@ export const mvpReleaseEvidenceSchema = z
 
 const mvpReleaseReportSchema = z
   .object({
+    automatedEvidenceKind: z.literal("synthetic_regression").default("synthetic_regression"),
+    fieldEffect: z.literal("not_established").default("not_established"),
+    reviewEvidenceKind: z.literal("maintainer_attestation").default("maintainer_attestation"),
+    observationEvidence: observationManifestSchema.optional(),
     checks: z.array(
       z
         .object({
@@ -870,6 +887,11 @@ export const evaluateMvpReleaseReadiness = (input: {
   const versions = new Set(input.automated.codeVersions);
   const checks: MvpReleaseCheck[] = [
     {
+      checkId: "field-effect-evidence",
+      status: "blocked",
+      message: "Controlled field effects have not been evaluated. Synthetic regression and observational manifests cannot establish user benefit.",
+    },
+    {
       checkId: "m0-observation-foundation",
       message:
         `M0 aggregate gate status is ${input.automated.m0Status}.`,
@@ -917,7 +939,7 @@ export const evaluateMvpReleaseReadiness = (input: {
         input.automated.outcomeSuccessDelta === undefined ||
         input.automated.outcomeSuccessThreshold === undefined
           ? "Outcome Success evidence is unavailable."
-          : `Outcome Success delta is ${(input.automated.outcomeSuccessDelta * 100).toFixed(2)}%.`,
+          : `Synthetic Outcome Success delta is ${(input.automated.outcomeSuccessDelta * 100).toFixed(2)}%; this is not a measured field effect.`,
       status:
         input.automated.outcomeSuccessDelta !== undefined &&
         input.automated.outcomeSuccessThreshold !== undefined &&
@@ -1068,6 +1090,7 @@ export const evaluateMvpReleaseReadiness = (input: {
         ...checks
           .filter((check) => check.status !== "pass")
           .map((check) => check.message),
+        SYNTHETIC_REGRESSION_LIMITATION,
         ...(decision === "conditional_go"
           ? [
               "Research thresholds permit only the recorded limited Canary until its expiry.",
@@ -1521,6 +1544,7 @@ export const runMvpReleaseGate = async (
       const evidence = await loadedEvidence(
         evidencePath,
       );
+      const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
       const subgateRoot = join(
         stagingDirectory,
         "subgates",
@@ -1531,6 +1555,7 @@ export const runMvpReleaseGate = async (
         m2,
       ] = await Promise.all([
         runM0ReleaseGate({
+          ...(evidencePath === undefined ? {} : { evidenceRoot: resolve(evidencePath, "..") }),
           ...(evidence?.m0Acceptance === undefined
             ? {}
             : {
@@ -1542,6 +1567,7 @@ export const runMvpReleaseGate = async (
           runId: "m0",
         }),
         runM1ReleaseGate({
+          ...(options.observationManifestPath === undefined ? {} : { observationManifestPath: options.observationManifestPath }),
           codeVersion,
           cwd,
           outputRoot: subgateRoot,
@@ -1549,6 +1575,7 @@ export const runMvpReleaseGate = async (
           runId: "m1",
         }),
         runM2ReleaseGate({
+          ...(options.observationManifestPath === undefined ? {} : { observationManifestPath: options.observationManifestPath }),
           codeVersion,
           cwd,
           outputRoot: subgateRoot,
@@ -1587,6 +1614,7 @@ export const runMvpReleaseGate = async (
         releaseTarget,
       });
       report = {
+        ...(observationEvidence === undefined ? {} : { observationEvidence }),
         checks: readiness.checks,
         codeVersion,
         completedAt: now().toISOString(),
@@ -1620,7 +1648,7 @@ export const runMvpReleaseGate = async (
       };
     } catch (error) {
       const invalidInput =
-        error instanceof MvpReleaseInputError;
+        error instanceof MvpReleaseInputError || error instanceof ObservationManifestInputError;
       report = {
         checks: [
           {

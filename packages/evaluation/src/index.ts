@@ -138,3 +138,9 @@ export type {
   VerifierContext,
   VerifierOutcome,
 } from "./types.js";
+export {
+  loadObservationManifest,
+  observationManifestSchema,
+  SYNTHETIC_REGRESSION_LIMITATION,
+  type ObservationManifest,
+} from "./observation-manifest.js";

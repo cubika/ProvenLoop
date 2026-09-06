@@ -4,7 +4,13 @@
 
 **状态：** Canonical Product Design  
 **版本：** 2.1  
-**更新日期：** 2026-08-28
+**更新日期：** 2026-09-06
+
+**实现边界：** 本文同时保留产品目标和分阶段设计。`0.1.0-alpha.0.8` 是 Windows
+Design Partner Preview 证据候选版，包含 Knowledge 管理、本地观察、可信 Session
+授权、严格原生证明链及有界当前 Session 对账。M3-M6 不是当前能力，合成回归通过
+不等于真实收益或 M0/MVP 批准；`0.1.0-alpha.1` 仍是未获批准的质量发布目标。
+新版本工件验证须单独留存，不能沿用先前源码测试结果作为批准。
 
 ---
 
@@ -143,9 +149,9 @@ ProvenLoop 的目标用户是：
 | 读取统一 Knowledge | 必须 | 必须 |
 | 检索 Context | 必须 | 必须 |
 | 用户 Feedback | 必须 | 必须 |
-| Session 和工具事件采集 | 完整 | 按 Agent 能力实现 |
-| Work Episode 关联 | 完整 | 逐步增强 |
-| Skill/Playbook 执行 | 受控 | 按权限模型实现 |
+| Session 和工具事件采集 | 支持事件集；缺失、截断和不兼容显式可见 | 按 Agent 能力实现 |
+| Work Episode 关联 | 保守的确定性关联；不假装覆盖所有真实任务 | 逐步增强 |
+| Skill/Playbook 执行 | M5 目标，不属于 M0-M2 首用要求 | 按权限模型实现 |
 
 如果增加一个 Adapter 的成本很低，应尽早支持基础检索和 Feedback；但不能为了追求
 表面上的多 Agent 数量，阻塞首个完整学习闭环。
@@ -339,7 +345,8 @@ ProvenLoop 的学习分为六层。每个 Milestone 聚焦其中一部分，但�
 | L4 | 策略优化 | 比较版本、触发条件和使用效果 |
 | L5 | 参数学习 | 使用批准数据进行离线训练，属于远期可选方向 |
 
-首个完整产品覆盖 L0-L4。L5 不是本地日常使用的默认能力。
+长期产品方向覆盖 L0-L4。首个 M1 + M2 产品先验证连续性记忆和有证据约束的纠正学习，
+不要求先完成深度复盘、Playbook 或策略优化。L5 不是本地日常使用的默认能力。
 
 ---
 
@@ -362,6 +369,10 @@ ProvenLoop 的学习分为六层。每个 Milestone 聚焦其中一部分，但�
 
 Raw Event 是审计和重建材料，不直接注入 Agent Context。它在正常保留期内不可修改；
 用户发起 Source Delete 或 Purge 时遵循 §14.4 的删除规则。
+0.8 允许受控的迟到补全：保存原始事件和来源摘要，在独立 enrichment 记录中补充
+缺失内容、已脱敏参数或结果摘要。新的派生验证另存为证据，不重分类原始事件。
+不能改写原始时间、工作区、父链、状态、元数据或已记录正文来制造成功。
+`captureQuality` 保留首次采集的省略、截断及原长度；补全不是抹去原始缺口。
 
 ### 6.2 Work Episode
 
@@ -424,8 +435,9 @@ Branch Context 是短期连续性记忆，保存：
 - 后台异步生成，不阻塞当前 Agent。
 - 事件触发并合并刷新，避免每轮重写。
 - 检索前校验 Repository、Branch 和 HEAD。
-- Branch 合并或删除后立即停止自动召回。
-- 临时摘要默认在停止活动 30 天后清理。
+- HEAD、Repository、Branch 不匹配或逻辑过期时停止自动召回。
+- 当前投影默认有效期为最后相关事件后 30 天；逻辑过期不等于物理清理。
+- 自动发现 Branch 合并/删除及定时物理清理不是当前保证。
 - Episode 所需证据遵循独立保留策略。
 
 ### 6.4 Knowledge Card
@@ -554,12 +566,16 @@ Playbook 必须包含：
   然后再结合证据优先级决定修订、拆分适用条件、降权或恢复。
 - 因此，后续 Review、Revert 或同因 Bug Fix 可以推翻早期“测试通过”的表面成功；
   外部结果不会因为出现时间较晚或位于优先级列表中的不同层级而被忽略。
+- 旧确认不能覆盖新反证。用户必须审阅当前状态，并明确列出要解决的反证 ID；
+  普通确认不会清除未审阅或随后到达的反证。
 
 ### 7.2 候选形成
 
 可以创建候选 Knowledge 的情况：
 
-- 用户明确纠正，随后验证成功。
+- 用户明确纠正，随后出现完整绑定的可信验证：`VerificationBinding` 指向纠正事件
+  和实际操作，Session、Repository、worktree、调用 ID、命令目标及时间有序父链匹配。
+  同一 Episode 内任意成功命令不构成证明。
 - 用户明确要求记住某项偏好或约束。
 - 多个 Episode 显示相同成功或失败模式。
 - 后续 Review、Revert 或 Bug 揭示了早期遗漏。
@@ -691,13 +707,14 @@ Select Episodes
 |---|---|---|
 | Candidate | 尚未验证 | 不自动注入；仅在检查和预览中显示 |
 | Inferred | 仅有 Agent 推测或有限证据 | 搜索可见；使用前必须确认 |
-| User-confirmed | 用户明确确认 | 在确认的 Scope 内可以自动使用 |
+| User-confirmed | 用户明确确认 | 在确认的 Scope 和适用条件内可以提供 Guidance；不是外部验证 |
 | Externally-verified | 具有机器或 Review 证据 | 在精确 Scope、低风险场景下作为 Guidance 使用 |
 | Repeated-evidence | 多 Episode 支持、无有效反证 | 可以正常自动使用，仍受 Top-k 和 Token Budget 限制 |
 | Disputed | 出现有效反证 | 立即停止自动使用，等待修订或裁决 |
 | Locked Preference | 用户明确锁定的个人偏好 | 视为用户权威指令，不伪装成统计高置信度 |
 
 Repository 事实和 Playbook 不能仅靠用户“锁定”绕过必要验证。
+Locked Preference 是设计语义，不代表当前 CLI 已提供独立锁定模式。
 
 ### 8.3 注入体验
 
@@ -707,7 +724,7 @@ Repository 事实和 Playbook 不能仅靠用户“锁定”绕过必要验证�
 - 没有足够相关内容时返回空。
 - 同一 Session 不重复注入。
 - 通常不弹窗打断用户。
-- Agent 可看到一条简短说明，例如“已应用 2 条 ProvenLoop Guidance”。
+- Agent 可看到一条简短说明，例如“已提供 2 条 ProvenLoop Guidance”。
 - 用户可以展开查看“为什么提供这条建议”。
 - Inferred Guidance 必须标记为候选建议，不能伪装成确定事实。
 - Candidate 和 Disputed 内容绝不静默注入。
@@ -715,6 +732,7 @@ Repository 事实和 Playbook 不能仅靠用户“锁定”绕过必要验证�
 同一条 Knowledge 可以同时具有多个 Evidence 标记。例如，它可以既是
 `User-confirmed`，又是 `Externally-verified`。Evidence Tier 描述来源，不代替
 Scope、Trigger 和风险检查。
+“已提供”“用户明确报告采用”“有用反馈”和“独立验证成功”是不同事实，不能相互替代。
 
 ### 8.4 Scope 策略
 
@@ -751,15 +769,31 @@ provenloop install
 copilot
 ```
 
-不需要包装命令，也不需要为了日常使用额外申请模型 API Key。安装完成后不逐次请求
-授权，也不要求用户管理后台模型用量；用户仍可关闭检索、学习、复盘、Playbook 或
-全部 ProvenLoop 能力。
+不需要包装命令，也不需要为了日常确定性处理额外申请模型 API Key。复用登录态不表示
+Agent 可以替用户批准持久反馈、Scope 变更、删除或 Playbook。用户仍可关闭各项已实现
+能力；复盘和 Playbook 等后续能力保持未启用。
 
 ### 9.2 第一次使用
 
 默认不扫描历史后直接生成长期知识。
 
-可选历史导入只用于：
+先从一条用户确实希望复用的规则开始，在对应 Repository 中执行：
+
+```powershell
+provenloop enable retrieval
+provenloop remember `
+  --content "Inspect package scripts and run targeted repository tests." `
+  --when "running repository tests" --scope repository
+```
+
+随后开启新的 Copilot Session，请它先调用 `provenloop_context`，再通过
+`provenloop_explain` 检查规则、适用范围和来源。实际尝试后再明确反馈。
+这条路径产生 `user_confirmed` Knowledge，不声称系统独立学会或证明了该规则。
+完整命令及 0.8 版本边界见 [README 首用流程](../README.md#first-useful-workflow)。
+
+可选历史导入仍是后续设计，不是 0.8 的全量历史摄取能力。当前自动对账只处理可信
+SDK 当前 Session 的观察窗口；缺少 workspace 元数据时记录诊断并跳过，不猜路径。
+未来的可选历史导入只用于：
 
 - 建立使用基线。
 - 形成可审阅 Candidate。
@@ -769,7 +803,8 @@ copilot
 
 ### 9.3 日常使用
 
-每个新任务开始时，Agent 调用：
+0.8 通过 MCP 初始化 instructions 和插件 skill 请求 Agent 在新任务或恢复任务
+开始时调用一次；指令存在不代表宿主必然调用：
 
 ```text
 provenloop_context(prompt)
@@ -781,10 +816,11 @@ provenloop_context(prompt)
 - Repository Guidance。
 - Personal Preference。
 - Active Knowledge。
-- Approved Playbook。
+- Approved Playbook（M5 目标，当前不会返回）。
 
 任务进行时，Extension callback 只复制有界字段并交给异步 writer。writer
-完成脱敏和原子入队；后台 Worker 再更新 Episode、Outcome 和 Knowledge 状态。
+完成第一遍脱敏和原子入队；Worker 第二遍脱敏后更新 Episode 和已绑定的 Knowledge
+状态。自动延迟 Outcome 关联属于 M3，不是每次后台处理都会执行的能力。
 
 ### 9.4 用户控制
 
@@ -793,7 +829,7 @@ provenloop_context(prompt)
 
 | 动作 | 结果 |
 |---|---|
-| 有用 | 记录正向 Utility，不自动扩大 Scope |
+| 有用 | 记录用户反馈，不自动计为采用、成功或已证明的 Utility |
 | 不相关 | 记录 Trigger 误匹配，当前任务停止使用 |
 | 错误 | 立即转为 Disputed，并请求可选说明 |
 | 已过期 | 停止自动使用，进入重新验证 |
@@ -805,6 +841,13 @@ provenloop_context(prompt)
 
 这些动作应通过稳定 CLI 命令、MCP Tool 参数或轻量交互控件完成，不能依赖 Agent
 自行理解一段自然语言后猜测用户意图。
+
+MCP 会先返回待批准动作和 `PL-...` 确认码。真实用户须在当前可信 Session 中
+发送工具给出的 `confirm PL-...` 或 `确认 PL-...`，再重试原请求。批准最长五分钟，
+绑定动作、目标、请求、Scope、解决的反证及采用标记；参数变化需要新批准。
+Agent 不能替用户确认。Branch Context 仅支持 helpful、irrelevant、wrong、stale
+观察反馈，不会因此升级为 Knowledge，也不支持 confirm、revoke、set_scope 或 mute_session。
+下列复盘、Insight 和 Playbook 自然语言示例属于未来能力。
 
 自然语言示例：
 
@@ -834,19 +877,33 @@ provenloop_feedback
 ```powershell
 provenloop status
 provenloop doctor
-provenloop disable
-provenloop enable
-provenloop remember
-provenloop correct
-provenloop mute
-provenloop forget
+provenloop disable retrieval
+provenloop enable retrieval
+provenloop knowledge list --scope repository
+provenloop knowledge show <knowledge-id>
+provenloop knowledge confirm <knowledge-id> --expect <digest> --confirm
+provenloop knowledge replace <knowledge-id> --content <text> --expect <digest> --confirm
+provenloop knowledge revoke <knowledge-id> --expect <digest> --confirm
+provenloop correct <knowledge-id>
+provenloop mute <knowledge-id> --session <session-id>
+provenloop forget <knowledge-id>
+provenloop observations show
+provenloop observations export --date 2026-09-06
 provenloop uninstall
 provenloop purge
 ```
 
+`knowledge` 和 `observations` 子命令包含在 0.8 中。每次变更先读取 `knowledge show`
+中的最新 `expectedDigest`；confirm/replace 仅在用户确实解决反证时使用
+`--resolve "id1,id2"`。Revoke 归档并保留历史，Forget 执行删除。
+Workflow 操作还需要匹配实时可信 SDK Session 的 `SESSION_ID`、workflow 和 `--cwd`；
+单独设置参数不能授权。
+观察按 UTC 日期显示，export 输出当前代码版本的精简 JSON，不包含原始对话。
+
 ### 9.5 学习收益
 
-ProvenLoop 应让用户看到简洁的 **Learning Dividend**：
+长期产品可展示有可靠对照支持的 **Learning Dividend**。以下数字仅为未来界面示例，
+不是当前实测结果或已实现仪表盘：
 
 ```text
 本月：
@@ -859,7 +916,8 @@ ProvenLoop 应让用户看到简洁的 **Learning Dividend**：
   新批准 Playbook：1
 ```
 
-它不是为了制造虚荣指标，而是让用户判断系统是否值得继续运行。
+当前本地观察仅显示有来源的调用、提供、明确采用、反馈、纠正及验证计数和覆盖范围。
+任务耗时、对照分组和最终结果仍未知，不能把合成回放数字放进用户收益栏。
 
 ---
 
@@ -876,14 +934,13 @@ ProvenLoop 应让用户看到简洁的 **Learning Dividend**：
 - 通用 Retention 和 Consolidation。
 - 普通 Memory Dashboard。
 
-优先采用：
+当前采用可替换接口和 SQLite FTS5/BM25，Memorix 不是安装依赖：
 
 ```text
 ProvenLoop
   -> KnowledgeBackend
-      -> Memorix
-      -> 其他 Memory Backend
-      -> 最小本地 Fallback
+      -> SqliteFtsKnowledgeBackend（当前）
+      -> Memorix / 其他 Backend（后续可选）
 ```
 
 ### 10.2 ProvenLoop 必须拥有的数据
@@ -1065,13 +1122,14 @@ Scope
 
 ### 12.5 Outcome-qualified Success
 
-一个 Episode 只有在以下条件满足时才算最终成功：
+M3 计划中的 Outcome-qualified Success 要求：
 
 1. 预声明的测试、构建或验收通过。
 2. 没有已知的否定性 Review。
 3. 在 14 天或下一发布周期内，没有关联到同因 Revert 或 Bug Fix。
 
 观察窗口尚未结束时，标记为 `censored`，不能提前作为最终成功训练样本。
+当前普通观察不会自动执行完整延迟结果关联，也不会因为已过 14 天就把未知结果改成成功。
 
 ### 12.6 离线回放集
 
@@ -1171,7 +1229,7 @@ D：Candidate Playbook
 
 ### 12.10 Learning Dividend
 
-用户侧展示：
+未来用户侧收益展示需要真实受控证据：
 
 - 少输入了多少重复 Context。
 - 少发生了多少重复纠正。
@@ -1180,6 +1238,7 @@ D：Candidate Playbook
 - 哪些 Guidance 被反证并停用。
 
 产品团队侧还必须关注错误注入和伤害，不能只展示正向收益。
+当前 `observations show/export` 是观测入口，不计算因果收益；缺失值显示为未知。
 
 ### 12.11 Deep Retrospective 评估
 
@@ -1332,6 +1391,9 @@ ProvenLoop 永久收缩为 Branch Memory 或纠正记录工具。前一阶段验
 - Evidence Tier 标注准确率不低于 95%。
 
 M1 + M2 构成第一个可正式验证的 ProvenLoop 产品。
+以上收益是待证明的产品门槛。32 组 Branch Continuation 和 24 组 Correction Recurrence
+内置合成夹具只验证回归行为，不能替代真实受控任务。安全、显式授权的个人观察试用可以
+先行，但不能据此声称满足推广或正式发布资格。
 
 ### M3：Outcome Evidence Learning
 
@@ -1491,21 +1553,27 @@ Extension callback 只做：
 2. **Forget Knowledge**
    - 硬删除 Knowledge 正文、索引、Embedding 和运行时缓存。
    - 删除或重新计算由它派生的 Candidate 和 Playbook。
-   - 保留不含内容、Prompt、代码和 Source Reference 的最小匿名 Tombstone，
-     仅用于防止后台任务从旧队列再次恢复同一条已删除知识。
+   - 保留不含正文的删除目标标识、来源摘要或 Tombstone，用于防止重放和恢复复活内容。
+     它们仍是敏感的本地关联元数据，不能称为完全匿名。
 
 3. **Delete by Source、Session 或 Episode**
    - 硬删除对应 Raw Payload、摘要及所有派生 Knowledge、评估样本和索引。
    - 重新计算依赖这些证据的置信度；证据不足的产物自动降级或停用。
-   - 最小 Tombstone 只记录随机删除操作 ID、时间和已完成状态，不保留可逆 Hash
-     或能够重新识别原内容的信息。
+   - Tombstone 还需保留阻止重放所需的身份/摘要；不能承诺仅保留随机删除 ID。
+   - 删除门禁覆盖受管理的 canonical、queue、projection 和关联记录，并使本地观察失效；
+     不会改写恢复备份，恢复时须拒绝缺少当前删除 Tombstone 的备份。
+     用户自行复制的备份、外部导出和 Copilot 自身 Session 文件不在自动删除范围内。
 
 4. **Purge**
-   - 删除 ProvenLoop 的全部本地数据，包括 Raw Event、Knowledge、Playbook、
-     Evaluation、Queue、Cache 和 Tombstone。
+   - 停止并确认活动 Extension 退出后，删除所有权已验证的 ProvenLoop 数据根目录，
+     包括其中的 Raw Event、Knowledge、Evaluation、Queue、Cache 和 Tombstone。
+   - 不删除任意其他目录、独立备份或用户已分享的导出。
 
 因此，`Append-only` 表示正常学习记录不能被静默改写，不表示 ProvenLoop 可以拒绝
 用户发起的硬删除。
+恢复旧备份不得复活已删除来源；数据库恢复、安装版本切换和 Git 回滚是不同操作。
+当前实现细节与恢复限制以 [存储架构](architecture.md#5-storage-architecture)
+和 [安装与回滚](alpha-installation.md#rollback) 为准。
 
 ---
 

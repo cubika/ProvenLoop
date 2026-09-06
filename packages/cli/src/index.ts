@@ -24,3 +24,24 @@ export {
   runCaptureWorkerOnce,
   type RunCaptureWorkerOnceOptions,
 } from "./run-worker.js";
+export {
+  reconcileCurrentSessionCapture,
+  type ReconcileCurrentSessionCaptureOptions,
+  type ReconcileCurrentSessionCaptureResult,
+} from "./reconcile-capture.js";
+export {
+  exportLocalObservationManifest,
+  readLocalObservationSummary,
+  recordLocalObservationBatch,
+  type LocalObservationSummary,
+  type ObservationCaptureHealth,
+  type ObservationContextUse,
+  type ObservationCorrectionOpportunity,
+  type RecordLocalObservationBatchOptions,
+} from "./observation-summary.js";
+export {
+  collectLocalObservations,
+  invalidateLocalObservationProjection,
+  type CollectLocalObservationsOptions,
+  type CollectLocalObservationsResult,
+} from "./collect-observations.js";

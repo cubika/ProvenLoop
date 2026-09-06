@@ -14,13 +14,20 @@ import {
   CopilotCliAdapter,
   assertCopilotAdapterDataRoot,
   readCopilotAdapterState,
+  readInternalSessionIds,
+  readTrustedSessionContext,
+  type TrustedSessionContext,
 } from "@provenloop/copilot-adapter";
 import {
   PROVENLOOP_VERSION,
+  CURRENT_SCHEMA_VERSION,
   type Scope,
+  type SessionIdentity,
 } from "@provenloop/contracts";
 import {
   sanitizeDiagnostic,
+  sha256,
+  isProvenLoopInternalEnvironment,
 } from "@provenloop/domain";
 import {
   resolveWindowsProvenLoopDataRoot,
@@ -44,6 +51,7 @@ import {
 import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
+import { PROVENLOOP_CODE_VERSION } from "./release-metadata.js";
 
 interface JsonRpcRequest {
   readonly id?: number | string | null;
@@ -64,6 +72,10 @@ export interface McpServerIo {
 
 export interface McpToolHandlers {
   context(request: ContextRequest): Promise<ContextResponse>;
+  unavailableContext?(
+    request: ContextRequest,
+    detail: string,
+  ): Promise<ContextResponse>;
   explain(request: {
     readonly explanationRef: string;
     readonly sessionId: string;
@@ -80,13 +92,22 @@ export interface McpServerOptions {
   readonly now?: () => Date;
   readonly sessionId?: string;
   readonly workflowScopeId?: string;
+  readonly resolveTrustedContext?: () => Promise<TrustedMcpContext | undefined>;
 }
 
-interface TrustedMcpContext {
-  readonly cwd: string;
-  readonly sessionId: string;
-  readonly workflowScopeId?: string;
-}
+export type TrustedMcpContext = TrustedSessionContext;
+
+const trustedWorkspace = (
+  context: TrustedMcpContext,
+): NonNullable<ContextRequest["trustedWorkspace"]> => ({
+  repositoryState: context.repositoryState,
+  repositoryObservedAt: context.repositoryObservedAt,
+  ...(context.repositoryState !== "known_repo" ? {} : {
+    ...(context.repositoryId === undefined ? {} : { repositoryId: context.repositoryId }),
+    ...(context.branch === undefined ? {} : { branch: context.branch }),
+    ...(context.commitSha === undefined ? {} : { commitSha: context.commitSha }),
+  }),
+});
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
 
@@ -256,6 +277,7 @@ const parseContextRequest = (
     prompt,
     sessionId: trusted.sessionId,
     tokenBudget: input.tokenBudget,
+    trustedWorkspace: trustedWorkspace(trusted),
     ...(trusted.workflowScopeId === undefined
       ? {}
       : {
@@ -318,8 +340,11 @@ const parseFeedbackRequest = (
       "action",
       "reason",
       "requestId",
+      "resolvesEvidenceIds",
       "scope",
       "targetId",
+      "targetRef",
+      "userReportedApplied",
     ])
   ) {
     return undefined;
@@ -330,7 +355,16 @@ const parseFeedbackRequest = (
       ? input.action as ContextFeedbackAction
       : undefined;
   const requestId = nonEmptyString(input.requestId);
-  const targetId = nonEmptyString(input.targetId);
+  const resolvesEvidenceIds = stringList(input.resolvesEvidenceIds);
+  const targetRef = input.targetRef;
+  const targetKind = isRecord(targetRef) &&
+    hasOnlyKeys(targetRef, ["kind", "id"]) &&
+    (targetRef.kind === "knowledge" || targetRef.kind === "branch_context")
+    ? targetRef.kind
+    : undefined;
+  const targetId = targetKind === undefined
+    ? nonEmptyString(input.targetId)
+    : nonEmptyString((targetRef as Readonly<Record<string, unknown>>).id);
   const reason = optionalString(input, "reason");
   const scope =
     typeof input.scope === "string" &&
@@ -341,6 +375,13 @@ const parseFeedbackRequest = (
     action === undefined ||
     requestId === undefined ||
     targetId === undefined ||
+    (input.resolvesEvidenceIds !== undefined && (
+      resolvesEvidenceIds === undefined || action !== "confirm"
+    )) ||
+    (input.targetRef !== undefined && targetKind === undefined) ||
+    (input.targetRef !== undefined && input.targetId !== undefined) ||
+    (input.userReportedApplied !== undefined &&
+      typeof input.userReportedApplied !== "boolean") ||
     (
       input.reason !== undefined &&
       reason === undefined
@@ -362,12 +403,16 @@ const parseFeedbackRequest = (
   }
   return {
     action,
+    cwd: trusted.cwd,
     ...(reason === undefined
       ? {}
       : {
           reason,
         }),
     requestId,
+    ...(resolvesEvidenceIds === undefined ? {} : {
+      resolvesEvidenceIds: [...new Set(resolvesEvidenceIds)].sort(),
+    }),
     ...(scope === undefined
       ? {}
       : {
@@ -375,13 +420,21 @@ const parseFeedbackRequest = (
         }),
     sessionId: trusted.sessionId,
     targetId,
+    trustedWorkspace: trustedWorkspace(trusted),
+    ...(targetKind === undefined ? {} : { targetKind }),
+    ...(trusted.workflowScopeId === undefined ? {} : {
+      workflowScopeId: trusted.workflowScopeId,
+    }),
+    ...(input.userReportedApplied === undefined ? {} : {
+      userReportedApplied: input.userReportedApplied as boolean,
+    }),
   };
 };
 
 const tools = [
   {
     description:
-      "Return zero to three scoped ProvenLoop guidance items within a hard rendered token budget.",
+      "At the start of a new coding task or a resumed task, retrieve scoped local guidance once. Do not repeat unchanged guidance for every turn. Returns at most three items within an estimated rendered token budget.",
     inputSchema: {
       additionalProperties: false,
       properties: {
@@ -427,7 +480,7 @@ const tools = [
   },
   {
     description:
-      "Record one deterministic action for Knowledge returned by a prior ProvenLoop context request.",
+      "Propose feedback on previously returned Knowledge or Branch Context. Persistent feedback requires the real user's exact approval of the returned confirmation code; never approve on the user's behalf.",
     inputSchema: {
       additionalProperties: false,
       properties: {
@@ -450,6 +503,11 @@ const tools = [
         requestId: {
           type: "string",
         },
+        resolvesEvidenceIds: {
+          description: "For explicit confirmation only: the counterevidence IDs the user has reviewed and is resolving. Ordinary confirmation does not clear other or newer counterevidence.",
+          items: { type: "string" },
+          type: "array",
+        },
         scope: {
           enum: [
             "branch",
@@ -462,11 +520,27 @@ const tools = [
         targetId: {
           type: "string",
         },
+        targetRef: {
+          additionalProperties: false,
+          properties: {
+            kind: { enum: ["knowledge", "branch_context"], type: "string" },
+            id: { type: "string" },
+          },
+          required: ["kind", "id"],
+          type: "object",
+        },
+        userReportedApplied: {
+          description: "True only if the user explicitly reports actually applying this item; helpful alone does not mean applied.",
+          type: "boolean",
+        },
       },
       required: [
         "action",
         "requestId",
-        "targetId",
+      ],
+      oneOf: [
+        { required: ["targetRef"] },
+        { required: ["targetId"] },
       ],
       type: "object",
     },
@@ -567,23 +641,68 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       startedAt + DEFAULT_CONTEXT_TIMEOUT_MS;
     try {
       const state = await this.#state();
-      if (!state.capabilities.retrieval.enabled) {
+      if (await this.#isInternalSession(request.sessionId)) {
         return {
           items: [],
           latencyMs: Date.now() - startedAt,
           renderedTokens: 0,
           requestId: `context-${randomUUID()}`,
+          status: "muted",
+          statusDetail: "ProvenLoop internal sessions do not receive retrieval context.",
+        };
+      }
+      if (!state.capabilities.retrieval.enabled) {
+        const requestId = `context-${randomUUID()}`;
+        let recorded = false;
+        let store: CanonicalSqliteStore | undefined;
+        try {
+          const paths = resolveWindowsProvenLoopPaths(this.#dataRoot);
+          await access(paths.database);
+          store = new CanonicalSqliteStore(paths.database, {
+            busyTimeoutMs: MCP_WRITE_RESERVE_MS,
+          });
+          recorded = store.appendContextUseRecord({
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+            appliedKnowledgeIds: [],
+            candidateKnowledgeIds: [],
+            codeVersion: PROVENLOOP_CODE_VERSION,
+            createdAt: this.#now().toISOString(),
+            latencyMs: Date.now() - startedAt,
+            renderedTokens: 0,
+            requestId,
+            retrievalStatus: "disabled",
+            returnedKnowledgeIds: [],
+            sessionId: request.sessionId,
+            ...(request.trustedWorkspace?.repositoryState !== "known_repo" ? {} : {
+              ...(request.trustedWorkspace.repositoryId === undefined ? {} : {
+                repoId: request.trustedWorkspace.repositoryId,
+              }),
+              ...(request.trustedWorkspace.branch === undefined ? {} : {
+                branch: request.trustedWorkspace.branch,
+              }),
+            }),
+          });
+        } catch {
+          recorded = false;
+        } finally {
+          store?.close();
+        }
+        return {
+          items: [],
+          latencyMs: Date.now() - startedAt,
+          renderedTokens: 0,
+          requestId,
           status: "degraded",
-          statusDetail: "Retrieval capability is disabled.",
+          statusDetail: recorded
+            ? "Retrieval capability is disabled."
+            : "Retrieval capability is disabled; its observation could not be persisted.",
         };
       }
       const identity = await withDeadline(
-        this.#adapter.resolveSession({
-          adapterVersion:
-            state.detectedCopilotVersion ?? "unknown",
-          cwd: request.cwd,
-          sessionId: request.sessionId,
-        }),
+        this.#resolveSessionIdentity(
+          request,
+          state.detectedCopilotVersion ?? "unknown",
+        ),
         deadline - MCP_WRITE_RESERVE_MS,
         "Retrieval deadline expired while resolving repository identity.",
       );
@@ -614,9 +733,18 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         );
       }
       try {
+        const {
+          repoId: suppliedRepositoryId,
+          branch: suppliedBranch,
+          headSha: suppliedHead,
+          ...unscopedRequest
+        } = request;
+        void suppliedRepositoryId;
+        void suppliedBranch;
+        void suppliedHead;
         return await this.#withService((service) =>
           service.context({
-            ...request,
+            ...unscopedRequest,
             now: this.#now(),
             ...(identity.branch === undefined
               ? {}
@@ -652,11 +780,64 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     }
   }
 
+  public async unavailableContext(
+    request: ContextRequest,
+    detail: string,
+  ): Promise<ContextResponse> {
+    const startedAt = Date.now();
+    const requestId = `context-${randomUUID()}`;
+    let store: CanonicalSqliteStore | undefined;
+    try {
+      const paths = resolveWindowsProvenLoopPaths(this.#dataRoot);
+      await assertCopilotAdapterDataRoot(paths);
+      if (await this.#isInternalSession(request.sessionId)) {
+        return {
+          items: [],
+          latencyMs: Date.now() - startedAt,
+          renderedTokens: 0,
+          requestId,
+          status: "muted",
+          statusDetail: "ProvenLoop internal sessions do not receive retrieval context.",
+        };
+      }
+      await access(paths.database);
+      store = new CanonicalSqliteStore(paths.database, { busyTimeoutMs: MCP_WRITE_RESERVE_MS });
+      store.appendContextUseRecord({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        appliedKnowledgeIds: [],
+        candidateKnowledgeIds: [],
+        codeVersion: PROVENLOOP_CODE_VERSION,
+        createdAt: this.#now().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        renderedTokens: 0,
+        requestId,
+        retrievalStatus: "degraded",
+        returnedKnowledgeIds: [],
+        sessionId: request.sessionId,
+      });
+    } catch {
+      // An unavailable canonical store must not turn a degraded read into a successful one.
+    } finally {
+      store?.close();
+    }
+    return {
+      items: [],
+      latencyMs: Date.now() - startedAt,
+      renderedTokens: 0,
+      requestId,
+      status: "degraded",
+      statusDetail: detail,
+    };
+  }
+
   public async explain(request: {
     readonly explanationRef: string;
     readonly sessionId: string;
   }): Promise<ContextExplanation> {
     await this.#assertRetrievalEnabled();
+    if (await this.#isInternalSession(request.sessionId)) {
+      throw new Error("Internal sessions cannot inspect user context.");
+    }
     return this.#withKnowledgeLease(() =>
       this.#withService(
         (service) =>
@@ -676,21 +857,33 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         "Retrieval capability is disabled.",
       );
     }
+    if (await this.#isInternalSession(request.sessionId)) {
+      throw new Error("Internal sessions cannot submit user feedback.");
+    }
     let scopedRequest = request;
     if (request.action === "set_scope") {
-      const identity = await this.#adapter.resolveSession({
-        adapterVersion:
-          state.detectedCopilotVersion ?? "unknown",
-        cwd: this.#cwd,
+      const identity = await this.#resolveSessionIdentity({
+        cwd: request.cwd ?? this.#cwd,
         sessionId: request.sessionId,
-      });
+        ...(request.trustedWorkspace === undefined ? {} : {
+          trustedWorkspace: request.trustedWorkspace,
+        }),
+      }, state.detectedCopilotVersion ?? "unknown");
       if (identity.internalSession) {
         throw new Error(
           "Internal sessions cannot change Knowledge scope.",
         );
       }
+      const workflowScopeId = request.workflowScopeId ?? this.#workflowScopeId;
+      const {
+        branchScopeId: suppliedBranch,
+        repositoryScopeId: suppliedRepository,
+        ...withoutScope
+      } = request;
+      void suppliedBranch;
+      void suppliedRepository;
       scopedRequest = {
-        ...request,
+        ...withoutScope,
         ...(identity.branch === undefined
           ? {}
           : {
@@ -701,10 +894,10 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
           : {
               repositoryScopeId: identity.repositoryId,
             }),
-        ...(this.#workflowScopeId === undefined
+        ...(workflowScopeId === undefined
           ? {}
           : {
-              workflowScopeId: this.#workflowScopeId,
+              workflowScopeId,
             }),
       };
     }
@@ -715,6 +908,48 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         true,
       ),
     );
+  }
+
+  async #isInternalSession(sessionId: string): Promise<boolean> {
+    const paths = resolveWindowsProvenLoopPaths(this.#dataRoot);
+    return isProvenLoopInternalEnvironment(process.env) ||
+      (await readInternalSessionIds(paths.internalSessions)).has(sessionId.trim());
+  }
+
+  async #resolveSessionIdentity(
+    request: Pick<ContextRequest, "cwd" | "sessionId" | "trustedWorkspace">,
+    adapterVersion: string,
+  ): Promise<SessionIdentity> {
+    const snapshot = request.trustedWorkspace;
+    if (snapshot === undefined) {
+      return this.#adapter.resolveSession({
+        adapterVersion,
+        cwd: request.cwd,
+        sessionId: request.sessionId,
+      });
+    }
+    const observedAt = Date.parse(snapshot.repositoryObservedAt);
+    const repositoryId = nonEmptyString(snapshot.repositoryId);
+    if (
+      (snapshot.repositoryState !== "known_repo" &&
+        snapshot.repositoryState !== "known_outside_repo") ||
+      !Number.isFinite(observedAt) ||
+      Date.now() - observedAt > 60_000 ||
+      observedAt > Date.now() + 5_000 ||
+      (snapshot.repositoryState === "known_repo" &&
+        repositoryId === undefined)
+    ) {
+      throw new Error("Trusted repository identity is unknown, refreshing, or stale.");
+    }
+    return {
+      internalSession: await this.#isInternalSession(request.sessionId),
+      sessionId: request.sessionId,
+      ...(snapshot.repositoryState !== "known_repo" || repositoryId === undefined ? {} : {
+        repositoryId,
+        ...(snapshot.branch === undefined ? {} : { branch: snapshot.branch }),
+        ...(snapshot.commitSha === undefined ? {} : { commitSha: snapshot.commitSha }),
+      }),
+    };
   }
 
   async #withKnowledgeLease<T>(
@@ -813,6 +1048,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       }
       const service = new ContextRetrievalService({
         backend: activeBackend,
+        codeVersion: PROVENLOOP_CODE_VERSION,
         now: this.#now,
         store,
         syncKnowledge: async (candidate) => {
@@ -900,7 +1136,53 @@ const callTool = async (
           "Invalid provenloop_feedback arguments.",
         );
       }
-      return handlers.feedback(request);
+      const approvalCode = `PL-${sha256({
+        action: request.action,
+        cwd: trusted.cwd,
+        reason: request.reason,
+        requestId: request.requestId,
+        resolvesEvidenceIds: request.resolvesEvidenceIds,
+        scope: request.scope,
+        sessionId: trusted.sessionId,
+        targetId: request.targetId,
+        targetKind: request.targetKind ?? "knowledge",
+        userReportedApplied: request.userReportedApplied === true,
+        workspaceVersion: trusted.workspaceVersion,
+      }).slice(0, 12)}`;
+      const approval = trusted.latestUserMessage;
+      const approvedText = approval?.text.trim();
+      if (
+        approval === undefined ||
+        approval.eventId.trim().length === 0 ||
+        !Number.isFinite(Date.parse(approval.timestamp)) ||
+        Date.now() - Date.parse(approval.timestamp) > 5 * 60_000 ||
+        Date.parse(approval.timestamp) > Date.now() + 5_000 ||
+        (approvedText !== `确认 ${approvalCode}` &&
+          approvedText !== `confirm ${approvalCode}`)
+      ) {
+        return {
+          action: request.action,
+          confirmationCode: approvalCode,
+          requestId: request.requestId,
+          message: `Proposed ${request.action} for ${request.targetKind ?? "knowledge"}:${request.targetId}; user-reported application: ${request.userReportedApplied === true}. Ask the user to approve by replying exactly: 确认 ${approvalCode}`,
+          ...(request.reason === undefined ? {} : { reason: request.reason }),
+          ...(request.resolvesEvidenceIds === undefined ? {} : {
+            resolvesEvidenceIds: request.resolvesEvidenceIds,
+          }),
+          ...(request.scope === undefined ? {} : { scope: request.scope }),
+          status: "confirmation_required",
+          targetRef: {
+            kind: request.targetKind ?? "knowledge",
+            id: request.targetId,
+          },
+          userReportedApplied: request.userReportedApplied === true,
+        };
+      }
+      return handlers.feedback({
+        ...request,
+        evidenceRef: approval.eventId,
+        source: "user",
+      });
     }
     default:
       throw new Error(`Unknown tool: ${call.name}.`);
@@ -914,30 +1196,24 @@ export const runMcpServer = async (
   },
   options: McpServerOptions = {},
 ): Promise<void> => {
-  const trusted: TrustedMcpContext = {
-    cwd: options.cwd ?? process.cwd(),
-    sessionId:
-      options.sessionId ??
-      nonEmptyString(process.env.SESSION_ID) ??
-      `mcp-process-${process.pid}-${randomUUID()}`,
-    ...(options.workflowScopeId === undefined
-      ? {}
-      : {
-          workflowScopeId: options.workflowScopeId,
-        }),
-  };
+  const root = options.dataRoot ?? resolveWindowsProvenLoopDataRoot();
+  const sessionId = options.sessionId ?? nonEmptyString(process.env.SESSION_ID);
+  const resolveTrustedContext = options.resolveTrustedContext ?? (async () => {
+    if (sessionId === undefined) {
+      return undefined;
+    }
+    return readTrustedSessionContext(root, sessionId);
+  });
   const handlers =
     options.handlers ??
     new LocalMcpToolHandlers({
-      cwd: trusted.cwd,
-      dataRoot:
-        options.dataRoot ??
-        resolveWindowsProvenLoopDataRoot(),
+      cwd: options.cwd ?? process.cwd(),
+      dataRoot: root,
       now: options.now ?? (() => new Date()),
-      ...(trusted.workflowScopeId === undefined
+      ...(options.workflowScopeId === undefined
         ? {}
         : {
-            workflowScopeId: trusted.workflowScopeId,
+            workflowScopeId: options.workflowScopeId,
           }),
     });
   const input = createInterface({
@@ -970,6 +1246,8 @@ export const runMcpServer = async (
                 capabilities: {
                   tools: {},
                 },
+                instructions:
+                  "For a new coding task or resumed task, call provenloop_context once before substantive work with relevant fileHints and tokenBudget 600. Do not repeatedly inject unchanged guidance. Treat unavailable identity or empty results honestly. Persistent feedback requires the real user's exact approval of the server's confirmation code; never approve on the user's behalf. User-confirmed rules are not externally verified knowledge, and displayed or helpful context is not automatically applied or a verified outcome.",
                 protocolVersion: MCP_PROTOCOL_VERSION,
                 serverInfo: {
                   name: "provenloop",
@@ -1007,6 +1285,42 @@ export const runMcpServer = async (
               break;
             }
             try {
+              const trusted = await resolveTrustedContext();
+              if (
+                trusted === undefined ||
+                (trusted.repositoryState !== "known_repo" &&
+                  trusted.repositoryState !== "known_outside_repo")
+              ) {
+                if (call.name === "provenloop_context") {
+                  const contextRequest = trusted === undefined
+                    ? undefined
+                    : parseContextRequest(call.arguments, trusted);
+                  if (
+                    contextRequest !== undefined &&
+                    handlers.unavailableContext !== undefined
+                  ) {
+                    toolResult(
+                      io.output,
+                      request.id,
+                      await handlers.unavailableContext(
+                        contextRequest,
+                        "Trusted repository identity is unknown or being refreshed. No context was retrieved.",
+                      ),
+                    );
+                    break;
+                  }
+                  toolResult(io.output, request.id, {
+                    items: [],
+                    latencyMs: 0,
+                    renderedTokens: 0,
+                    requestId: `context-${randomUUID()}`,
+                    status: "degraded",
+                    statusDetail: "Trusted session/workspace identity is unavailable or being refreshed. No context was retrieved.",
+                  });
+                  break;
+                }
+                throw new Error("Trusted session/workspace identity is unavailable.");
+              }
               toolResult(
                 io.output,
                 request.id,

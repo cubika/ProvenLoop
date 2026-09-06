@@ -14,6 +14,7 @@ import {
   type WorkEpisode,
 } from "@provenloop/contracts";
 import {
+  boundVerificationOperation,
   containsPotentialSecret,
   CorrectionCaptureBuilder,
   createCaptureEnvelope,
@@ -77,6 +78,8 @@ const normalizeCorrectionIdentity = (value: string): string =>
 
 export const correctionRecurrenceDatasetSchema = z
   .object({
+    evidenceKind: z.literal("synthetic").default("synthetic"),
+    evaluationPurpose: z.literal("regression").default("regression"),
     datasetId: evaluationIdentifierSchema,
     datasetVersion: z.number().int().positive(),
     negativeCases: z.array(negativeCaseSchema).min(3).max(50),
@@ -239,6 +242,9 @@ export interface CorrectionRecurrenceMetrics {
 }
 
 export interface CorrectionRecurrenceEvaluationReport {
+  readonly evidenceKind: "synthetic";
+  readonly evaluationPurpose: "regression";
+  readonly fieldEffect: "not_established";
   readonly datasetId: string;
   readonly datasetVersion: number;
   readonly metrics: CorrectionRecurrenceMetrics;
@@ -267,6 +273,7 @@ export interface CorrectionRecurrenceEvaluationOptions {
 interface CaseMaterial {
   readonly caseId: string;
   readonly correctionEventIds: readonly string[];
+  readonly operationEventIds: readonly string[];
   readonly episodeIds: readonly string[];
   readonly repoId: string;
   readonly trigger: string;
@@ -372,7 +379,10 @@ const envelope = (input: {
   readonly content?: string;
   readonly eventType: string;
   readonly occurrence: number;
+  readonly operationId?: string;
   readonly parentEventId?: string;
+  readonly command?: string;
+  readonly verificationBinding?: NonNullable<CaptureEnvelope["event"]["verificationBinding"]>;
   readonly repoId: string;
   readonly sessionId?: string;
   readonly sourceEventId?: string;
@@ -383,19 +393,29 @@ const envelope = (input: {
     adapter: "copilot-cli",
     adapterVersion: "1.0.82-0",
     branch: `feat/${input.caseId}`,
+    worktree: `C:\\fixtures\\${input.caseId}`,
     ...(input.completionStatus === undefined
       ? {}
       : {
           completionStatus: input.completionStatus,
+          exitCode: input.completionStatus === "succeeded" ? 0 : 1,
         }),
-    ...(input.content === undefined
+    ...(input.content === undefined && input.command === undefined
       ? {}
       : {
           content: {
-            message: input.content,
+            ...(input.content === undefined ? {} : { message: input.content }),
+            ...(input.command === undefined ? {} : {
+              toolArguments: { command: input.command },
+            }),
           },
         }),
     eventType: input.eventType,
+    ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+    ...(input.command === undefined ? {} : {
+      toolName: "powershell",
+    }),
+    ...(input.verificationBinding === undefined ? {} : { verificationBinding: input.verificationBinding }),
     ...(input.parentEventId === undefined
       ? {}
       : {
@@ -474,6 +494,7 @@ const materialFor = (
   const envelopes: CaptureEnvelope[] = [];
   const episodes: WorkEpisode[] = [];
   const correctionEventIds: string[] = [];
+  const operationEventIds: string[] = [];
   const verificationEventIds: string[] = [];
   for (
     let occurrence = 0;
@@ -494,29 +515,66 @@ const materialFor = (
     ];
     const occurrenceVerificationIds: string[] = [];
     if (scenario !== "unverified") {
+      const operationId = `operation-${caseId}-${occurrence}`;
+      const operation = envelope({
+        caseId,
+        command: `npx vitest run ${caseId}`,
+        eventType: "tool.started",
+        occurrence,
+        operationId,
+        parentEventId: correction.event.eventId,
+        repoId,
+        timestamp: timestamp(caseIndex, occurrence, 15),
+        trust: "tool",
+      });
       const verification = envelope({
         caseId,
         completionStatus: "succeeded",
         eventType: "test.completed",
         occurrence,
+        operationId,
+        parentEventId: operation.event.eventId,
+        verificationBinding: {
+          correctionEventId: correction.event.eventId,
+          operationEventId: operation.event.eventId,
+        },
         repoId,
         timestamp: timestamp(caseIndex, occurrence, 20),
         trust: "tool",
       });
-      occurrenceEnvelopes.push(verification);
+      occurrenceEnvelopes.push(operation, verification);
+      operationEventIds.push(operation.event.eventId);
       occurrenceVerificationIds.push(verification.event.eventId);
       verificationEventIds.push(verification.event.eventId);
       if (
         scenario === "counterevidence" &&
         occurrence === trainingOccurrences - 1
       ) {
+        const failedOperationId = `operation-${caseId}-${occurrence}-counterevidence`;
+        const failedOperation = envelope({
+          caseId,
+          command: `npx vitest run ${caseId}`,
+          eventType: "tool.started",
+          occurrence,
+          operationId: failedOperationId,
+          parentEventId: verification.event.eventId,
+          repoId,
+          timestamp: timestamp(caseIndex, occurrence, 24),
+          trust: "tool",
+        });
         occurrenceEnvelopes.push(
+          failedOperation,
           envelope({
             caseId,
             completionStatus: "failed",
             eventType: "test.completed",
             occurrence,
+            operationId: failedOperationId,
             parentEventId: verification.event.eventId,
+            verificationBinding: {
+              correctionEventId: correction.event.eventId,
+              operationEventId: failedOperation.event.eventId,
+            },
             repoId,
             timestamp: timestamp(caseIndex, occurrence, 25),
             trust: "tool",
@@ -552,6 +610,7 @@ const materialFor = (
     material: {
       caseId,
       correctionEventIds,
+      operationEventIds,
       episodeIds: episodes.map((episode) => episode.episodeId),
       repoId,
       trigger,
@@ -603,11 +662,33 @@ const heldoutTraceMaterialFor = (
           trust: "user",
         })
       : undefined;
+  const operationId = `${episodeId}-operation`;
+  const operation = envelope({
+    caseId: material.caseId,
+    command: `npx vitest run ${material.caseId}`,
+    eventType: "tool.started",
+    occurrence,
+    operationId,
+    parentEventId: correction?.event.eventId ?? prompt.event.eventId,
+    repoId: material.repoId,
+    sessionId,
+    sourceEventId: `${episodeId}-operation-started`,
+    timestamp: timestamp(caseIndex, occurrence, 15),
+    trust: "tool",
+  });
   const verification = envelope({
     caseId: material.caseId,
     completionStatus: "succeeded",
     eventType: "test.completed",
     occurrence,
+    operationId,
+    parentEventId: operation.event.eventId,
+    ...(correction === undefined ? {} : {
+      verificationBinding: {
+        correctionEventId: correction.event.eventId,
+        operationEventId: operation.event.eventId,
+      },
+    }),
     repoId: material.repoId,
     sessionId,
     sourceEventId: `${episodeId}-verification`,
@@ -617,6 +698,7 @@ const heldoutTraceMaterialFor = (
   const allEnvelopes = [
     prompt,
     ...(correction === undefined ? [] : [correction]),
+    operation,
     verification,
   ];
   const initialEpisode: WorkEpisode = {
@@ -747,6 +829,7 @@ const provenanceComplete = (
   }
   const expectedEvidenceIds = [
     ...material.correctionEventIds,
+    ...material.operationEventIds,
     ...material.verificationEventIds,
   ];
   const evidence = store.knowledgeAdmissionEvidence([
@@ -847,6 +930,23 @@ export const evaluateCorrectionRecurrenceDataset = async (
   );
   try {
     ingestEnvelopes(store, trainingEnvelopes);
+    const canonicalTraining = new Map(
+      store.episodeSourceEnvelopes().map((item) => [item.event.eventId, item]),
+    );
+    for (const original of trainingEnvelopes) {
+      const binding = original.event.verificationBinding;
+      if (binding === undefined) {
+        continue;
+      }
+      const correction = canonicalTraining.get(binding.correctionEventId);
+      const verification = canonicalTraining.get(original.event.eventId);
+      if (
+        correction === undefined || verification === undefined ||
+        boundVerificationOperation(correction, verification, canonicalTraining) === undefined
+      ) {
+        throw new Error("Synthetic correction proof did not survive canonical storage with its operation and workspace binding.");
+      }
+    }
     store.replaceWorkEpisodeProjection({
       associations: [],
       corrections: [],
@@ -1017,17 +1117,24 @@ export const evaluateCorrectionRecurrenceDataset = async (
       ) {
         const feedback = await service.feedback({
           action: applicationFeedback,
-          reason: "Frozen M2 held-out replay observation.",
+          reason: "Synthetic M2 user-reported adoption and feedback.",
           requestId: response.requestId,
           sessionId,
+          source: "user",
           targetId: candidate.knowledgeId,
+          targetKind: "knowledge",
+          userReportedApplied: true,
         });
+        const contextUse = store.contextUseRecords().find(
+          (record) => record.requestId === response.requestId,
+        );
         if (
           feedback.status !== "recorded" ||
-          feedback.projectionStatus !== "synchronized"
+          contextUse?.feedback !== applicationFeedback ||
+          !contextUse.appliedKnowledgeIds.includes(`knowledge:${candidate.knowledgeId}`)
         ) {
           throw new Error(
-            `Context application was not recorded for ${material.caseId}.`,
+            `Synthetic user-reported application was not recorded for ${material.caseId}.`,
           );
         }
       }
@@ -1367,6 +1474,9 @@ export const evaluateCorrectionRecurrenceDataset = async (
       wrongInjections,
     };
     return {
+      evidenceKind: "synthetic",
+      evaluationPurpose: "regression",
+      fieldEffect: "not_established",
       datasetId: parsed.datasetId,
       datasetVersion: parsed.datasetVersion,
       metrics,
@@ -1409,6 +1519,8 @@ export const renderCorrectionRecurrenceReport = (
   report: CorrectionRecurrenceEvaluationReport,
 ): string => [
   "# Correction Recurrence Evaluation",
+  "",
+  "Synthetic regression only. Frozen traces and qualified outcomes are not evidence of real-world learning or causal benefit.",
   "",
   `- Dataset: \`${report.datasetId}\` v${report.datasetVersion}`,
   `- Status: **${report.status.toUpperCase()}**`,

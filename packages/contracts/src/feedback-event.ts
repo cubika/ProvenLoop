@@ -5,10 +5,12 @@ import {
   isoTimestampSchema,
   nonEmptyStringSchema,
   scopeSchema,
+  stringListSchema,
   versionedSchemaShape,
 } from "./common.js";
 
 export const feedbackTargetTypeSchema = z.enum([
+  "branch_context",
   "knowledge",
   "playbook",
   "episode",
@@ -52,6 +54,7 @@ export const feedbackEventSchema = z
     feedbackId: identifierSchema,
     kind: feedbackKindSchema,
     reason: nonEmptyStringSchema.optional(),
+    resolvesEvidenceIds: stringListSchema.optional(),
     scopeChange: scopeChangeSchema.optional(),
     source: feedbackSourceSchema,
     targetId: identifierSchema,

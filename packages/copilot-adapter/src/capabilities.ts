@@ -8,6 +8,7 @@ import {
 
 export const COPILOT_SUPPORTED_SOURCE_EVENT_TYPES = [
   "assistant.message",
+  "assistant.turn_start",
   "assistant.turn_end",
   "session.context_changed",
   "session.error",

@@ -207,6 +207,9 @@ try {
     typeof cliModule.runCli !== "function" ||
     typeof cliModule.runMcpServer !== "function" ||
     typeof cliModule.runCaptureWorkerOnce !== "function" ||
+    typeof cliModule.reconcileCurrentSessionCapture !== "function" ||
+    typeof cliModule.collectLocalObservations !== "function" ||
+    typeof cliModule.readLocalObservationSummary !== "function" ||
     typeof extensionModule.runInstalledCopilotExtension !== "function" ||
     typeof extensionModule.runProvenLoopCopilotExtension !== "function"
   ) {
@@ -484,6 +487,12 @@ public static class Program
       "PowerShell 5.1 MCP launcher returned the wrong runtime.",
     );
   }
+  const initialization = mcpLauncherResult.stdout.trim().split(/\r?\n/u)
+    .map((line) => JSON.parse(line))
+    .find((message) => message.id === 1);
+  if (!initialization?.result?.instructions?.includes("new coding task")) {
+    throw new Error("Installed MCP runtime is missing its context-use instructions.");
+  }
   const [
     marketplaceJson,
     pluginJson,
@@ -606,6 +615,45 @@ public static class Program
     ]),
     "installed CLI worker run",
   );
+  requireSuccess(
+    await runInstalledCli([
+      "remember", "--scope", "personal",
+      "--content", "Run focused tests before merging.",
+      "--when", "Changing code.",
+    ]),
+    "installed CLI remember",
+  );
+  const knowledgeList = await runInstalledCli([
+    "knowledge", "list", "--scope", "personal",
+  ]);
+  requireSuccess(knowledgeList, "installed CLI Knowledge list");
+  const [review] = JSON.parse(knowledgeList.stdout);
+  if (
+    review?.candidate?.evidenceTier !== "user_confirmed" ||
+    review.candidate.state !== "active" ||
+    !/^[a-f0-9]{64}$/u.test(review.expectedDigest ?? "")
+  ) {
+    throw new Error("Installed CLI did not persist a reviewable user-confirmed rule.");
+  }
+  requireSuccess(
+    await runInstalledCli([
+      "knowledge", "revoke", review.candidate.knowledgeId,
+      "--scope", "personal", "--expect", review.expectedDigest, "--confirm",
+    ]),
+    "installed CLI Knowledge revoke",
+  );
+  const revoked = await runInstalledCli([
+    "knowledge", "show", review.candidate.knowledgeId, "--scope", "personal",
+  ]);
+  requireSuccess(revoked, "installed CLI Knowledge show");
+  if (JSON.parse(revoked.stdout).candidate?.state !== "archived") {
+    throw new Error("Installed CLI did not preserve the revoked rule's audit history.");
+  }
+  const observations = await runInstalledCli(["observations", "show"]);
+  requireSuccess(observations, "installed CLI observations");
+  if (!Array.isArray(JSON.parse(observations.stdout))) {
+    throw new Error("Installed CLI observations returned an invalid summary collection.");
+  }
   requireSuccess(
     await runInstalledCli([
       "uninstall",

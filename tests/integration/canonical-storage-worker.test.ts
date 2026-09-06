@@ -44,6 +44,7 @@ import {
 } from "@provenloop/storage-sqlite";
 
 const temporaryDirectories: string[] = [];
+const latestVersion = DEFAULT_SQLITE_MIGRATIONS.length;
 const timestamp = "2026-08-29T00:00:00.000Z";
 const correctionMessage = [
   "Violated Constraint: Inspect package scripts before choosing a test runner",
@@ -121,7 +122,7 @@ describe("canonical SQLite storage", () => {
       busyTimeoutMs: 2_500,
       journalMode: "wal",
       quickCheck: "ok",
-      userVersion: 7,
+      userVersion: latestVersion,
     });
 
     const result = store.ingestQueueItem(queued);
@@ -158,8 +159,10 @@ describe("canonical SQLite storage", () => {
     legacy.exec("PRAGMA user_version = 1;");
     legacy.close();
 
-    const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(7);
+    const upgraded = new CanonicalSqliteStore(databasePath, {
+      allowSchemaMigration: true,
+    });
+    expect(upgraded.health().userVersion).toBe(latestVersion);
     upgraded.close();
 
     const verification = new DatabaseSync(databasePath);
@@ -221,8 +224,10 @@ describe("canonical SQLite storage", () => {
       );
     database.close();
 
-    const upgraded = new CanonicalSqliteStore(databasePath);
-    expect(upgraded.health().userVersion).toBe(7);
+    const upgraded = new CanonicalSqliteStore(databasePath, {
+      allowSchemaMigration: true,
+    });
+    expect(upgraded.health().userVersion).toBe(latestVersion);
     expect(() =>
       upgraded.replaceCorrectionProjection({
         correctionKeys: [
@@ -370,10 +375,11 @@ describe("canonical SQLite storage", () => {
 
     expect(() =>
       new CanonicalSqliteStore(databasePath, {
+        allowSchemaMigration: true,
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 8,
+            version: latestVersion + 1,
             sql: `
               CREATE TABLE migration_probe (
                 value TEXT NOT NULL
@@ -397,7 +403,7 @@ describe("canonical SQLite storage", () => {
             AND name = 'migration_probe'`,
       )
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(7);
+    expect(Number(version.user_version)).toBe(latestVersion);
     expect(Number(probe.count)).toBe(0);
     database.close();
   });
@@ -410,10 +416,11 @@ describe("canonical SQLite storage", () => {
 
     expect(() =>
       new CanonicalSqliteStore(databasePath, {
+        allowSchemaMigration: true,
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 8,
+            version: latestVersion + 1,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN unexpected TEXT;
@@ -430,7 +437,7 @@ describe("canonical SQLite storage", () => {
     const columns = database
       .prepare("PRAGMA table_info(raw_events);")
       .all() as readonly Readonly<Record<string, unknown>>[];
-    expect(Number(version.user_version)).toBe(7);
+    expect(Number(version.user_version)).toBe(latestVersion);
     expect(
       columns.some((column) => column.name === "unexpected"),
     ).toBe(false);
@@ -445,10 +452,11 @@ describe("canonical SQLite storage", () => {
 
     expect(() =>
       new CanonicalSqliteStore(databasePath, {
+        allowSchemaMigration: true,
         migrations: [
           ...DEFAULT_SQLITE_MIGRATIONS,
           {
-            version: 8,
+            version: latestVersion + 1,
             sql: `
               ALTER TABLE raw_events
               ADD COLUMN generated_guard TEXT
@@ -469,7 +477,7 @@ describe("canonical SQLite storage", () => {
     const version = database
       .prepare("PRAGMA user_version;")
       .get() as Readonly<Record<string, unknown>>;
-    expect(Number(version.user_version)).toBe(7);
+    expect(Number(version.user_version)).toBe(latestVersion);
     database.close();
   });
 
@@ -480,10 +488,11 @@ describe("canonical SQLite storage", () => {
     initial.close();
 
     const upgraded = new CanonicalSqliteStore(databasePath, {
+      allowSchemaMigration: true,
       migrations: [
         ...DEFAULT_SQLITE_MIGRATIONS,
         {
-          version: 8,
+          version: latestVersion + 1,
           sql: `
             CREATE TABLE recovery_probe (
               value TEXT NOT NULL
@@ -492,7 +501,7 @@ describe("canonical SQLite storage", () => {
         },
       ],
     });
-    expect(upgraded.health().userVersion).toBe(8);
+    expect(upgraded.health().userVersion).toBe(latestVersion + 1);
     upgraded.close();
 
     const database = new DatabaseSync(databasePath);
@@ -532,7 +541,7 @@ describe("canonical SQLite storage", () => {
       ),
     ).toMatchObject({
       quickCheck: "ok",
-      userVersion: 7,
+      userVersion: latestVersion,
     });
     const restored = new CanonicalSqliteStore(databasePath);
     expect(
@@ -563,6 +572,7 @@ describe("canonical SQLite storage", () => {
     await source.backupTo(backupPath);
     source.close();
     await unlink(`${backupPath}.deletion.key`);
+    await unlink(`${backupPath}.manifest.json`);
 
     await CanonicalSqliteStore.restoreFromBackup(
       backupPath,
@@ -600,10 +610,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 7,
+      userVersion: latestVersion,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(7);
+    expect(restored.health().userVersion).toBe(latestVersion);
     restored.close();
   });
 
@@ -664,10 +674,10 @@ describe("canonical SQLite storage", () => {
       ),
     ).resolves.toMatchObject({
       quickCheck: "ok",
-      userVersion: 7,
+      userVersion: latestVersion,
     });
     const restored = new CanonicalSqliteStore(restoredPath);
-    expect(restored.health().userVersion).toBe(7);
+    expect(restored.health().userVersion).toBe(latestVersion);
     expect(restored.sessionMuted("legacy-muted-session"))
       .toBe(true);
     restored.close();
@@ -963,7 +973,7 @@ describe("canonical SQLite storage", () => {
     const preserved = new CanonicalSqliteStore(databasePath);
     expect(preserved.health()).toMatchObject({
       quickCheck: "ok",
-      userVersion: 7,
+      userVersion: latestVersion,
     });
     preserved.close();
   });
@@ -1244,6 +1254,8 @@ describe("shared capture worker", () => {
       timestamp: "2026-08-30T00:02:00.000Z",
       trust: "tool",
     });
+    const corrupt = await queue.enqueue(captureInput("worker-corrupt"));
+    await writeFile(join(paths.queue, `${corrupt.queueItemId}.json`), "{", "utf8");
     const store = new CanonicalSqliteStore(paths.database);
     store.close();
 
@@ -1264,6 +1276,7 @@ describe("shared capture worker", () => {
     ).toMatchObject({
       status: "completed",
       acknowledged: 4,
+      quarantinedItems: 1,
       stored: 4,
     });
     const verified = new CanonicalSqliteStore(paths.database);
@@ -1282,8 +1295,8 @@ describe("shared capture worker", () => {
       ),
     ).toEqual([
       expect.objectContaining({
-        evidenceTier: "externally_verified",
-        state: "active",
+        evidenceTier: "inferred",
+        state: "candidate",
       }),
     ]);
     verified.close();
@@ -1295,6 +1308,9 @@ describe("shared capture worker", () => {
       },
       correctionCaptureIssueCount: 0,
       correctionCaptureIssues: [],
+      queueIssues: [
+        expect.objectContaining({ queueItemId: corrupt.queueItemId }),
+      ],
       timestamp: "2026-08-30T00:00:02.000Z",
       workerId: "worker-runtime",
     });
@@ -1639,7 +1655,7 @@ describe("shared capture worker", () => {
     store.close();
   });
 
-  it("drains one item per run under queue-only pressure", async () => {
+  it("keeps draining a bounded batch under queue-only pressure", async () => {
     const root = await createTemporaryDirectory();
     const queue = await createQueue(join(root, "queue"));
     await queue.enqueueIfSourceAbsent(captureInput("event-1"), {
@@ -1678,15 +1694,15 @@ describe("shared capture worker", () => {
 
     expect(await worker.runOnce()).toMatchObject({
       status: "completed",
-      acknowledged: 1,
+      acknowledged: 2,
       circuitOpenReasons: [
         "queue",
       ],
     });
-    expect(await queue.list("pending")).toHaveLength(1);
+    expect(await queue.list("pending")).toHaveLength(0);
     expect(await worker.runOnce()).toMatchObject({
       status: "completed",
-      acknowledged: 1,
+      acknowledged: 0,
     });
     expect(await queue.list("pending")).toHaveLength(0);
     store.close();

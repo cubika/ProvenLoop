@@ -58,7 +58,9 @@ const event = (
         }),
     sourceEventId,
     timestamp,
-    trust: "user" as const,
+    trust: (options.eventType === undefined || options.eventType === "prompt.submitted")
+      ? "user" as const
+      : "tool" as const,
   };
   if (sessionId === undefined) {
     return createCaptureEnvelope({

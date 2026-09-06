@@ -2,11 +2,33 @@ import type {
   JsonValue,
   RawEvent,
 } from "@provenloop/contracts";
-import { isoTimestampSchema } from "@provenloop/contracts";
+import { isoTimestampSchema, SUPPORTED_EVENT_TYPES } from "@provenloop/contracts";
 import {
   isExplicitCorrectionMessage,
-  type CaptureEventInput,
+  createCaptureDeduplicationKey,
+  type CaptureEventInput as DomainCaptureEventInput,
 } from "@provenloop/domain";
+import {
+  boundedText,
+  boundedCaptureQuality,
+  classifyVerificationCommand,
+  commandTargetPaths,
+  copyEvidenceValue,
+  copyToolContentBlocks,
+  evidencePaths,
+  newCaptureQuality,
+  patchTargetPaths,
+  pathsWithinWorkspace,
+  recordOf,
+  resolveEvidencePaths,
+  resolveEvidenceDirectory,
+  structuredShellResult,
+  type CaptureEvidence,
+  type CaptureQuality,
+  type RepositoryState,
+} from "./capture-evidence.js";
+
+type CaptureEventInput = DomainCaptureEventInput;
 
 export interface CopilotSessionEvent {
   readonly agentId?: unknown;
@@ -19,11 +41,14 @@ export interface CopilotSessionEvent {
 }
 
 export interface CopilotWorkspaceSnapshot {
+  readonly cwd?: string;
+  readonly workflowScopeId?: string;
   readonly branch?: string;
   readonly commitParents?: readonly string[];
   readonly commitSha?: string;
   readonly repoId?: string;
   readonly worktree?: string;
+  readonly repositoryState?: RepositoryState;
 }
 
 export interface CopilotCallbackCopyLimits {
@@ -35,6 +60,13 @@ export interface CopilotEventMapperOptions {
   readonly copyLimits: CopilotCallbackCopyLimits;
   readonly sessionId: string;
   readonly workspace?: CopilotWorkspaceSnapshot;
+}
+
+interface SourceCaptureContext {
+  readonly eventId: string;
+  readonly repoId: string | undefined;
+  readonly worktree: string | undefined;
+  readonly correctionEventId: string | undefined;
 }
 
 export class InvalidCopilotEventMapperConfigurationError extends Error {
@@ -65,6 +97,7 @@ export type CopilotEventMappingResult =
   | {
       readonly status: "mapped";
       readonly value: CaptureEventInput;
+      readonly additionalEvents?: readonly CaptureEventInput[];
     }
   | {
       readonly status: "unsupported";
@@ -81,6 +114,7 @@ const intentionallyIgnoredEventTypes = new Set([
   "tool.execution_partial_result",
   "tool.execution_progress",
 ]);
+const canonicalEventTypes = new Set<string>(SUPPORTED_EVENT_TYPES);
 
 const asRecord = (
   value: unknown,
@@ -99,6 +133,11 @@ const requiredString = (
     issues.push(`${field} must be a non-empty string.`);
     return undefined;
   }
+  if (field !== "message" && field !== "error" &&
+      value.length > (field === "cwd" ? 32_768 : 256)) {
+    issues.push(`${field} exceeds its capture metadata limit.`);
+    return undefined;
+  }
   return value;
 };
 
@@ -107,7 +146,11 @@ const optionalString = (
   field: string,
 ): string | undefined => {
   const value = record[field];
-  return typeof value === "string" && value.trim().length > 0
+  const maximum = ["content", "detailedContent", "message", "errorReason"].includes(field)
+    ? Number.MAX_SAFE_INTEGER
+    : field === "cwd" || field === "gitRoot" ? 32_768
+    : field === "branch" ? 1_024 : 256;
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum
     ? value
     : undefined;
 };
@@ -148,6 +191,11 @@ const positiveInteger = (
 const normalizedWorkspace = (
   snapshot: CopilotWorkspaceSnapshot,
 ): CopilotWorkspaceSnapshot => ({
+  ...(snapshot.cwd?.trim() ? { cwd: snapshot.cwd.trim() } : {}),
+  ...(snapshot.workflowScopeId?.trim() ? { workflowScopeId: snapshot.workflowScopeId.trim() } : {}),
+  repositoryState: snapshot.repositoryState === "unknown" || snapshot.repositoryState === "known_outside_repo"
+    ? snapshot.repositoryState
+    : snapshot.repoId?.trim() ? "known_repo" : "unknown",
   ...(snapshot.branch?.trim()
     ? {
         branch: snapshot.branch.trim(),
@@ -184,42 +232,23 @@ const normalizedWorkspace = (
 const copyBoundedValue = (
   value: unknown,
   limits: CopilotCallbackCopyLimits,
+  quality: CaptureQuality,
+  path: string,
 ): JsonValue | undefined => {
-  if (value === null || typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return value.slice(0, limits.maxStringChars);
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : undefined;
-  }
-  if (Array.isArray(value)) {
-    return {
-      itemCount: value.length,
-      kind: "array",
-      status: "omitted_in_callback",
-    };
-  }
-  if (value !== null && typeof value === "object") {
-    return {
-      kind: "object",
-      status: "omitted_in_callback",
-    };
-  }
-  return undefined;
+  return copyEvidenceValue(value, limits.maxStringChars, quality, path);
 };
 
 const copyToolResult = (
   value: unknown,
   limits: CopilotCallbackCopyLimits,
+  quality: CaptureQuality,
 ): JsonValue | undefined => {
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value)
   ) {
-    return copyBoundedValue(value, limits);
+    return copyBoundedValue(value, limits, quality, "toolResult");
   }
   const record = asRecord(value);
   const content = optionalString(record, "content");
@@ -232,41 +261,36 @@ const copyToolResult = (
     !Array.isArray(contents) &&
     structuredContent === undefined
   ) {
-    return copyBoundedValue(value, limits);
+    return copyBoundedValue(value, limits, quality, "toolResult");
+  }
+  const copied = recordOf(copyBoundedValue(value, limits, quality, "toolResult"));
+  if (copied.status === "omitted_in_callback") {
+    const index = quality.omittedFields.indexOf("toolResult");
+    if (index >= 0) quality.omittedFields.splice(index, 1);
   }
   return {
+    ...(copied.status === "omitted_in_callback" ? {} : copied as Readonly<Record<string, JsonValue>>),
     ...(content === undefined
       ? {}
       : {
-          content: content.slice(0, limits.maxStringChars),
+          content: boundedText(content, limits.maxStringChars, quality, "toolResult.content"),
         }),
     ...(detailedContent === undefined
       ? {}
       : {
-          detailedContent: detailedContent.slice(
-            0,
-            limits.maxStringChars,
-          ),
+          detailedContent: boundedText(detailedContent, limits.maxStringChars, quality, "toolResult.detailedContent"),
         }),
     ...(Array.isArray(contents)
       ? {
-          contentBlocks: {
-            itemCount: contents.length,
-            status: "omitted_in_callback",
-          },
+          contents: copyToolContentBlocks(contents, limits.maxStringChars, quality),
         }
       : {}),
     ...(structuredContent === undefined
       ? {}
       : {
-          structuredContent: {
-            kind: Array.isArray(structuredContent)
-              ? "array"
-              : structuredContent === null
-                ? "null"
-                : typeof structuredContent,
-            status: "omitted_in_callback",
-          },
+          structuredContent: copyBoundedValue(
+            structuredContent, limits, quality, "toolResult.structuredContent",
+          ) ?? null,
         }),
   };
 };
@@ -274,29 +298,30 @@ const copyToolResult = (
 const copyError = (
   value: unknown,
   limits: CopilotCallbackCopyLimits,
+  quality: CaptureQuality,
 ): JsonValue | undefined => {
   if (typeof value === "string") {
-    return value.slice(0, limits.maxStringChars);
+    return boundedText(value, limits.maxStringChars, quality, "error");
   }
   if (
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value)
   ) {
-    return copyBoundedValue(value, limits);
+    return copyBoundedValue(value, limits, quality, "error");
   }
   const record = asRecord(value);
   const code = optionalString(record, "code");
   const message = optionalString(record, "message");
   const name = optionalString(record, "name");
   return {
-    ...(code === undefined ? {} : { code }),
+    ...(code === undefined ? {} : { code: boundedText(code, limits.maxStringChars, quality, "error.code") }),
     ...(message === undefined
       ? {}
       : {
-          message: message.slice(0, limits.maxStringChars),
+          message: boundedText(message, limits.maxStringChars, quality, "error.message"),
         }),
-    ...(name === undefined ? {} : { name }),
+    ...(name === undefined ? {} : { name: boundedText(name, limits.maxStringChars, quality, "error.name") }),
   };
 };
 
@@ -319,6 +344,7 @@ const messageContent = (
   data: Readonly<Record<string, unknown>>,
   limits: CopilotCallbackCopyLimits,
   issues: string[],
+  quality: CaptureQuality,
 ): string | undefined => {
   const content = data.content;
   if (typeof content !== "string") {
@@ -327,7 +353,7 @@ const messageContent = (
   }
   return content.length === 0
     ? undefined
-    : content.slice(0, limits.maxStringChars);
+    : boundedText(content, limits.maxStringChars, quality, "message");
 };
 
 export class CopilotEventMapper {
@@ -335,16 +361,29 @@ export class CopilotEventMapper {
   readonly #copyLimits: CopilotCallbackCopyLimits;
   readonly #sessionId: string;
   readonly #toolNames = new Map<string, string>();
+  readonly #operations = new Map<string, {
+    readonly sourceEventId: string;
+    readonly toolName: string;
+    readonly arguments: JsonValue | undefined;
+    readonly workspace: CopilotWorkspaceSnapshot;
+    readonly truncated: boolean;
+    readonly correctionEventId?: string;
+    readonly workspacePending: boolean;
+    readonly builtinTool: boolean;
+  }>();
+  readonly #sourceEvents = new Map<string, SourceCaptureContext>();
+  readonly #canonicalSourceEvents = new Map<string, SourceCaptureContext>();
   #lastEmittedCommitSha: string | undefined;
   #workspace: CopilotWorkspaceSnapshot;
+  #workspacePending = false;
 
   public constructor(options: CopilotEventMapperOptions) {
-    if (options.adapterVersion.trim().length === 0) {
+    if (options.adapterVersion.trim().length === 0 || options.adapterVersion.length > 128) {
       throw new InvalidCopilotEventMapperConfigurationError(
         "adapterVersion",
       );
     }
-    if (options.sessionId.trim().length === 0) {
+    if (options.sessionId.trim().length === 0 || options.sessionId.length > 128) {
       throw new InvalidCopilotEventMapperConfigurationError(
         "sessionId",
       );
@@ -367,6 +406,7 @@ export class CopilotEventMapper {
   ): CaptureEventInput | undefined {
     const updated = normalizedWorkspace(snapshot);
     this.#workspace = updated;
+    this.#workspacePending = false;
     if (
       updated.commitSha === undefined ||
       updated.commitParents === undefined ||
@@ -377,12 +417,17 @@ export class CopilotEventMapper {
     this.#lastEmittedCommitSha = updated.commitSha;
     return {
       ...this.#base(
-        `workspace-commit-${updated.commitSha}`,
-        "git.commit",
+        `workspace-head-${updated.commitSha}`,
+        "git.head_changed",
         timestamp,
         "system",
       ),
       commitSha: updated.commitSha,
+      evidence: {
+        schemaVersion: 1,
+        kind: "head_observation",
+        repositoryState: updated.repositoryState ?? "unknown",
+      },
       content: {
         toolArguments: {
           parents: updated.commitParents,
@@ -404,6 +449,13 @@ export class CopilotEventMapper {
     };
   }
 
+  public resetCaptureChain(): void {
+    this.#operations.clear();
+    this.#toolNames.clear();
+    this.#sourceEvents.clear();
+    this.#canonicalSourceEvents.clear();
+  }
+
   public sessionStarted(
     timestamp = new Date().toISOString(),
   ): CaptureEventInput {
@@ -418,6 +470,16 @@ export class CopilotEventMapper {
   }
 
   public map(input: unknown): CopilotEventMappingResult {
+    const result = this.#map(input);
+    if (result.status === "mapped" || result.status === "unsupported") {
+      for (const event of [result.value, ...(result.status === "mapped" ? result.additionalEvents ?? [] : [])]) {
+        if (event.captureQuality !== undefined) event.captureQuality = boundedCaptureQuality(event.captureQuality);
+      }
+    }
+    return result;
+  }
+
+  #map(input: unknown): CopilotEventMappingResult {
     if (
       input === null ||
       typeof input !== "object" ||
@@ -433,15 +495,16 @@ export class CopilotEventMapper {
     const event = input as Readonly<Record<string, unknown>>;
     const issues: string[] = [];
     const sourceEventId =
-      typeof event.id === "string" && event.id.trim().length > 0
+      typeof event.id === "string" && event.id.trim().length > 0 && event.id.length <= 256
         ? event.id
         : undefined;
     const eventType =
-      typeof event.type === "string" && event.type.trim().length > 0
+      typeof event.type === "string" && event.type.trim().length > 0 && event.type.length <= 128
         ? event.type
         : undefined;
     const parsedTimestamp = isoTimestampSchema.safeParse(
-      event.timestamp,
+      typeof event.timestamp === "string" && event.timestamp.length <= 64
+        ? event.timestamp : undefined,
     );
     const timestamp = parsedTimestamp.success
       ? parsedTimestamp.data
@@ -460,7 +523,8 @@ export class CopilotEventMapper {
     } else if (event.parentId !== null) {
       if (
         typeof event.parentId !== "string" ||
-        event.parentId.trim().length === 0
+        event.parentId.trim().length === 0 ||
+        event.parentId.length > 256
       ) {
         issues.push("parentId must be a non-empty string or null.");
       }
@@ -468,7 +532,8 @@ export class CopilotEventMapper {
     if (event.agentId !== undefined) {
       if (
         typeof event.agentId !== "string" ||
-        event.agentId.trim().length === 0
+        event.agentId.trim().length === 0 ||
+        event.agentId.length > 256
       ) {
         issues.push("agentId must be a non-empty string when present.");
       }
@@ -496,6 +561,11 @@ export class CopilotEventMapper {
     }
 
     const data = asRecord(event.data);
+    const quality = newCaptureQuality();
+    if (this.#workspacePending) quality.omittedFields.push("workspace.gitContext");
+    if (typeof event.parentId === "string" && !this.#sourceEvents.has(event.parentId)) {
+      quality.omittedFields.push("parentEventId");
+    }
     const common = {
       ...this.#base(
         sourceEventId,
@@ -503,9 +573,10 @@ export class CopilotEventMapper {
         timestamp,
         "system",
       ),
+      captureQuality: quality,
       ...(typeof event.parentId === "string"
         ? {
-            parentEventId: event.parentId,
+            parentEventId: this.#sourceEvents.get(event.parentId)?.eventId ?? event.parentId,
           }
         : {}),
       ...(typeof event.agentId === "string"
@@ -544,30 +615,8 @@ export class CopilotEventMapper {
           );
         }
         const context = asRecord(data.context);
-        const branch =
-          context === undefined
-            ? undefined
-            : optionalString(context, "branch");
-        const commitSha =
-          context === undefined
-            ? undefined
-            : optionalString(context, "headCommit");
-        const repoId =
-          context === undefined
-            ? undefined
-            : optionalString(context, "repository");
-        const worktree =
-          context === undefined
-            ? undefined
-            : optionalString(context, "gitRoot") ??
-              optionalString(context, "cwd");
         if (issues.length === 0) {
-          this.updateWorkspace({
-            ...(branch === undefined ? {} : { branch }),
-            ...(commitSha === undefined ? {} : { commitSha }),
-            ...(repoId === undefined ? {} : { repoId }),
-            ...(worktree === undefined ? {} : { worktree }),
-          });
+          this.updateWorkspace(this.#contextWorkspace(context));
         }
         return this.#mappedOrMalformed(
           issues,
@@ -594,6 +643,7 @@ export class CopilotEventMapper {
           data,
           this.#copyLimits,
           issues,
+          quality,
         );
         const source = optionalString(data, "source");
         const autopilotContinuation =
@@ -641,7 +691,36 @@ export class CopilotEventMapper {
         const toolArguments = copyBoundedValue(
           data.arguments,
           this.#copyLimits,
+          quality,
+          "toolArguments",
         );
+        if (issues.length === 0 && toolCallId !== undefined && toolName !== undefined) {
+          if (this.#operations.size >= 256) {
+            const oldest = this.#operations.keys().next().value;
+            if (oldest !== undefined) {
+              this.#operations.delete(oldest);
+              this.#toolNames.delete(oldest);
+            }
+          }
+          this.#operations.set(toolCallId, {
+            sourceEventId,
+            toolName,
+            arguments: toolArguments,
+            workspace: this.currentWorkspace(),
+            truncated: quality.truncatedFields.some((path) =>
+              /^toolArguments\.(?:command|cwd|path|file|filePath|filepath|target|targetPath|paths|files|targets|changedFiles|patch|input|shellId|mode)(?:\.|\[|$)/u.test(path),
+            ),
+            workspacePending: this.#workspacePending,
+            builtinTool: data.mcpServerName === undefined && data.mcpToolName === undefined,
+            ...(() => {
+              const parent = typeof event.parentId === "string" ? this.#sourceEvents.get(event.parentId) : undefined;
+              return parent?.correctionEventId !== undefined &&
+                parent.repoId === this.#workspace.repoId &&
+                parent.worktree === this.#workspace.worktree
+                ? { correctionEventId: parent.correctionEventId } : {};
+            })(),
+          });
+        }
         const model = optionalString(data, "model");
         return this.#mappedOrMalformed(
           issues,
@@ -676,28 +755,37 @@ export class CopilotEventMapper {
           issues,
         );
         const success = requiredBoolean(data, "success", issues);
+        const started = toolCallId === undefined ? undefined : this.#operations.get(toolCallId);
         const toolName =
           toolCallId === undefined
             ? undefined
             : this.#toolNames.get(toolCallId);
-        if (toolCallId !== undefined) {
+        if (toolCallId !== undefined && success !== undefined && issues.length === 0) {
           this.#toolNames.delete(toolCallId);
+          this.#operations.delete(toolCallId);
         }
         const toolResult = copyToolResult(
           data.result,
           this.#copyLimits,
+          quality,
         );
         const error = copyError(
           data.error,
           this.#copyLimits,
+          quality,
         );
+        const shellTool = started !== undefined && /^(?:powershell|bash)$/u.test(started.toolName);
+        const shellResult = shellTool && started?.builtinTool
+          ? structuredShellResult(toolResult, quality) : undefined;
+        const exitCode = shellResult?.exitCode;
         const model = optionalString(data, "model");
-        return this.#mappedOrMalformed(
+        const mapped = this.#mappedOrMalformed(
           issues,
           eventType,
           sourceEventId,
           {
             ...common,
+            ...(exitCode === undefined ? {} : { exitCode }),
             eventType:
               success === false ? "tool.failed" : "tool.completed",
             completionStatus:
@@ -726,6 +814,138 @@ export class CopilotEventMapper {
             ),
           },
         );
+        if (mapped.status !== "mapped" || started === undefined) return mapped;
+        const additionalEvents: CaptureEventInput[] = [];
+        const args = recordOf(started.arguments);
+        const command = typeof args.command === "string" ? args.command : undefined;
+        const verification = command === undefined || started.truncated || !shellTool
+          ? undefined
+          : classifyVerificationCommand(command);
+        const resultRecord = recordOf(toolResult);
+        const reportedCwd = shellResult?.cwd;
+        const cwdCandidate = typeof reportedCwd === "string" ? reportedCwd
+          : args.shellId !== undefined ? undefined
+          : typeof args.cwd === "string" ? args.cwd
+          : started.workspace.cwd ?? started.workspace.worktree;
+        const executionCwd = cwdCandidate === undefined ? undefined
+          : resolveEvidenceDirectory(cwdCandidate, started.workspace.cwd ?? started.workspace.worktree);
+        const resolvedTargets = resolveEvidencePaths(
+          command === undefined ? [] : commandTargetPaths(command), executionCwd,
+        );
+        const targetPaths = resolvedTargets ?? [];
+        const completedExecution = (args.mode === undefined || args.mode === "sync") &&
+          (args.detach === undefined || args.detach === false);
+        const completeDirectory = !quality.truncatedFields.some((path) =>
+          /^toolResult\.contents\[\d+\]\.(?:cwd|shellId)$/u.test(path),
+        );
+        const sameRepository = pathsWithinWorkspace(
+          [...targetPaths, ...(executionCwd === undefined ? [] : [executionCwd])], started.workspace.worktree,
+        ) && executionCwd !== undefined && resolvedTargets !== undefined &&
+          completedExecution && completeDirectory &&
+          !started.workspacePending && !this.#workspacePending &&
+          started.workspace.repositoryState === "known_repo" &&
+          this.#workspace.repositoryState === "known_repo" &&
+          started.workspace.repoId !== undefined &&
+          started.workspace.repoId === this.#workspace.repoId &&
+          started.workspace.branch === this.#workspace.branch &&
+          started.workspace.commitSha === this.#workspace.commitSha;
+        const proof: CaptureEvidence = {
+          schemaVersion: 1,
+          kind: "command_verification",
+          repositoryState: sameRepository ? "known_repo" : "unknown",
+          sourceStartEventId: started.sourceEventId,
+          sourceCompleteEventId: sourceEventId,
+          ...(toolCallId === undefined ? {} : { operationId: toolCallId }),
+          targetPaths,
+          ...(executionCwd === undefined ? {} : { workingDirectory: executionCwd }),
+        };
+        if (verification !== undefined) {
+          if (exitCode === undefined) quality.omittedFields.push("verification.exitCode");
+          if (!started.builtinTool) quality.omittedFields.push("verification.toolProvenance");
+          if (!sameRepository) quality.omittedFields.push("verification.repositoryBinding");
+          if (success === false && exitCode === 0) {
+            quality.omittedFields.push("verification.conflictingOutcome");
+          }
+        }
+        if (verification !== undefined && exitCode !== undefined && sameRepository &&
+            !(success === false && exitCode === 0)) {
+          additionalEvents.push({
+            ...common,
+            ...started.workspace,
+            eventType: verification.eventType,
+            operationId: toolCallId,
+            parentEventId: this.#sourceEvents.get(sourceEventId)?.eventId ?? sourceEventId,
+            completionStatus: exitCode === 0 ? "succeeded" : "failed",
+            exitCode,
+            toolName: started.toolName,
+            trust: "tool",
+            evidence: { ...proof, commandFamily: verification.commandFamily, exitCode },
+            ...(started.correctionEventId === undefined ? {} : {
+              verificationBinding: {
+                correctionEventId: started.correctionEventId,
+                operationEventId: `event-${createCaptureDeduplicationKey({
+                  adapter: "copilot-cli", adapterVersion: this.#adapterVersion,
+                  sessionId: this.#sessionId, eventType: "tool.started",
+                  sourceEventId: started.sourceEventId,
+                })}`,
+              },
+            }),
+            content: {
+              toolArguments: {
+                ...args as Readonly<Record<string, JsonValue>>,
+                ...(executionCwd === undefined ? {} : { cwd: executionCwd }),
+                sourceStartEventId: started.sourceEventId,
+                sourceCompleteEventId: sourceEventId,
+                commandFamily: verification.commandFamily,
+                exitCode,
+              },
+              ...(toolResult === undefined ? {} : { toolResult }),
+            },
+          });
+        }
+        const nativeEdit = /^(?:edit|create|write_file|replace_string_in_file)$/u.test(started.toolName);
+        const patch = typeof started.arguments === "string" ? started.arguments
+          : typeof args.patch === "string" ? args.patch
+          : typeof args.input === "string" ? args.input : undefined;
+        const changedPaths = resolveEvidencePaths(evidencePaths({
+          changedFiles: resultRecord.changedFiles,
+          ...(started.toolName === "apply_patch" && patch !== undefined
+            ? { paths: patchTargetPaths(patch) } : {}),
+          ...(nativeEdit ? args : {}),
+        }), executionCwd) ?? [];
+        if (success === true && started.builtinTool && changedPaths.length > 0 && !started.truncated &&
+            completedExecution && completeDirectory &&
+            !quality.truncatedFields.some((path) => path.startsWith("toolResult.changedFiles")) &&
+            pathsWithinWorkspace(changedPaths, started.workspace.worktree)) {
+          additionalEvents.push({
+            ...common,
+            ...started.workspace,
+            eventType: "file.changed",
+            operationId: toolCallId,
+            parentEventId: this.#sourceEvents.get(sourceEventId)?.eventId ?? sourceEventId,
+            completionStatus: "succeeded",
+            trust: "tool",
+            evidence: { ...proof, kind: "file_change", targetPaths: changedPaths },
+            content: {
+              message: changedPaths.join("\n"),
+              toolArguments: { changedFiles: changedPaths },
+            },
+          });
+        }
+        return {
+          ...mapped,
+          ...(verification === undefined ? {} : {
+            value: {
+              ...mapped.value,
+              evidence: {
+                ...proof,
+                commandFamily: verification.commandFamily,
+                ...(exitCode === undefined ? {} : { exitCode }),
+              },
+            },
+          }),
+          additionalEvents,
+        };
       }
       case "assistant.message": {
         const messageId = requiredString(
@@ -737,6 +957,7 @@ export class CopilotEventMapper {
           data,
           this.#copyLimits,
           issues,
+          quality,
         );
         const model = optionalString(data, "model");
         return this.#mappedOrMalformed(
@@ -763,6 +984,7 @@ export class CopilotEventMapper {
           },
         );
       }
+      case "assistant.turn_start":
       case "assistant.turn_end": {
         const turnId = requiredString(data, "turnId", issues);
         const model = optionalString(data, "model");
@@ -772,8 +994,8 @@ export class CopilotEventMapper {
           sourceEventId,
           {
             ...common,
-            eventType: "agent.turn_completed",
-            completionStatus: "succeeded",
+            eventType: eventType === "assistant.turn_start" ? "agent.turn_started" : "agent.turn_completed",
+            completionStatus: eventType === "assistant.turn_start" ? "running" : "succeeded",
             ...(turnId === undefined ? {} : { operationId: turnId }),
             ...(model === undefined ? {} : { resolvedModel: model }),
             trust: "model",
@@ -781,9 +1003,7 @@ export class CopilotEventMapper {
         );
       }
       case "session.idle":
-        return {
-          status: "mapped",
-          value: {
+        return this.#mappedOrMalformed([], eventType, sourceEventId, {
             ...common,
             eventType: "session.idle",
             trust: "system",
@@ -792,8 +1012,7 @@ export class CopilotEventMapper {
                   completionStatus: "cancelled",
                 }
               : {}),
-          },
-        };
+          });
       case "session.error": {
         const errorType = requiredString(
           data,
@@ -830,8 +1049,8 @@ export class CopilotEventMapper {
                           : {
                               code: String(statusCode),
                             }),
-                        message,
-                        name: errorType,
+                        message: boundedText(message, this.#copyLimits.maxStringChars, quality, "error.message"),
+                        name: boundedText(errorType, this.#copyLimits.maxStringChars, quality, "error.name"),
                       },
                     },
                   }
@@ -840,43 +1059,32 @@ export class CopilotEventMapper {
         );
       }
       case "session.context_changed": {
-        const cwd = requiredString(data, "cwd", issues);
-        const branch = optionalString(data, "branch");
-        const gitRoot = optionalString(data, "gitRoot");
-        const headCommit = optionalString(data, "headCommit");
-        const repository = optionalString(data, "repository");
-        const worktree = gitRoot ?? cwd;
+        requiredString(data, "cwd", issues);
         if (data.pendingGitContext === true) {
+          const next = this.#contextWorkspace(data);
+          this.#workspacePending = true;
+          quality.omittedFields.push("workspace.gitContext");
+          this.#workspace = normalizedWorkspace({
+            ...(next.cwd === undefined ? {} : { cwd: next.cwd }),
+            ...(next.workflowScopeId === undefined ? {} : { workflowScopeId: next.workflowScopeId }),
+            ...(next.worktree === undefined ? {} : { worktree: next.worktree }),
+            ...(next.repoId === undefined ? {} : { repoId: next.repoId }),
+            repositoryState: next.repositoryState ?? "unknown",
+          });
           return this.#mappedOrMalformed(
             issues,
             eventType,
             sourceEventId,
-            common,
+            {
+              ...this.#base(sourceEventId, eventType, timestamp, "system"),
+              captureQuality: quality,
+              ...(typeof event.parentId === "string"
+                ? { parentEventId: this.#sourceEvents.get(event.parentId)?.eventId ?? event.parentId } : {}),
+            },
             "unsupported",
           );
         }
-        const snapshot = normalizedWorkspace({
-          ...(branch === undefined
-            ? {}
-            : {
-                branch,
-              }),
-          ...(repository === undefined
-            ? {}
-            : {
-                repoId: repository,
-              }),
-          ...(headCommit === undefined
-            ? {}
-            : {
-                commitSha: headCommit,
-              }),
-          ...(worktree === undefined
-            ? {}
-            : {
-                worktree,
-              }),
-        });
+        const snapshot = this.#contextWorkspace(data);
         if (issues.length === 0) {
           this.updateWorkspace(snapshot);
         }
@@ -889,7 +1097,7 @@ export class CopilotEventMapper {
           ),
           ...(typeof event.parentId === "string"
             ? {
-                parentEventId: event.parentId,
+                parentEventId: this.#sourceEvents.get(event.parentId)?.eventId ?? event.parentId,
               }
             : {}),
           ...(typeof event.agentId === "string"
@@ -983,9 +1191,11 @@ export class CopilotEventMapper {
                       undefined
                         ? {}
                         : {
-                            error: optionalString(
-                              data,
-                              "errorReason",
+                            error: boundedText(
+                              optionalString(data, "errorReason") ?? "",
+                              this.#copyLimits.maxStringChars,
+                              quality,
+                              "error",
                             ),
                           }),
                       ...(codeChanges === undefined
@@ -1025,10 +1235,11 @@ export class CopilotEventMapper {
             sourceEventId,
           };
         }
-        return {
-          status: "unsupported",
-          value: common,
-        };
+        return this.#mappedOrMalformed([], eventType, sourceEventId, {
+          ...common,
+          eventType: canonicalEventTypes.has(eventType)
+            ? `copilot.unmapped.${eventType}` : eventType,
+        }, "unsupported");
     }
   }
 
@@ -1116,7 +1327,12 @@ export class CopilotEventMapper {
             ? {}
             : {
                 content: {
-                  ...(error === undefined ? {} : { error }),
+                  ...(error === undefined ? {} : {
+                    error: boundedText(
+                      error, this.#copyLimits.maxStringChars,
+                      common.captureQuality ?? newCaptureQuality(), "error",
+                    ),
+                  }),
                   ...(metrics === undefined
                     ? {}
                     : {
@@ -1147,6 +1363,33 @@ export class CopilotEventMapper {
     };
   }
 
+  #contextWorkspace(context: Readonly<Record<string, unknown>>): CopilotWorkspaceSnapshot {
+    const cwd = optionalString(context, "cwd");
+    const worktree = optionalString(context, "gitRoot") ?? cwd;
+    const comparable = (value: string): string =>
+      value.replaceAll("/", "\\").replace(/\\+$/u, "").toLowerCase();
+    const sameWorktree = worktree !== undefined && this.#workspace.worktree !== undefined &&
+      comparable(worktree) === comparable(this.#workspace.worktree);
+    const explicitlyOutside = context.gitRoot === null && context.repository === null;
+    const repoId = optionalString(context, "repository") ??
+      (sameWorktree && !explicitlyOutside ? this.#workspace.repoId : undefined);
+    const branch = optionalString(context, "branch");
+    const commitSha = optionalString(context, "headCommit");
+    const workflowScopeId = context.workflowScopeId === null ? undefined
+      : optionalString(context, "workflowScopeId") ?? this.#workspace.workflowScopeId;
+    return normalizedWorkspace({
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(workflowScopeId === undefined ? {} : { workflowScopeId }),
+      ...(worktree === undefined ? {} : { worktree }),
+      ...(repoId === undefined ? {} : { repoId }),
+      ...(branch === undefined ? {} : { branch }),
+      ...(commitSha === undefined ? {} : { commitSha }),
+      repositoryState: explicitlyOutside ? "known_outside_repo"
+        : repoId !== undefined && (optionalString(context, "repository") !== undefined ||
+          this.#workspace.repositoryState === "known_repo") ? "known_repo" : "unknown",
+    });
+  }
+
   #mappedOrMalformed(
     issues: readonly string[],
     eventType: string,
@@ -1154,12 +1397,36 @@ export class CopilotEventMapper {
     value: CaptureEventInput,
     validStatus: "mapped" | "unsupported" = "mapped",
   ): CopilotEventMappingResult {
-    return issues.length === 0
-      ? {
+    if (issues.length === 0) {
+      const parent = value.parentEventId === undefined
+        ? undefined : this.#canonicalSourceEvents.get(value.parentEventId);
+      const eventId = `event-${createCaptureDeduplicationKey(value)}`;
+      const correctionEventId = value.eventType === "user.corrected" && value.trust === "user"
+        ? eventId
+        : value.trust !== "user" &&
+          parent?.repoId === value.repoId && parent?.worktree === value.worktree
+          ? parent?.correctionEventId : undefined;
+      if (this.#sourceEvents.size >= 4_096) {
+        const oldest = this.#sourceEvents.keys().next().value;
+        if (oldest !== undefined) {
+          const removed = this.#sourceEvents.get(oldest);
+          if (removed !== undefined) this.#canonicalSourceEvents.delete(removed.eventId);
+          this.#sourceEvents.delete(oldest);
+        }
+      }
+      const previous = this.#sourceEvents.get(sourceEventId);
+      if (previous !== undefined) this.#canonicalSourceEvents.delete(previous.eventId);
+      const context = {
+        eventId, correctionEventId, repoId: value.repoId, worktree: value.worktree,
+      };
+      this.#sourceEvents.set(sourceEventId, context);
+      this.#canonicalSourceEvents.set(eventId, context);
+      return {
           status: validStatus,
           value,
-        }
-      : {
+        };
+    }
+    return {
           status: "malformed",
           eventType,
           issues,

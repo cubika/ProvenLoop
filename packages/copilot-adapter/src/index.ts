@@ -36,6 +36,7 @@ export {
 } from "./capture-buffer.js";
 export {
   CaptureReconciler,
+  captureEnvelopeCompleteness,
   type CanonicalCaptureWatermark,
   type CaptureReconcilerOptions,
   type CaptureReconciliationResult,
@@ -51,6 +52,11 @@ export {
   type CopilotSessionEvent,
   type CopilotWorkspaceSnapshot,
 } from "./event-mapper.js";
+export type {
+  CaptureEvidence,
+  CaptureQuality,
+  RepositoryState,
+} from "./capture-evidence.js";
 export {
   CopilotExtensionCapture,
   InvalidExtensionCaptureConfigurationError,
@@ -70,11 +76,15 @@ export {
 } from "./extension-entry.js";
 export {
   InvalidSessionFileParserConfigurationError,
+  SessionFileBudgetError,
   parseCopilotSessionFile,
+  type CopilotSessionEventSource,
+  type CopilotSessionFileCursor,
   type CopilotSessionFileHeader,
   type CopilotSessionFileIssue,
   type CopilotSessionFileParserOptions,
   type CopilotSessionFileParseResult,
+  type SessionFileStopReason,
 } from "./session-file-parser.js";
 export {
   createDefaultCopilotAdapterState,
@@ -85,3 +95,10 @@ export {
   type PersistedCapabilityState,
   type PersistedCopilotAdapterState,
 } from "./operational-state.js";
+export {
+  readTrustedSessionContext,
+  TrustedSessionContextPublisher,
+  type TrustedSessionContext,
+  type TrustedSessionContextPublisherOptions,
+  type TrustedSessionWorkspace,
+} from "./trusted-session-context.js";

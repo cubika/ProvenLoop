@@ -34,6 +34,14 @@ import {
   redactPotentialSecrets,
 } from "./secret-detection.js";
 
+import {
+  loadObservationManifest,
+  observationManifestSchema,
+  ObservationManifestInputError,
+  SYNTHETIC_REGRESSION_LIMITATION,
+  type ObservationManifest,
+} from "./observation-manifest.js";
+
 export type M2ReleaseTarget = "research" | "stable";
 export type M2ReleaseGateStatus = "fail" | "pass";
 
@@ -44,6 +52,9 @@ export interface M2ReleaseGateCheck {
 }
 
 export interface M2ReleaseReport {
+  readonly evidenceKind: "synthetic";
+  readonly evaluationPurpose: "regression";
+  readonly observationEvidence?: ObservationManifest;
   readonly checks: readonly M2ReleaseGateCheck[];
   readonly codeVersion: string;
   readonly completedAt: string;
@@ -58,6 +69,7 @@ export interface M2ReleaseReport {
 }
 
 export interface RunM2ReleaseGateOptions {
+  readonly observationManifestPath?: string;
   readonly codeVersion?: string;
   readonly cwd?: string;
   readonly datasetPath?: string;
@@ -74,6 +86,9 @@ export interface RunM2ReleaseGateResult {
 
 const m2ReleaseReportSchema = z
   .object({
+    evidenceKind: z.literal("synthetic"),
+    evaluationPurpose: z.literal("regression"),
+    observationEvidence: observationManifestSchema.optional(),
     checks: z.array(
       z
         .object({
@@ -666,6 +681,7 @@ export const runM2ReleaseGate = async (
       const resolvedCodeVersion =
         options.codeVersion ?? await resolveCodeVersion(cwd);
       codeVersion = validateCodeVersion(resolvedCodeVersion);
+      const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
       let dataset: CorrectionRecurrenceDataset;
       try {
         dataset = await loadCorrectionRecurrenceDataset(
@@ -705,14 +721,17 @@ export const runM2ReleaseGate = async (
           ? "pass"
           : "fail";
       const report: M2ReleaseReport = {
+        evidenceKind: "synthetic",
+        evaluationPurpose: "regression",
+        ...(observationEvidence === undefined ? {} : { observationEvidence }),
         checks,
         codeVersion,
         completedAt: now().toISOString(),
         correctionRecurrence,
         exitCode: status === "pass" ? 0 : 1,
-        limitations: checks
+        limitations: [SYNTHETIC_REGRESSION_LIMITATION, ...checks
           .filter((check) => check.status === "fail")
-          .map((check) => check.message),
+          .map((check) => check.message)],
         releaseTarget,
         reportVersion: 1,
         runId,
@@ -725,8 +744,10 @@ export const runM2ReleaseGate = async (
       );
     } catch (error) {
       const message = sanitizePublishedDiagnostic(error);
-      const invalidInput = error instanceof M2InputError;
+      const invalidInput = error instanceof M2InputError || error instanceof ObservationManifestInputError;
       const report: M2ReleaseReport = {
+        evidenceKind: "synthetic",
+        evaluationPurpose: "regression",
         checks: [
           {
             checkId:

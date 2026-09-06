@@ -14,6 +14,12 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import {
+  isCreatedCommitEvent,
+  isVerificationEvent,
+  trustedExecution,
+  verificationOutcome,
+} from "./verification-proof.js";
 import type {
   CommitAncestryResolver,
 } from "./commit-ancestry.js";
@@ -296,7 +302,7 @@ const sessionSummary = (
     ),
     commits: new Set(
       ordered.flatMap((envelope) =>
-        envelope.event.eventType !== "git.commit" ||
+        !isCreatedCommitEvent(envelope) ||
         envelope.event.commitSha === undefined
           ? []
           : [envelope.event.commitSha],
@@ -928,7 +934,9 @@ const outcome = (
   | "outcomeQualifiedAt"
 > => {
   const reverted = events.find(
-    (event) => event.event.eventType === "change.reverted",
+    (event) =>
+      event.event.eventType === "change.reverted" &&
+      trustedExecution(event),
   );
   if (reverted !== undefined) {
     return {
@@ -940,14 +948,9 @@ const outcome = (
       outcomeQualifiedAt: reverted.event.timestamp,
     };
   }
-  const resultEvents = events.filter((event) =>
-    [
-      "build.completed",
-      "test.completed",
-    ].includes(event.event.eventType),
-  );
+  const resultEvents = events.filter(isVerificationEvent);
   const latest = resultEvents.at(-1);
-  if (latest?.event.completionStatus === "failed") {
+  if (latest !== undefined && verificationOutcome(latest) === "failed") {
     return {
       outcome: "failure",
       outcomeEvidenceIds: [
@@ -957,7 +960,7 @@ const outcome = (
       outcomeQualifiedAt: latest.event.timestamp,
     };
   }
-  if (latest?.event.completionStatus === "succeeded") {
+  if (latest !== undefined && verificationOutcome(latest) === "succeeded") {
     return {
       observationWindowEndsAt: new Date(
         Date.parse(latest.event.timestamp) + observationWindowMs,
@@ -1042,7 +1045,7 @@ const episodeFromCluster = (
     ),
     commitIds: sorted(
       events.flatMap((event) =>
-        event.event.eventType !== "git.commit" ||
+        !isCreatedCommitEvent(event) ||
         event.event.commitSha === undefined
           ? []
           : [event.event.commitSha],

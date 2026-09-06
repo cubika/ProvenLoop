@@ -19,6 +19,7 @@ import {
   type CommandResult,
   type CommandRunner,
 } from "@provenloop/copilot-adapter";
+import { PROVENLOOP_VERSION } from "@provenloop/contracts";
 import {
   LocalMcpToolHandlers,
   runCaptureWorkerOnce,
@@ -73,7 +74,7 @@ class FakeCopilotRunner implements CommandRunner {
     if (command === "plugin list") {
       return Promise.resolve(this.#success(
         this.pluginInstalled
-          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v0.1.0-alpha.0.7) (${
+          ? `Live Plugins:\n  provenloop@provenloop-marketplace (v${PROVENLOOP_VERSION}) (${
               this.pluginEnabled ? "enabled" : "disabled"
             })\n`
           : "Live Plugins:\n",
@@ -81,7 +82,7 @@ class FakeCopilotRunner implements CommandRunner {
     }
     if (
       command ===
-      "plugin marketplace add cubika/ProvenLoop#v0.1.0-alpha.0.7"
+      `plugin marketplace add cubika/ProvenLoop#v${PROVENLOOP_VERSION}`
     ) {
       this.marketplaceRegistered = true;
       this.marketplaceSource = args[3];

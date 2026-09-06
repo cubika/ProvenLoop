@@ -24,11 +24,13 @@ export {
 export {
   CorrectionCaptureBuilder,
   correctionKeyActivationEligible,
+  formatExplicitCorrectionMessage,
   isExplicitCorrectionMessage,
   type CorrectionCaptureBuildInput,
   type CorrectionCaptureBuildResult,
   type CorrectionCaptureIssue,
   type CorrectionCaptureIssueCode,
+  type ExplicitCorrectionFields,
 } from "./correction-capture-builder.js";
 export {
   deletionIdentityDigest,
@@ -55,6 +57,18 @@ export {
   type KnowledgeLifecycleBuildResult,
   type KnowledgeLifecycleBuilderOptions,
 } from "./knowledge-lifecycle-builder.js";
+export {
+  directKnowledgeCounterevidence,
+  knowledgeEvidenceState,
+  type KnowledgeEvidenceState,
+} from "./knowledge-evidence.js";
+export {
+  boundVerificationOperation,
+  verificationOutcome,
+  verificationProofEventIds,
+  type VerificationBinding,
+  type VerificationOutcome,
+} from "./verification-proof.js";
 export {
   containsKnownSecret,
   containsPotentialSecret,

@@ -232,18 +232,30 @@ export class DeletionService {
       target,
       input.deletionId,
     );
-    const operationLease =
-      await new WindowsNamedPipeLeaseProvider(
+    let operationLease: Awaited<
+      ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
+    >;
+    try {
+      operationLease = await new WindowsNamedPipeLeaseProvider(
         `deletion-${operation.deletionId}`,
       ).tryAcquire();
+    } catch (error) {
+      if (this.#store.deletionOperation(operation.deletionId)?.status === "running") {
+        this.#store.failDeletion(operation.deletionId, error);
+      }
+      throw error;
+    }
     if (operationLease === undefined) {
       throw new Error(
         "This deletion operation is already executing.",
       );
     }
-    const knowledgeProjectionLease =
-      await this.#knowledgeProjection?.acquireLease();
+    let knowledgeProjectionLease:
+      | Awaited<ReturnType<DeletionKnowledgeProjection["acquireLease"]>>
+      | undefined;
     try {
+      knowledgeProjectionLease =
+        await this.#knowledgeProjection?.acquireLease();
       if (
         operation.status === "completed" &&
         operation.gateDigest !== undefined
@@ -508,9 +520,20 @@ export class DeletionService {
           );
         }
       }
+    } catch (error) {
+      if (
+        this.#store.deletionOperation(operation.deletionId)?.status ===
+        "running"
+      ) {
+        this.#store.failDeletion(operation.deletionId, error);
+      }
+      throw error;
     } finally {
-      await knowledgeProjectionLease?.release();
-      await operationLease.release();
+      try {
+        await knowledgeProjectionLease?.release();
+      } finally {
+        await operationLease.release();
+      }
     }
   }
 }

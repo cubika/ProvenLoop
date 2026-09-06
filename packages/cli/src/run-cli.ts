@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
   AdapterOperationResult,
   AgentAdapter,
+  KnowledgeCandidate,
   Scope,
 } from "@provenloop/contracts";
 import {
@@ -14,6 +15,8 @@ import {
 } from "@provenloop/contracts";
 import {
   CopilotCliAdapter,
+  readTrustedSessionContext,
+  type TrustedSessionContext,
 } from "@provenloop/copilot-adapter";
 import {
   evaluateEpisodeAssociationDataset,
@@ -68,6 +71,11 @@ import {
   PROVENLOOP_CODE_VERSION,
   releaseMetadata,
 } from "./release-metadata.js";
+import {
+  exportLocalObservationManifest,
+  readLocalObservationSummary,
+} from "./observation-summary.js";
+import { invalidateLocalObservationProjection } from "./collect-observations.js";
 
 export interface CliIo {
   readonly error: (message: string) => void;
@@ -89,6 +97,13 @@ export interface CliDependencies {
 const defaultIo: CliIo = {
   error: (message) => console.error(message),
   log: (message) => console.log(message),
+};
+
+const resolveCliTrustedContext = async (
+  root: string,
+): Promise<TrustedSessionContext | undefined> => {
+  const sessionId = process.env.SESSION_ID?.trim();
+  return sessionId ? readTrustedSessionContext(root, sessionId) : undefined;
 };
 
 const defaultDependencies: CliDependencies = {
@@ -125,6 +140,12 @@ const usage = `Usage:
   provenloop disable <capability> [--data-root <directory>]
   provenloop collection <enable|disable> [--data-root <directory>]
   provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge list [--state <state>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge show <knowledge-id> [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge confirm <knowledge-id> --expect <review-digest> --confirm [--resolve <evidence-ids>] [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge replace <knowledge-id> --content <text> --expect <review-digest> --confirm [--resolve <evidence-ids>] [--when <condition>] [--not-when <condition>] [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge revoke <knowledge-id> --expect <review-digest> --confirm [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+    Workflow scope requires the matching live SDK workflow and workspace; --workflow alone is not authority.
   provenloop correct <knowledge-id> [--reason <text>] [--data-root <directory>]
   provenloop mute <knowledge-id> --session <id> [--data-root <directory>]
   provenloop forget <knowledge-or-playbook> [--data-root <directory>]
@@ -134,6 +155,9 @@ const usage = `Usage:
   provenloop purge [--data-root <directory>]
   provenloop acceptance start [--session-root <directory>] [--data-root <directory>]
   provenloop acceptance complete [--drain-timeout <seconds>] [--data-root <directory>]
+  provenloop observations show [--date YYYY-MM-DD] [--session <id>] [--data-root <directory>]
+  provenloop observations export [--date YYYY-MM-DD] [--session <id>] [--data-root <directory>]
+    Observations are observational, not controlled benefit evidence or release approval.
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory> [--evidence <file>]
   provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
@@ -202,24 +226,27 @@ const operationExitCode = (
   result: AdapterOperationResult,
 ): number => result.status === "incompatible" ? 1 : 0;
 
-const KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS = 5_000;
+const MAINTENANCE_LEASE_TIMEOUT_MS = 5_000;
 const LEASE_RETRY_DELAY_MS = 25;
 
-const acquireKnowledgeProjectionLease = async (
+const acquireMaintenanceLease = async (
   root: string,
+  purpose: "knowledge-projection" | "observations",
 ) => {
   const leaseName = await resolveWindowsProvenLoopLeaseName(
     root,
-    "knowledge-projection",
+    purpose,
   );
   const provider = new WindowsNamedPipeLeaseProvider(leaseName);
   const deadline =
-    Date.now() + KNOWLEDGE_PROJECTION_LEASE_TIMEOUT_MS;
+    Date.now() + MAINTENANCE_LEASE_TIMEOUT_MS;
   let lease = await provider.tryAcquire();
   while (lease === undefined) {
     if (Date.now() >= deadline) {
       throw new Error(
-        "Timed out waiting for the Knowledge projection lease. Retry the command after maintenance completes.",
+        purpose === "knowledge-projection"
+          ? "Timed out waiting for the Knowledge projection lease. Retry the command after maintenance completes."
+          : "Timed out waiting for the observations lease. Retry the command after collection completes.",
       );
     }
     await new Promise<void>((resolve) => {
@@ -230,11 +257,15 @@ const acquireKnowledgeProjectionLease = async (
   return lease;
 };
 
+const acquireKnowledgeProjectionLease = (root: string) =>
+  acquireMaintenanceLease(root, "knowledge-projection");
+
 const withKnowledgeControl = async <T>(
   root: string,
   operation: (
     service: KnowledgeControlService,
   ) => Promise<T> | T,
+  workflowScopeId?: string,
 ): Promise<T> => {
   const paths = resolveWindowsProvenLoopPaths(root);
   await access(paths.rootMarker);
@@ -262,6 +293,7 @@ const withKnowledgeControl = async <T>(
           rebuild: () => projection.rebuild().then(() => undefined),
         },
         store,
+        ...(workflowScopeId === undefined ? {} : { workflowScopeId }),
       }),
     );
   } finally {
@@ -275,6 +307,7 @@ const rememberScopeId = async (
   scope: Scope,
   args: readonly string[],
   adapter: AgentAdapter,
+  root: string,
 ): Promise<string | undefined> => {
   if (scope === "personal") {
     return undefined;
@@ -284,6 +317,18 @@ const rememberScopeId = async (
     if (!workflow) {
       throw new Error(
         "Workflow-scoped Knowledge requires --workflow.",
+      );
+    }
+    const trusted = await resolveCliTrustedContext(root);
+    if (
+      trusted?.workflowScopeId !== workflow ||
+      (trusted.repositoryState !== "known_repo" &&
+        trusted.repositoryState !== "known_outside_repo") ||
+      resolve(trusted.cwd).toLowerCase() !==
+        resolve(option(args, "--cwd") ?? process.cwd()).toLowerCase()
+    ) {
+      throw new Error(
+        "Workflow-scoped Knowledge requires a matching trusted workflow in the active workspace.",
       );
     }
     return workflow;
@@ -388,6 +433,7 @@ const runKnowledgeControlCommand = async (
           scopeResult.data,
           args,
           adapter,
+          root,
         );
         const result = await withKnowledgeControl(
           root,
@@ -407,6 +453,7 @@ const runKnowledgeControlCommand = async (
               scope: scopeResult.data,
               ...(scopeId === undefined ? {} : { scopeId }),
             }),
+          scopeResult.data === "workflow" ? scopeId : undefined,
         );
         io.log(
           result.changed
@@ -462,8 +509,8 @@ const runKnowledgeControlCommand = async (
         );
         io.log(
           result.changed
-            ? `Knowledge ${knowledgeId} muted for Session ${sessionId}.`
-            : `Knowledge ${knowledgeId} is already muted for that Session.`,
+            ? `All ProvenLoop context muted for Session ${sessionId} (requested via Knowledge ${knowledgeId}).`
+            : `All ProvenLoop context is already muted for Session ${sessionId}.`,
         );
         return 0;
       }
@@ -491,6 +538,159 @@ const runKnowledgeControlCommand = async (
   }
   io.error(usage);
   return 2;
+};
+
+const runKnowledgeReviewCommand = async (
+  args: readonly string[],
+  io: CliIo,
+  dependencies: CliDependencies,
+): Promise<number> => {
+  const action = args[1];
+  const writes = action === "confirm" || action === "replace" || action === "revoke";
+  const values = ["--cwd", "--data-root", "--scope", "--workflow"];
+  if (action === "list") {
+    values.push("--state");
+  }
+  if (writes) {
+    values.push("--expect", "--reason");
+  }
+  if (action === "confirm" || action === "replace") {
+    values.push("--resolve");
+  }
+  if (action === "replace") {
+    values.push("--content", "--when", "--not-when");
+  }
+  const state = option(args, "--state");
+  const scope = scopeSchema.safeParse(option(args, "--scope") ?? "repository");
+  const knowledgeId = args[2]?.trim();
+  const expectedDigest = option(args, "--expect");
+  if (
+    !["list", "show", "confirm", "replace", "revoke"].includes(action ?? "") ||
+    !scope.success ||
+    !hasOnlyOptions(args, action === "list" ? 2 : 3, {
+      flags: writes ? ["--confirm"] : [],
+      values,
+    }) ||
+    (action !== "list" && (!knowledgeId || knowledgeId.startsWith("--"))) ||
+    (state !== undefined && ![
+      "candidate", "active", "disputed", "superseded", "archived",
+    ].includes(state)) ||
+    (writes && (
+      !args.includes("--confirm") ||
+      expectedDigest === undefined ||
+      !/^[a-f0-9]{64}$/u.test(expectedDigest)
+    )) ||
+    (action === "replace" && !option(args, "--content")?.trim())
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  try {
+    const root = dataRoot(args);
+    const scopeId = await rememberScopeId(
+      scope.data,
+      args,
+      dependencies.createAdapter(root),
+      root,
+    );
+    const reviewScope = {
+      scope: scope.data,
+      ...(scopeId === undefined ? {} : { scopeId }),
+    };
+    return await withKnowledgeControl(root, async (service) => {
+      if (action === "list") {
+        io.log(JSON.stringify(service.list({
+          ...reviewScope,
+          ...(state === undefined ? {} : {
+            state: state as KnowledgeCandidate["state"],
+          }),
+        }), null, 2));
+        return 0;
+      }
+      if (action === "show") {
+        io.log(JSON.stringify(service.review({
+          ...reviewScope,
+          knowledgeId: knowledgeId ?? "",
+        }), null, 2));
+        return 0;
+      }
+      const content = option(args, "--content");
+      const when = option(args, "--when");
+      const notWhen = option(args, "--not-when");
+      const reason = option(args, "--reason");
+      const resolvesEvidenceIds = option(args, "--resolve")?.split(",")
+        .map((value) => value.trim()).filter(Boolean);
+      if (action === "revoke") {
+        await service.revoke({
+          ...reviewScope,
+          knowledgeId: knowledgeId ?? "",
+          expectedDigest: expectedDigest ?? "",
+          userConfirmed: true,
+          ...(reason === undefined ? {} : { reason }),
+        });
+        io.log(`Knowledge ${knowledgeId} archived without deleting its review history.`);
+        return 0;
+      }
+      const result = await service.resolve({
+        ...reviewScope,
+        knowledgeId: knowledgeId ?? "",
+        expectedDigest: expectedDigest ?? "",
+        userConfirmed: true,
+        ...(resolvesEvidenceIds === undefined ? {} : { resolvesEvidenceIds }),
+        ...(content === undefined ? {} : { content }),
+        ...(when === undefined ? {} : { appliesWhen: [when] }),
+        ...(notWhen === undefined ? {} : { nonApplicability: [notWhen] }),
+        ...(reason === undefined ? {} : { reason }),
+      });
+      io.log(`User-confirmed rule ${result.candidate?.knowledgeId} recorded; this is not external verification.`);
+      return 0;
+    }, scope.data === "workflow" ? scopeId : undefined);
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return 3;
+  }
+};
+
+const runObservationsCommand = async (
+  args: readonly string[],
+  io: CliIo,
+): Promise<number> => {
+  const date = option(args, "--date");
+  const sessionId = option(args, "--session")?.trim();
+  const dateTime = date === undefined ? undefined : Date.parse(`${date}T00:00:00Z`);
+  if (
+    !["show", "export"].includes(args[1] ?? "") ||
+    !hasOnlyOptions(args, 2, { values: ["--data-root", "--date", "--session"] }) ||
+    (sessionId !== undefined && sessionId.length === 0) ||
+    (args.includes("--data-root") && !option(args, "--data-root")?.trim()) ||
+    (date !== undefined && (
+      !/^\d{4}-\d{2}-\d{2}$/u.test(date) ||
+      dateTime === undefined ||
+      !Number.isFinite(dateTime) ||
+      new Date(dateTime).toISOString().slice(0, 10) !== date
+    ))
+  ) {
+    io.error(usage);
+    return 2;
+  }
+  try {
+    const input = {
+      dataRoot: dataRoot(args),
+      ...(date === undefined ? {} : { date }),
+      ...(sessionId === undefined ? {} : { sessionId }),
+    };
+    const result = args[1] === "show"
+      ? await readLocalObservationSummary(input)
+      : await exportLocalObservationManifest({
+          ...input,
+          codeVersion: PROVENLOOP_CODE_VERSION,
+        });
+    io.log(JSON.stringify(result, null, 2));
+    return 0;
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error));
+    return 3;
+  }
 };
 
 const deletionTarget = (
@@ -567,12 +767,16 @@ const runDeletionCommand = async (
   let projectionLease: Awaited<
     ReturnType<typeof acquireKnowledgeProjectionLease>
   > | undefined;
+  let observationsLease: Awaited<
+    ReturnType<typeof acquireKnowledgeProjectionLease>
+  > | undefined;
   try {
     await access(paths.rootMarker);
     await access(paths.database);
     projectionLease = await acquireKnowledgeProjectionLease(
       paths.root,
     );
+    observationsLease = await acquireMaintenanceLease(paths.root, "observations");
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
     store = new CanonicalSqliteStore(paths.database);
@@ -634,6 +838,7 @@ const runDeletionCommand = async (
       deletionId,
       ...target,
     });
+    await invalidateLocalObservationProjection(paths.root);
     io.log(
       `${
         target.targetType === "knowledge"
@@ -654,7 +859,11 @@ const runDeletionCommand = async (
       try {
         store?.close();
       } finally {
-        await projectionLease?.release();
+        try {
+          await observationsLease?.release();
+        } finally {
+          await projectionLease?.release();
+        }
       }
     }
   }
@@ -1060,11 +1269,17 @@ export const runCli = async (
   if (args[0] === "acceptance") {
     return runAcceptanceCommand(args, io);
   }
+  if (args[0] === "observations") {
+    return runObservationsCommand(args, io);
+  }
   if (args[0] === "collection") {
     return runCollectionCommand(args, io, dependencies);
   }
   if (args[0] === "delete") {
     return runDeletionCommand(args, io);
+  }
+  if (args[0] === "knowledge") {
+    return runKnowledgeReviewCommand(args, io, dependencies);
   }
   if (
     [

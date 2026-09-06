@@ -20,6 +20,17 @@ import {
 
 import { sha256 } from "./digest.js";
 import {
+  directKnowledgeCounterevidence,
+  knowledgeEvidenceState,
+} from "./knowledge-evidence.js";
+import {
+  boundVerificationOperation,
+  independentlyVerifiedCorrections,
+  verificationBinding,
+  verificationOutcome,
+  verificationProofEventIds,
+} from "./verification-proof.js";
+import {
   KnowledgeAdmissionPolicy,
   refreshKnowledgeAdmissionDecision,
   type KnowledgeAdmissionDecision,
@@ -171,57 +182,18 @@ const verifiedCorrectionEventIds = (
   correctionEventIds: readonly string[],
   verificationEvidenceIds: readonly string[],
   eventsById: ReadonlyMap<string, CaptureEnvelope>,
-  workEpisodes: readonly WorkEpisode[],
 ): readonly string[] =>
-  correctionEventIds.filter((correctionEventId) => {
-    const correction = eventsById.get(correctionEventId);
-    if (correction === undefined) {
-      return false;
-    }
-    return workEpisodes.some(
-      (episode) =>
-        episode.sourceEventIds.includes(correctionEventId) &&
-        verificationEvidenceIds.some((verificationEvidenceId) => {
-          if (
-            !episode.sourceEventIds.includes(verificationEvidenceId)
-          ) {
-            return false;
-          }
-          const verification = eventsById.get(
-            verificationEvidenceId,
-          );
-          if (verification === undefined) {
-            return false;
-          }
-          const event = verification.event;
-          return (
-            (
-              event.eventType === "test.completed" ||
-              event.eventType === "build.completed" ||
-              event.eventType === "verification.completed"
-            ) &&
-            (
-              event.trust === "system" ||
-              event.trust === "tool"
-            ) &&
-            (
-              event.completionStatus === "succeeded" ||
-              event.exitCode === 0
-            ) &&
-            (
-              event.completionStatus === undefined ||
-              event.completionStatus === "succeeded"
-            ) &&
-            (
-              event.exitCode === undefined ||
-              event.exitCode === 0
-            ) &&
-            Date.parse(correction.event.timestamp) <
-              Date.parse(event.timestamp)
-          );
-        }),
-    );
-  });
+  independentlyVerifiedCorrections(
+    correctionEventIds.flatMap((id) => {
+      const envelope = eventsById.get(id);
+      return envelope === undefined ? [] : [envelope];
+    }),
+    verificationEvidenceIds.flatMap((id) => {
+      const envelope = eventsById.get(id);
+      return envelope === undefined ? [] : [envelope];
+    }),
+    eventsById,
+  );
 
 const tierFromMarks = (
   marks: readonly EvidenceMark[],
@@ -233,30 +205,6 @@ const tierFromMarks = (
       : marks.includes("user_confirmed")
         ? "user_confirmed"
         : "inferred";
-
-const directCounterevidence = (
-  envelopes: readonly CaptureEnvelope[],
-  sourceEvidenceIds: ReadonlySet<string>,
-  createdAt: string,
-): readonly CaptureEnvelope[] =>
-  envelopes.filter(
-    (envelope) =>
-      Date.parse(envelope.event.timestamp) >= Date.parse(createdAt) &&
-      envelope.event.parentEventId !== undefined &&
-      sourceEvidenceIds.has(envelope.event.parentEventId) &&
-      (
-        envelope.event.eventType === "change.reverted" ||
-        (
-          (
-            envelope.event.eventType === "test.completed" ||
-            envelope.event.eventType === "build.completed"
-          ) &&
-          envelope.event.completionStatus === "failed"
-        )
-      ) &&
-      envelope.event.trust !== "model" &&
-      envelope.event.trust !== "external-content",
-  );
 
 const sourceEpisodes = (
   sourceEvidenceIds: ReadonlySet<string>,
@@ -298,11 +246,14 @@ const applyFeedback = (
   let scope = candidate.scope;
   let scopeId = candidate.scopeId;
   let expiresAt = candidate.expiresAt;
-  let applied = candidate.utility.applied;
+  const applied = candidate.utility.applied;
   let harmful = candidate.utility.harmful;
   let helpful = candidate.utility.helpful;
   switch (feedback.kind) {
     case "confirm":
+      if (feedback.source !== "user") {
+        return candidate;
+      }
       marks.add("user_confirmed");
       evidenceTier = tierFromMarks([...marks]);
       state =
@@ -312,12 +263,14 @@ const applyFeedback = (
           : "candidate";
       break;
     case "strengthen":
-      applied += 1;
-      helpful += 1;
+      if (feedback.source === "user") {
+        helpful += 1;
+      }
       break;
     case "correct":
-      applied += 1;
-      harmful += 1;
+      if (feedback.source === "user") {
+        harmful += 1;
+      }
       state = "disputed";
       evidenceTier = "disputed";
       break;
@@ -379,6 +332,7 @@ const applyFeedback = (
 
 const reconcileTopicVersions = (
   input: readonly KnowledgeCandidate[],
+  versionTimestamps: ReadonlyMap<string, string>,
 ): readonly KnowledgeCandidate[] => {
   const byTopic = new Map<string, KnowledgeCandidate[]>();
   for (const candidate of input) {
@@ -393,9 +347,9 @@ const reconcileTopicVersions = (
       .sort(
         (left, right) =>
           Date.parse(
-            right.validatedAt ?? right.createdAt,
+            versionTimestamps.get(right.knowledgeId) ?? right.createdAt,
           ) -
-            Date.parse(left.validatedAt ?? left.createdAt) ||
+            Date.parse(versionTimestamps.get(left.knowledgeId) ?? left.createdAt) ||
           right.knowledgeId.localeCompare(left.knowledgeId),
       );
     const selected = active[0];
@@ -458,6 +412,10 @@ export class KnowledgeLifecycleBuilder {
     );
     const feedbackEvents = input.feedbackEvents
       .map((event) => feedbackEventSchema.parse(event))
+      .filter((event) =>
+        !["irrelevant", "mute_session"].includes(event.kind) &&
+        (!["confirm", "set_scope", "strengthen"].includes(event.kind) || event.source === "user"),
+      )
       .sort(byTimestampAndId);
     const workEpisodes = input.workEpisodes.map((episode) =>
       workEpisodeSchema.parse(episode),
@@ -466,12 +424,6 @@ export class KnowledgeLifecycleBuilder {
       envelopes.map((envelope) => [
         envelope.event.eventId,
         envelope,
-      ]),
-    );
-    const episodesById = new Map(
-      workEpisodes.map((episode) => [
-        episode.episodeId,
-        episode,
       ]),
     );
     const correctionSourceEventIds = new Set(
@@ -483,6 +435,15 @@ export class KnowledgeLifecycleBuilder {
         .map((envelope) => envelope.event.eventId),
     );
     const versions = versionsFromKeys(correctionKeys);
+    const versionTimestamps = new Map(versions.map((version) => [
+      version.candidateId,
+      latestTimestamp(version.correctionKeys.flatMap((key) =>
+        key.sourceCorrectionEventIds.flatMap((eventId) => {
+          const event = eventsById.get(eventId);
+          return event === undefined ? [] : [event.event.timestamp];
+        }),
+      )) ?? version.correctionKeys[0]?.createdAt ?? new Date(0).toISOString(),
+    ]));
     const candidates = versions.map((version) => {
       const keyIds = new Set(
         version.correctionKeys.map((key) => key.correctionKeyId),
@@ -500,12 +461,25 @@ export class KnowledgeLifecycleBuilder {
       const baseEvidenceIds = new Set([
         ...correctionEventIds,
         ...verificationEvidenceIds,
+        ...verificationEvidenceIds.flatMap((eventId) => {
+          const event = eventsById.get(eventId);
+          const binding = event === undefined ? undefined : verificationBinding(event);
+          const correction = binding === undefined
+            ? undefined
+            : eventsById.get(binding.correctionEventId);
+          return binding === undefined ? [] : [
+            binding.operationEventId,
+            ...(correction === undefined || event === undefined
+              ? []
+              : verificationProofEventIds(correction, event, eventsById)),
+          ];
+        }),
       ]);
       const createdAt =
         earliestTimestamp(
           version.correctionKeys.map((key) => key.createdAt),
         ) ?? new Date(0).toISOString();
-      const counters = directCounterevidence(
+      const counters = directKnowledgeCounterevidence(
         envelopes,
         baseEvidenceIds,
         createdAt,
@@ -524,32 +498,20 @@ export class KnowledgeLifecycleBuilder {
         (opportunity) =>
           opportunity.knowledgeAppliedBeforeCorrection,
       );
-      const harmfulOpportunities = appliedOpportunities.filter(
-        (opportunity) =>
-          opportunity.correctionRepeated &&
-          opportunity.outcomeKnown,
-      );
-      const helpfulOpportunities = appliedOpportunities.filter(
-        (opportunity) =>
-          !opportunity.correctionRepeated &&
-          opportunity.outcomeKnown,
-      );
       const verificationTimestamps =
         verificationEvidenceIds.flatMap((eventId) => {
           const event = eventsById.get(eventId);
-          return event === undefined
+          const binding = event === undefined ? undefined : verificationBinding(event);
+          const correction = binding === undefined ? undefined : eventsById.get(binding.correctionEventId);
+          return event === undefined ||
+            correction === undefined ||
+            verificationOutcome(event) !== "succeeded" ||
+            boundVerificationOperation(correction, event, eventsById) === undefined
             ? []
             : [event.event.timestamp];
         });
       const counterevidenceTimestamps = [
         ...counters.map((counter) => counter.event.timestamp),
-        ...harmfulOpportunities.flatMap((opportunity) => {
-          const episode = episodesById.get(opportunity.episodeId);
-          const timestamp =
-            episode?.outcomeQualifiedAt ??
-            episode?.finishedAt;
-          return timestamp === undefined ? [] : [timestamp];
-        }),
       ];
       const validatedAt = latestTimestamp([
         ...verificationTimestamps,
@@ -560,7 +522,6 @@ export class KnowledgeLifecycleBuilder {
           correctionEventIds,
           verificationEvidenceIds,
           eventsById,
-          workEpisodes,
         ),
       );
       const tier = tierFromMarks(marks);
@@ -590,11 +551,7 @@ export class KnowledgeLifecycleBuilder {
         },
         createdAt,
         evidenceMarks: marks,
-        evidenceTier:
-          counters.length > 0 ||
-          harmfulOpportunities.length > 0
-            ? "disputed"
-            : tier,
+        evidenceTier: tier,
         importance: 1,
         kind: "procedural",
         knowledgeId: version.candidateId,
@@ -610,18 +567,12 @@ export class KnowledgeLifecycleBuilder {
           workEpisodes,
         ),
         sourceEvidenceIds: sortedUnique(sourceEvidenceIds),
-        state:
-          counters.length > 0 ||
-          harmfulOpportunities.length > 0
-            ? "disputed"
-            : tier === "inferred"
-              ? "candidate"
-              : "active",
+        state: tier === "inferred" ? "candidate" : "active",
         topicKey: version.topicKey,
         utility: {
           applied: appliedOpportunities.length,
-          harmful: harmfulOpportunities.length,
-          helpful: helpfulOpportunities.length,
+          harmful: 0,
+          helpful: 0,
         },
         ...(validatedAt === undefined
           ? {}
@@ -632,11 +583,74 @@ export class KnowledgeLifecycleBuilder {
       for (const feedback of feedbackEvents) {
         if (
           feedback.targetType === "knowledge" &&
-          feedback.targetId === candidate.knowledgeId
+          feedback.targetId === candidate.knowledgeId &&
+          Date.parse(feedback.timestamp) >= Date.parse(candidate.createdAt)
         ) {
           candidate = applyFeedback(candidate, feedback);
         }
       }
+      const state = knowledgeEvidenceState({
+        counters,
+        createdAt,
+        feedbackEvents,
+        knowledgeId: candidate.knowledgeId,
+      });
+      const latestValidation = latestTimestamp([
+        ...verificationTimestamps,
+        ...counterevidenceTimestamps,
+        ...feedbackEvents.filter((feedback) =>
+          feedback.targetType === "knowledge" &&
+          feedback.targetId === candidate.knowledgeId &&
+          Date.parse(feedback.timestamp) >= Date.parse(createdAt),
+        ).map((feedback) => feedback.timestamp),
+      ]);
+      const { expiresAt, ...withoutExpiry } = candidate;
+      const referencesCandidate = (references: readonly string[]): boolean =>
+        references.some((reference) =>
+          reference === candidate.knowledgeId ||
+          reference === `knowledge:${candidate.knowledgeId}`,
+        );
+      const uses = contextUseRecords.filter((record) =>
+        referencesCandidate(record.appliedKnowledgeIds) &&
+        Date.parse(record.createdAt) >= Date.parse(createdAt),
+      );
+      const opinions = new Map<string, FeedbackEvent>();
+      for (const feedback of feedbackEvents) {
+        if (
+          feedback.targetType === "knowledge" &&
+          feedback.targetId === candidate.knowledgeId &&
+          feedback.source === "user" &&
+          (feedback.kind === "strengthen" || feedback.kind === "correct") &&
+          Date.parse(feedback.timestamp) >= Date.parse(createdAt)
+        ) {
+          opinions.set(feedback.evidenceRef, feedback);
+        }
+      }
+      const applicationRefs = new Set([
+        ...uses.map((record) => record.requestId),
+        ...opinions.keys(),
+        ...appliedOpportunities
+          .filter((opportunity) =>
+            !uses.some((record) => record.episodeId === opportunity.episodeId),
+          )
+          .map((opportunity) => `episode:${opportunity.episodeId}`),
+      ]);
+      candidate = knowledgeCandidateSchema.parse({
+        ...withoutExpiry,
+        ...(state.archived && expiresAt !== undefined ? { expiresAt } : {}),
+        ...(state.unresolvedEvidenceIds.length === 0
+          ? {}
+          : {
+              evidenceTier: "disputed",
+              state: state.archived ? "archived" : "disputed",
+            }),
+        ...(latestValidation === undefined ? {} : { validatedAt: latestValidation }),
+        utility: {
+          applied: applicationRefs.size,
+          harmful: [...opinions.values()].filter((feedback) => feedback.kind === "correct").length,
+          helpful: [...opinions.values()].filter((feedback) => feedback.kind === "strengthen").length,
+        },
+      });
       return candidate;
     });
     const admissionInput = {
@@ -662,7 +676,7 @@ export class KnowledgeLifecycleBuilder {
           })
         : candidate;
     });
-    const reconciled = reconcileTopicVersions(admittedCandidates);
+    const reconciled = reconcileTopicVersions(admittedCandidates, versionTimestamps);
     const admissionById = new Map(
       preliminaryAdmission.map((admission) => [
         admission.knowledgeId,

@@ -4,6 +4,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +30,7 @@ import {
 import {
   KnowledgeControlService,
 } from "@provenloop/host";
+import { TrustedSessionContextPublisher } from "@provenloop/copilot-adapter";
 import {
   resolveWindowsProvenLoopPaths,
 } from "@provenloop/platform-windows";
@@ -51,6 +53,7 @@ const createTemporaryDirectory = async (): Promise<string> => {
 };
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, {
@@ -387,6 +390,147 @@ describe("M1 user control", () => {
     expect(harness.logs.some((message) =>
       message.startsWith("Forget completed:"),
     )).toBe(true);
+  });
+
+  it("reviews and explicitly replaces disputed Knowledge through the installed CLI route", async () => {
+    const root = await createTemporaryDirectory();
+    const paths = resolveWindowsProvenLoopPaths(root);
+    await mkdir(paths.data, { recursive: true });
+    await writeFile(paths.rootMarker, "{}\n", "utf8");
+    new CanonicalSqliteStore(paths.database).close();
+    const harness = cliHarness(fakeAdapter());
+    const common = ["--scope", "repository", "--cwd", "C:\\repo", "--data-root", root];
+    expect(await runCli([
+      "remember", "--content", "Run every test.", "--when", "Changing code.",
+      ...common,
+    ], harness.io, harness.dependencies)).toBe(0);
+    let store = new CanonicalSqliteStore(paths.database);
+    const originalId = store.knowledgeCandidates()[0]?.knowledgeId;
+    store.close();
+    if (originalId === undefined) {
+      throw new Error("Expected a remembered rule.");
+    }
+    expect(await runCli([
+      "correct", originalId, "--data-root", root,
+    ], harness.io, harness.dependencies)).toBe(0);
+    expect(await runCli([
+      "knowledge", "list", "--state", "disputed", ...common,
+    ], harness.io, harness.dependencies)).toBe(0);
+    expect(JSON.parse(harness.logs.at(-1) ?? "[]")).toEqual([
+      expect.objectContaining({
+        candidate: expect.objectContaining({ knowledgeId: originalId, state: "disputed" }),
+      }),
+    ]);
+    expect(await runCli([
+      "knowledge", "show", originalId, ...common,
+    ], harness.io, harness.dependencies)).toBe(0);
+    const review = JSON.parse(harness.logs.at(-1) ?? "{}") as {
+      expectedDigest: string;
+      unresolvedEvidenceIds: readonly string[];
+    };
+    const replacement = [
+      "knowledge", "replace", originalId,
+      "--content", "Run focused tests before the full suite.",
+      "--expect", review.expectedDigest,
+      "--resolve", review.unresolvedEvidenceIds.join(","),
+      ...common,
+    ];
+    expect(await runCli(replacement, harness.io, harness.dependencies)).toBe(2);
+    expect(await runCli([
+      ...replacement, "--confirm",
+    ], harness.io, harness.dependencies)).toBe(0);
+    store = new CanonicalSqliteStore(paths.database);
+    try {
+      expect(store.knowledgeCandidates([originalId])[0]?.state).toBe("superseded");
+      expect(store.knowledgeCandidates().find((item) => item.supersedes === originalId))
+        .toMatchObject({
+          content: "Run focused tests before the full suite.",
+          evidenceTier: "user_confirmed",
+          state: "active",
+        });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("binds workflow review writes to the live SDK workspace", async () => {
+    const root = await createTemporaryDirectory();
+    const paths = resolveWindowsProvenLoopPaths(root);
+    await mkdir(paths.data, { recursive: true });
+    await writeFile(paths.rootMarker, JSON.stringify({
+      product: "ProvenLoop", root: paths.root, schemaVersion: 1,
+    }), "utf8");
+    new CanonicalSqliteStore(paths.database).close();
+    const sessionId = `workflow-${randomUUID()}`;
+    vi.stubEnv("SESSION_ID", sessionId);
+    const errors: unknown[] = [];
+    const publisher = new TrustedSessionContextPublisher({
+      cwd: root,
+      dataRoot: root,
+      sessionId,
+      repositoryState: "known_outside_repo",
+      workflowScopeId: "focused-validation",
+      onError: (error) => errors.push(error),
+    });
+    const harness = cliHarness(fakeAdapter());
+    const common = [
+      "--scope", "workflow", "--workflow", "focused-validation",
+      "--cwd", root, "--data-root", root,
+    ];
+    const remember = [
+      "remember", "--content", "Run focused tests.", "--when", "Changing code.",
+      ...common,
+    ];
+    const readCandidate = () => {
+      const store = new CanonicalSqliteStore(paths.database);
+      try {
+        const candidate = store.knowledgeCandidates().find((item) => item.state === "active");
+        if (candidate === undefined) throw new Error("Expected active workflow Knowledge.");
+        return candidate;
+      } finally {
+        store.close();
+      }
+    };
+    try {
+      expect(await runCli(remember, harness.io, harness.dependencies)).toBe(3);
+      await publisher.start();
+      expect(await runCli(remember, harness.io, harness.dependencies)).toBe(0);
+      let candidate = readCandidate();
+      expect(candidate).toMatchObject({ scope: "workflow", scopeId: "focused-validation" });
+      expect(await runCli([
+        "knowledge", "list", ...common,
+      ], harness.io, harness.dependencies)).toBe(0);
+      expect(JSON.parse(harness.logs.at(-1) ?? "[]")).toHaveLength(1);
+
+      for (const action of ["confirm", "replace"] as const) {
+        expect(await runCli([
+          "knowledge", "show", candidate.knowledgeId, ...common,
+        ], harness.io, harness.dependencies)).toBe(0);
+        const review = JSON.parse(harness.logs.at(-1) ?? "{}") as { expectedDigest: string };
+        expect(await runCli([
+          "knowledge", action, candidate.knowledgeId,
+          "--expect", review.expectedDigest, "--confirm",
+          ...(action === "replace" ? ["--content", "Run focused tests before merging."] : []),
+          ...common,
+        ], harness.io, harness.dependencies)).toBe(0);
+        candidate = readCandidate();
+      }
+      expect(candidate.content).toBe("Run focused tests before merging.");
+      expect(await runCli(remember.map((value) =>
+        value === "focused-validation" ? "other-workflow" : value,
+      ), harness.io, harness.dependencies)).toBe(3);
+      expect(await runCli([
+        "knowledge", "list", "--scope", "workflow", "--workflow", "focused-validation",
+        "--cwd", join(root, "other"), "--data-root", root,
+      ], harness.io, harness.dependencies)).toBe(3);
+      await publisher.stop();
+      expect(await runCli([
+        "knowledge", "list", ...common,
+      ], harness.io, harness.dependencies)).toBe(3);
+      expect(errors).toEqual([]);
+    } finally {
+      await publisher.stop();
+    }
   });
 
   it("rejects potential secrets before remembering them", async () => {

@@ -22,6 +22,8 @@ export default defineConfig({
   },
   test: {
     hookTimeout: 30_000,
+    // Bound process startup contention without relaxing foreground runtime deadlines.
+    maxWorkers: 4,
     include: [
       "tests/unit/**/*.test.ts"
     ],

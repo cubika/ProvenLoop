@@ -1,8 +1,13 @@
 # ProvenLoop 产品验收与质量评估方案
 
+**当前边界（2026-09-06）：** `0.1.0-alpha.0.8` 是 Windows Design Partner Preview
+证据候选版，包含观察导出、严格原生证明链、有界当前 Session 对账和现场效果门禁修订。
+合成回归、真实观察、受控收益比较和发布批准是四类不同证据，不能互相替代。
+新版本工件须单独验证；M0/MVP 质量发布仍为 No-Go，`0.1.0-alpha.1` 尚未获批准。
+
 **状态：** Proposed validation plan  
 **版本：** 1.0  
-**更新日期：** 2026-08-28
+**更新日期：** 2026-09-06
 
 ---
 
@@ -264,10 +269,16 @@ infrastructure_error
 
 首轮统一入口：
 
-```text
-provenloop eval run --suite m0-m2 --out .provenloop/eval/<run-id>
+```powershell
+provenloop eval run --suite valid-supported-event --out .provenloop\eval
+provenloop eval m0 --out .provenloop\eval
+provenloop eval m1 --out .provenloop\eval
+provenloop eval m2 --out .provenloop\eval
 provenloop eval report --run <run-id>
 ```
+
+`m0-m2` 不是内置 suite 名称。聚合发布决策使用 `provenloop eval mvp`，
+不应把单个 fixture 的通过解释为整个 Milestone 通过。
 
 固定退出码：
 
@@ -308,9 +319,13 @@ ProvenLoop 需要四类测试，它们不能互相替代。
 | 单元与属性测试 | 验证确定性规则和不变量 | Scope 判断、状态迁移、Token Budget、幂等 |
 | 集成与故障测试 | 验证组件协作和失败行为 | Queue 恢复、SQLite 锁、未知事件版本、Backend 超时 |
 | 场景与端到端测试 | 验证用户可见结果 | 跨 Session 续接、纠正学习、Revert 反证、Forget |
-| Replay 与产品评估 | 判断学习是否带来增益 | Baseline 对比、Held-out Episode、Negative Trigger |
+| Replay 与产品评估 | 回归验证，或在真实受控条件下评估增益 | Baseline 对比、Held-out Episode、Negative Trigger |
 
-单元测试通过只能证明代码按规则执行。Replay 才能证明规则对真实任务有用。
+单元和合成 Replay 验证确定性行为及回归；使用 production builder 不会把合成输入变成
+真实用户实验。真实观察描述实际发生的事，但没有对照就不能归因。受控、独立、预声明的
+真实任务比较才支持收益判断；发布还需要平台、安全、人工评审和恢复证据。
+当前 24 组 Episode 关联、32 组 Branch Continuation、24 组 Correction Recurrence
+夹具应明确标记为 `synthetic_regression`，不计入真实样本量。
 
 ### 4.2 六类核心数据集
 
@@ -483,12 +498,16 @@ M1 研究门槛：
 
 评估单位是 Correction Opportunity，不是 Knowledge Card 数量。
 
-一次机会需要同时满足：
+一次机会在结果出现前按冻结规则形成：
 
 - 已存在经过验证的 Correction Key；
 - 新任务在 Scope、Task Family、Subsystem、Intent 和 Trigger 上适用；
 - 系统有机会在用户纠正前使用该 Knowledge；
-- 后续结果可以判断是否成功。
+- 不因随后成功、失败或缺少结果而重新定义适用性。
+
+`outcomeKnown` 是后续分析状态，不是创建机会的前提。单独报告所有预声明机会、
+结果可判定的分析样本和 censored/unknown 样本；计算 RCR 时说明纳入标准及分母。
+不得先筛选成功任务，再把剩余样本称为全部纠正机会。
 
 核心指标：
 
@@ -509,6 +528,8 @@ M2 研究门槛：
 
 样本太少时不应发布一个漂亮百分比。少于 20 次独立机会时，报告所有案例和方向性结果，
 不宣称已经证明产品收益。
+即使合成夹具超过 20 组，也不能满足真实机会数量要求；普通观察中的“后续纠正”计数
+不是经过受控比较的 RCR 改善。
 
 ### 5.5 Outcome Linker
 
@@ -679,8 +700,9 @@ Shadow 解决“规则看起来合理，但真实流量分布不同”的问题�
 
 本地测试通过不是最终成功。需要等待 Review、CI、Fix、Revert 或下一发布周期。
 
-Outcome-qualified Success 的默认观察窗口为 14 天或一个发布周期。窗口未结束的 Episode
+M3 计划的 Outcome-qualified Success 观察窗口为 14 天或一个发布周期。窗口未结束的 Episode
 标记为 `censored`，不能提前计入成功样本。
+当前普通观察不具备完整延迟结果追踪，观察日期推进本身不能把未知任务结果变成成功。
 
 ### 7.7 发布决策
 
@@ -701,6 +723,8 @@ Decision date:
 
 允许 Conditional Go 的情况应限于非安全、非数据正确性问题，并明确限制使用范围和
 到期时间。到期后没有新证据，自动转为 No-Go，而不是无限延期。
+这是发布政策，不是当前合成门禁的能力承诺。0.8 保留
+`field-effect-evidence: blocked`，因此增加普通观察或人工背书也不能产生 Go/Conditional Go。
 
 ---
 
@@ -731,6 +755,8 @@ Decision date:
 - 用户能完成控制操作，但步骤仍然笨重。
 
 这类版本可以继续内部使用或 Design Partner 试用，不能把研究门槛描述成稳定质量。
+安全且明确授权的窄范围观察候选版也可用于收集缺失证据，但必须披露 No-Go 和停止条件。
+“尚未证明收益”不等于“已证明无害”；未知安全计数不能填写为零。
 
 ---
 
@@ -813,7 +839,8 @@ rollback_condition:
   any severe harm or recall drop above guardrail
 ```
 
-没有目标指标和 Guardrail 的改进项，只是想法，不进入开发排期。
+策略或产品效果改进需要目标指标和 Guardrail。确定性缺陷修复可以先用最小复现、
+针对性回归和相邻负例验证，不要求每次修正命令解析或证据绑定都先开展完整收益实验。
 
 ### 9.4 优先级
 
@@ -872,11 +899,47 @@ Stop：无收益、伤害过大或维护成本不合理
 
 每个字段都应能回答一个产品或可靠性问题。回答不了，就不采集。
 
+### 10.1 当前本地观察 — 0.8 证据候选版
+
+```powershell
+provenloop observations show
+provenloop observations show --date 2026-09-06 --session <session-id>
+provenloop observations export --date 2026-09-06 |
+  Set-Content -Encoding utf8 .\provenloop-observations.json
+```
+
+日期按 UTC；默认今天。`show` 提供日期窗口、代码/插件版本、带本地密钥的
+Session/Repository 摘要、覆盖范围、检索状态与计数、明确采用、反馈、纠正、验证及
+已有 capture-health 快照。`export` 只输出当前代码版本的精简 observation manifest；
+不是全数据库导出。受限样本标记为 `bounded_sample`。
+
+必须保持以下区别：
+
+- `provided` 只表示返回 Context；`explicitly_adopted` 来自用户明确报告。
+- helpful 不自动算采用，更不算验证成功。
+- `not_observed` 不等于 `not_invoked`；后者需要足够的关闭和覆盖证据。
+- 未知结果仍为 `outcome: unknown`，任务时长为 null，对照分组为 unknown。
+- 没有安全事件记录不等于 Severe Harm、Secret 或 Scope 泄漏实测为零。
+- capture-health 是进程快照，不应伪装成每个 Session 的完整测量。
+
+manifest 标记 `evidenceKind: observational` 和 `controlledEffect: not_established`。
+评估库可通过 `observationManifestPath` 加载并校验版本；当前 CLI 没有对应的
+`eval --observations` 参数。不要把 manifest 传给 `--evidence` 冒充发布证据。
+
+### 10.2 工件绑定与人工背书
+
+外部 probe、自动测试报告和发布工件需要实际读取、schema/版本校验及摘要匹配，
+不能只检查文件存在或接受调用方填写的“passed”。调用方仍需说明样本来源和执行范围。
+paired-latency probe 分析输入数组，不执行配对实验；capability probe 引用外部测试
+报告，不代表它自己运行了这些测试。Shadow、最差案例评审等人工记录标明
+`maintainer_attestation`，摘要可证明绑定关系，不能自动证明人工判断或实验设计正确。
+
 ---
 
 ## 11. MVP 的最小验收包
 
-M1 + M2 是第一个可正式验证的产品。建议准备以下最小验收包：
+M1 + M2 是第一个可正式验证的产品。以下是受控效果和推广资格所需的验收包，
+不是用户试用一条显式规则之前必须完成的每日操作：
 
 ### 数据
 
@@ -894,13 +957,15 @@ M1 + M2 是第一个可正式验证的产品。建议准备以下最小验收包
 3. 用户纠正 Jest/Vitest 后，后续相似任务不再重复犯错。
 4. 用户改变偏好后，旧 Knowledge 被修订而不是继续生效。
 5. 已显式关联的 direct Later Revert 使旧 Knowledge 停止注入。
-6. Forget 后原始数据和派生数据均不可检索。
+6. Forget 后该 Knowledge 及依赖投影不可检索；删除原始证据须用 Source/Session/Episode
+   Delete。受管理存储与独立备份/导出的边界必须明确。
 7. Backend、Worker 或 Extension 故障时 Copilot 仍可使用。
 8. Explain 能展示来源、适用范围、反证和当前状态。
 9. 声称“已执行测试/评审/共识”时，Ledger 中存在对应成功执行证据。
 10. 检测到外部代表可用但未调用，或代表模型不满足协议要求时，不能声称跨模型共识。
 11. 用户纠正一次 Process Claim 后，同类任务再次违反同一 Correction Key，Gate 失败。
-12. 安装后复用当前 Copilot 登录态，不逐次请求授权或要求额外模型 API Key。
+12. 安装后复用当前 Copilot 登录态，不额外要求模型 API Key；持久反馈和高影响操作
+    仍须用户明确批准，Agent 不能代签。
 13. 关闭单项能力后，对应采集、注入或后台处理停止，其他能力和前台 Copilot 保持可用。
 
 第 5 项在 M2 验证“已有 direct 反证能够立即停用 Knowledge”，不要求 M2 自动发现和
@@ -917,7 +982,8 @@ M1 + M2 是第一个可正式验证的产品。建议准备以下最小验收包
 - 关键 Unsupported Completion Claim 为 0；
 - Severe Harm、Secret 和跨 Repository 泄漏均为 0。
 
-达到这些条件，说明产品值得进入更广泛试用。它还不能证明 Deep Retrospective 和
+在真实受控数据上达到这些条件，才支持更广泛试用的收益判断。合成通过、普通观察、
+人工确认和正式发布批准须分别展示。它还不能证明 Deep Retrospective 和
 Playbook 已经成立，那需要各自独立的数据集和发布门槛。
 
 ---
@@ -934,6 +1000,9 @@ Commit:
 Evaluation Run:
 Dataset versions:
 Environment:
+Evidence kind: synthetic_regression / observational / controlled comparison
+Coverage and unknown/censored counts:
+Artifact bindings and maintainer attestations:
 
 ## Decision
 Go / Conditional Go / No-Go
@@ -981,10 +1050,12 @@ provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
 
 该命令固定同一代码版本并运行 M0、M1、M2，保留所有子报告，再读取显式发布证据。
 发布证据必须匹配该代码版本、三个数据集版本和三个稳定子门禁摘要；旧报告不能批准新代码。
-没有证据、Shadow 未通过、观察窗口未结束、回滚未验证或任一安全计数非零时，只能输出
+没有证据、Shadow 未通过、观察窗口未结束、回滚未验证或任一安全计数非零/未知时，不能批准。
+当前另有固定的现场效果缺口，只能输出
 `No-Go`。回滚目标必须能解析为当前 Git 仓库中存在且不同于当前版本的 Commit。研究
-门槛即使全部通过，也只能在提供未过期、明确列出 Repository 或 Design Partner
-目标的 Canary Scope 时输出 `Conditional Go`；`Go` 只属于稳定门槛。
+政策要求 Conditional Go 也须提供未过期、明确列出 Repository 或 Design Partner
+目标的 Canary Scope，但它不能绕过 `field-effect-evidence`。未来受控效果验证接入前，
+不能把当前 CLI 描述为只要补齐人工材料就能 Go。
 
 ---
 
@@ -1009,6 +1080,7 @@ provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
 
 ### 第三步：MVP 完成后
 
+- 先跑通显式规则、后续 Session 召回、Explain/明确反馈和本地观察的窄闭环；
 - 执行最小验收包；
 - 完成人工盲审；
 - 先 Shadow，再进入受限 Canary；
@@ -1097,8 +1169,9 @@ workflow/consensus-review
 
 用户纠正后：
 
-1. 生成 `process.false_claim` Feedback；
-2. 形成精确 Scope 的 User-confirmed Knowledge；
+1. 将坏案例归类为 `process.false_claim`；这是评估错误分类，不是 FeedbackEvent 的 kind；
+2. 用户显式确认后形成精确 Scope 的 User-confirmed Knowledge，或将结构化纠正保留为
+   待验证候选；错误分类本身不能自动创建 Active Knowledge；
 3. 原案例进入 Development Replay；
 4. 同时生成三个变体：
    - 同模型多角色，必须拒绝跨模型声明；

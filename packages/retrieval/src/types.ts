@@ -6,6 +6,7 @@ import type {
   EvidenceTier,
   FeedbackEvent,
   KnowledgeCandidate,
+  RepositoryState,
   Scope,
   WorkEpisode,
 } from "@provenloop/contracts";
@@ -26,6 +27,7 @@ export interface KnowledgeRecord extends KnowledgeProjection {
 
 export interface KnowledgeQuery {
   readonly limit: number;
+  readonly match?: "all" | "any";
   readonly offset?: number;
   readonly text: string;
 }
@@ -97,6 +99,13 @@ extends CanonicalKnowledgeAdmissionStore {
   ): readonly ContextUseRecord[];
   episodeSourceEnvelopes(): readonly CaptureEnvelope[];
   feedbackEvents(targetId?: string): readonly FeedbackEvent[];
+  recordContextFeedback?(input: {
+    readonly contextRequestId: string;
+    readonly event: FeedbackEvent;
+    readonly updateContextUseRecord: (
+      record: ContextUseRecord,
+    ) => ContextUseRecord;
+  }): { readonly recorded: boolean };
   recordKnowledgeFeedback(input: {
     readonly contextRequestId?: string;
     readonly event: FeedbackEvent;
@@ -117,6 +126,7 @@ extends CanonicalKnowledgeAdmissionStore {
 export interface KnowledgeRetrievalQuery {
   readonly branchScopeId?: string;
   readonly limit: number;
+  readonly match?: "all" | "any";
   readonly now?: Date;
   readonly repositoryScopeId?: string;
   readonly text: string;
@@ -138,7 +148,16 @@ export interface ContextRequest {
   readonly repoId?: string;
   readonly sessionId: string;
   readonly tokenBudget: number;
+  readonly trustedWorkspace?: TrustedWorkspaceIdentity;
   readonly workflowScopeId?: string;
+}
+
+export interface TrustedWorkspaceIdentity {
+  readonly repositoryState: RepositoryState;
+  readonly repositoryObservedAt: string;
+  readonly repositoryId?: string;
+  readonly branch?: string;
+  readonly commitSha?: string;
 }
 
 export type ContextItemKind = "branch_context" | "knowledge";
@@ -183,6 +202,7 @@ export interface ContextExplanation {
   readonly id?: string;
   readonly kind?: ContextItemKind;
   readonly provenance?: Readonly<Record<string, unknown>>;
+  readonly unresolvedEvidenceIds?: readonly string[];
   readonly status:
     | "available"
     | "not_found"
@@ -202,16 +222,25 @@ export type ContextFeedbackAction =
 export interface ContextFeedbackRequest {
   readonly action: ContextFeedbackAction;
   readonly branchScopeId?: string;
+  readonly cwd?: string;
+  readonly evidenceRef?: string;
   readonly reason?: string;
   readonly repositoryScopeId?: string;
   readonly requestId: string;
+  readonly resolvesEvidenceIds?: readonly string[];
   readonly scope?: Scope;
   readonly sessionId: string;
+  readonly source?: FeedbackEvent["source"];
   readonly targetId: string;
+  readonly targetKind?: ContextItemKind;
+  readonly trustedWorkspace?: TrustedWorkspaceIdentity;
+  readonly userReportedApplied?: boolean;
   readonly workflowScopeId?: string;
 }
 
 export interface ContextFeedbackResponse {
+  readonly adoption?: "user_reported" | "not_reported";
+  readonly outcome?: "unknown";
   readonly candidate?: KnowledgeCandidate;
   readonly feedbackId?: string;
   readonly projectionStatus?: "degraded" | "synchronized";

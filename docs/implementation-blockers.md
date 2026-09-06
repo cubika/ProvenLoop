@@ -1,5 +1,14 @@
 # ProvenLoop implementation blockers
 
+**Updated:** 2026-09-06
+
+This list tracks missing **acceptance evidence**, not a claim that the associated
+code is absent. `0.1.0-alpha.0.8` is a Windows Design Partner Preview evidence
+candidate. Its capture/storage/feedback repairs require their own retained
+version-bound validation and native-host observations; historical probe results
+do not approve the new path. `0.1.0-alpha.1` remains an unapproved quality-release
+target.
+
 ## F0-001: Copilot event capture latency
 
 **Owner:** Copilot adapter work package
@@ -14,7 +23,9 @@ The minimal Extension probe passed the feasibility decision needed to start
 Batch 1. Remaining work below blocks M0 acceptance, not workspace and contract
 implementation.
 
-Evidence collected on Windows 11 with Copilot CLI `1.0.82-0`:
+Historical minimal-probe evidence collected on Windows 11 with Copilot CLI
+`1.0.82-0` (see the linked capture design and ADR; not the complete current
+producer/mapper/proof bridge):
 
 - more than 1,200 events across directly reported baseline, delayed-callback,
   and throwing-callback runs;
@@ -46,8 +57,9 @@ Exit conditions:
 - achieve foreground added latency P95 of 10 ms or less;
 - report delivery latency separately and prove it does not create an unbounded
   backlog or unrecoverable loss;
-- retain the payloads needed for event identity, tool completion, session
-  identity, and explicit errors.
+- retain bounded, redacted fields sufficient to verify event identity, tool
+  completion, Session identity, command targets, and explicit errors; retain
+  omission/truncation provenance rather than claiming full payload retention.
 - prove callback backlog, Extension crash, and queue failure do not slow or
   stop foreground Copilot.
 - prove the experimental opt-in persists for ordinary `copilot` launches and
@@ -60,9 +72,11 @@ Exit conditions:
 **Owner:** Copilot adapter work package
 **State:** Blocking before M0 acceptance
 
-The signed-in path works, and Hook or MCP failure did not stop foreground
-Copilot. Signed-out, rate-limited, and incompatible-version states have not
-been exercised without affecting the developer's real account.
+The historical signed-in path works, and Hook or MCP failure did not stop
+foreground Copilot. Automated provider classification coverage and the explicit
+online Doctor are implemented. A retained, version-bound real degradation
+matrix in isolated profiles is still required; unit fixtures do not establish
+signed-out, rate-limited, unavailable, or incompatible runtime behavior.
 
 Exit conditions:
 
@@ -76,10 +90,12 @@ Exit conditions:
 ## F0-003: Remote marketplace upgrade
 
 **Owner:** Plugin packaging work package
-**State:** Blocking before installer completion
+**State:** Blocking M0 release acceptance; installer is implemented
 
-The local marketplace is loaded live, so its update command is intentionally a
-no-op. This does not prove a cached remote plugin can move between versions.
+Published installation uses the release-pinned remote marketplace. The local
+marketplace remains useful for development but is loaded live, so its update
+command cannot prove a cached remote plugin can move between versions. Existing
+packaging and installer code do not close the real two-version upgrade matrix.
 
 Exit conditions:
 
@@ -88,3 +104,24 @@ Exit conditions:
 - verify disable, enable, uninstall, and repeated installation;
 - verify configuration and user data survive upgrade and uninstall as
   specified.
+- verify the runtime-switch and database-recovery boundaries separately;
+  an older package is not automatically compatible with a newer schema.
+
+## 0.1.0-alpha.0.8 acceptance boundary
+
+- Retain final lint, typecheck, targeted/full test, build, and packed-artifact
+  results for the evaluated source; this documentation does not assert they ran.
+- Observe the repaired native producer-to-MCP path across real Sessions:
+  bounded capture, strict correction/operation/verification binding, live
+  repository identity, explicit user approval, and later retrieval.
+- Retain native-host evidence for automatic current-session reconciliation.
+  The installed caller is implemented, but absent SDK workspace metadata skips
+  backfill with a diagnostic; fixtures do not prove lossless or historical capture.
+- Verify recovery does not rewrite source provenance or resurrect deleted data.
+- Keep ordinary local observations separate from controlled-effect evidence.
+  The current MVP `field-effect-evidence` check remains blocked; synthetic
+  recurrence/timing figures and maintainer attestations cannot clear it.
+
+These gaps do not prohibit an explicitly bounded, safe observation candidate.
+They do prohibit describing it as a quality-approved release or demonstrated
+productivity improvement.

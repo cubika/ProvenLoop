@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
   access,
+  appendFile,
+  mkdir,
   rename,
   statfs,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { availableParallelism } from "node:os";
+import { join } from "node:path";
 
 import {
   assertCopilotAdapterDataRoot,
@@ -91,6 +94,10 @@ const writeHeartbeat = async (
     readonly correctionProjectionError?: string;
     readonly knowledgeLifecycleProjectionError?: string;
     readonly knowledgeProjectionError?: string;
+    readonly queueIssues?: readonly {
+      readonly queueItemId: string;
+      readonly error: string;
+    }[];
     readonly result: CaptureWorkerRunResult;
     readonly timestamp: string;
     readonly workerId: string;
@@ -134,12 +141,18 @@ export const runCaptureWorkerOnce = async (
   }
   let store: CanonicalSqliteStore | undefined;
   let knowledgeBackend: SqliteFtsKnowledgeBackend | undefined;
-  const queue = new WindowsCaptureQueue(paths.queue);
+  const queueDiagnostics: string[] = [];
+  const queue = new WindowsCaptureQueue(paths.queue, {
+    onDiagnostic: (message) => {
+      if (queueDiagnostics.length < 100) queueDiagnostics.push(message);
+    },
+  });
   const breaker = defaultCircuitBreaker();
   let previousCpu = process.cpuUsage();
   let previousCpuAt = process.hrtime.bigint();
   try {
     await queue.initialize();
+    await queue.pruneAcknowledged();
     store = new CanonicalSqliteStore(paths.database);
     let projectionMarked = await access(
       paths.projectionDirty,
@@ -175,12 +188,7 @@ export const runCaptureWorkerOnce = async (
           previousCpu = currentCpu;
           previousCpuAt = currentCpuAt;
           const filesystem = await statfs(paths.root);
-          const queueDepth = (await queue.list()).filter(
-            (item) =>
-              item.state === "pending" ||
-              item.state === "claimed" ||
-              item.state === "retry",
-          ).length;
+          const queueDepth = await queue.depth();
           return breaker.evaluate({
             consecutiveProviderErrors: 0,
             cpuPercent:
@@ -325,7 +333,23 @@ export const runCaptureWorkerOnce = async (
     }
     store.close();
     store = undefined;
+    const queueIssues = await queue.quarantineIssues();
+    const reportedResult: CaptureWorkerRunResult =
+      result.status === "completed" && queueIssues.length > 0
+        ? { ...result, quarantinedItems: queueIssues.length }
+        : result;
+    if (queueDiagnostics.length > 0) {
+      await mkdir(paths.logs, { recursive: true }).then(() =>
+        appendFile(join(paths.logs, "worker.jsonl"), `${JSON.stringify({
+          timestamp: now().toISOString(),
+          message: "Capture queue has quarantined items; healthy items remain processable.",
+          reportedItems: queueIssues.length,
+          diagnostics: queueDiagnostics,
+        })}\n`, "utf8"),
+      ).catch(() => undefined);
+    }
     await writeHeartbeat(paths.heartbeat, {
+      queueIssues: queueIssues.slice(0, 100),
       ...(correctionCaptureIssueCount === undefined
         ? {}
         : {
@@ -351,7 +375,7 @@ export const runCaptureWorkerOnce = async (
         : {
             knowledgeLifecycleProjectionError,
           }),
-      result,
+      result: reportedResult,
       timestamp: now().toISOString(),
       workerId,
     });
@@ -371,7 +395,7 @@ export const runCaptureWorkerOnce = async (
         `Correction projection failed: ${correctionProjectionError}`,
       );
     }
-    return result;
+    return reportedResult;
   } finally {
     try {
       await knowledgeBackend?.closeAsync();

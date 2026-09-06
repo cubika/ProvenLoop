@@ -14,6 +14,7 @@ export {
   WindowsCaptureQueue,
   type EnqueueCaptureIfAbsentResult,
   type CaptureQueueClaim,
+  type CaptureQueueIssue,
   type CaptureQueueIdentity,
   type DeleteCaptureQueueResult,
   type DeleteCaptureQueueOptions,

@@ -4,7 +4,6 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,7 +28,7 @@ const emptyCanonical: CanonicalCaptureWatermark = {
 
 const createTemporaryDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(
-    join(tmpdir(), "provenloop-reconciler-test-"),
+    join(process.cwd(), ".provenloop-reconciler-test-"),
   );
   temporaryDirectories.push(directory);
   return directory;
@@ -112,6 +111,7 @@ describe("capture reconciliation", () => {
       },
       sessionId: "session-1",
     });
+    mapper.map(header());
     const existing = mapper.map(
       createEvent(
         "user-existing",
@@ -224,7 +224,7 @@ describe("capture reconciliation", () => {
       path,
     });
 
-    expect(first).toEqual({
+    expect(first).toMatchObject({
       status: "reconciled",
       adapterVersion: "1.0.82-0",
       duplicateEvents: 2,
@@ -236,12 +236,20 @@ describe("capture reconciliation", () => {
       scannedEvents: 5,
       sessionId: "session-1",
       unsupportedEvents: 1,
+      incompleteEvents: 1,
+      repairedEvents: 0,
+      repairPendingEvents: 0,
+      unverifiedExistingEvents: 1,
     });
     expect(diagnostics).toEqual([
       expect.stringContaining("malformed_json at line 4"),
     ]);
+    const queued = await queue.list();
+    expect(queued.find((item) => item.envelope.sourceEventId === "tool-complete-missing")
+      ?.envelope.event.captureQuality?.omittedFields).toContain("verification.exitCode");
+    expect(queued.some((item) => item.envelope.event.eventType === "test.completed")).toBe(false);
     expect(
-      (await queue.list()).map(
+      queued.map(
         (item) => item.envelope.sourceEventId,
       ),
     ).toEqual([
@@ -298,6 +306,59 @@ describe("capture reconciliation", () => {
     });
     expect(await queue.list()).toEqual([]);
   });
+
+  it("reports metadata-only capture as repair pending instead of silently complete", async () => {
+      const root = await createTemporaryDirectory();
+      const queue = new WindowsCaptureQueue(join(root, "queue"));
+      await queue.initialize();
+      await queue.enqueue({
+        adapter: "copilot-cli", adapterVersion: "1.0.82-0",
+        eventType: "prompt.submitted", sessionId: "session-1",
+        sourceEventId: "partial-user", timestamp, trust: "user",
+        contentDigest: "a".repeat(64),
+      }, { environment: {} });
+      const path = await writeSession(root, "session-1", [
+        JSON.stringify(header()),
+        JSON.stringify(createEvent("partial-user", "user.message", { content: "full source message" }, null)),
+      ]);
+      const reconciler = new CaptureReconciler({
+        canonical: emptyCanonical, queue, copyLimits: { maxStringChars: 1_024 }, maxLineChars: 10_000,
+      });
+      expect(await reconciler.reconcileSessionFile({ path })).toMatchObject({
+        status: "reconciled", incompleteEvents: 1, repairPendingEvents: 1, repairedEvents: 0,
+      });
+      const partial = (await queue.list()).find((item) => item.envelope.sourceEventId === "partial-user");
+      expect(partial?.envelope.content).toBeUndefined();
+    });
+
+  it("uses an explicit canonical repair hook and honors deleted results", async () => {
+      const root = await createTemporaryDirectory();
+      const queue = new WindowsCaptureQueue(join(root, "queue"));
+      await queue.initialize();
+      const input = {
+        adapter: "copilot-cli", adapterVersion: "1.0.82-0", eventType: "prompt.submitted",
+        sessionId: "session-1", sourceEventId: "deleted-user",
+      };
+      const identity = createCaptureDeduplicationKey(input);
+      const path = await writeSession(root, "session-1", [
+        JSON.stringify(header()),
+        JSON.stringify(createEvent("deleted-user", "user.message", { content: "do not resurrect" }, null)),
+      ]);
+      let repairs = 0;
+      const reconciler = new CaptureReconciler({
+        canonical: {
+          deduplicationKeys: async () => new Set([identity]),
+          captureCompleteness: async () => new Map([[identity, "incomplete" as const]]),
+        },
+        queue, copyLimits: { maxStringChars: 1_024 }, maxLineChars: 10_000,
+        repairCapture: async () => { repairs += 1; return "deleted"; },
+      });
+      expect(await reconciler.reconcileSessionFile({ path })).toMatchObject({
+        incompleteEvents: 1, repairPendingEvents: 0, repairedEvents: 0,
+      });
+      expect(repairs).toBe(1);
+      expect((await queue.list()).some((item) => item.envelope.sourceEventId === "deleted-user")).toBe(false);
+    });
 
   it("reports incompatible and mismatched Session files explicitly", async () => {
     const root = await createTemporaryDirectory();

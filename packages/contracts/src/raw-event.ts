@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import {
+  captureEvidenceSchema,
+  captureQualitySchema,
+  repositoryStateSchema,
+} from "./capture-metadata.js";
+import {
   isSupportedCopilotCliVersion,
   SUPPORTED_COPILOT_CLI_VERSION_RANGE,
 } from "./copilot-cli-version.js";
@@ -26,6 +31,7 @@ export const SUPPORTED_EVENT_TYPES = [
   "tool.completed",
   "tool.failed",
   "agent.message",
+  "agent.turn_started",
   "agent.turn_completed",
   "subagent.started",
   "subagent.completed",
@@ -35,6 +41,7 @@ export const SUPPORTED_EVENT_TYPES = [
   "test.completed",
   "build.completed",
   "git.commit",
+  "git.head_changed",
   "pull_request.updated",
   "review.received",
   "issue.linked",
@@ -73,6 +80,13 @@ export const completionStatusSchema = z.enum([
   "cancelled",
 ]);
 
+export const verificationBindingSchema = z
+  .object({
+    correctionEventId: identifierSchema,
+    operationEventId: identifierSchema,
+  })
+  .strict();
+
 export const rawEventSchema = z
   .object({
     ...versionedSchemaShape,
@@ -80,11 +94,13 @@ export const rawEventSchema = z
     adapter: nonEmptyStringSchema,
     adapterVersion: nonEmptyStringSchema,
     branch: nonEmptyStringSchema.optional(),
+    captureQuality: captureQualitySchema.optional(),
     claimId: identifierSchema.optional(),
     commitSha: nonEmptyStringSchema.optional(),
     completionStatus: completionStatusSchema.optional(),
     eventId: identifierSchema,
     eventType: nonEmptyStringSchema,
+    evidence: captureEvidenceSchema.optional(),
     exitCode: z.number().int().optional(),
     operationId: identifierSchema.optional(),
     parentEventId: identifierSchema.optional(),
@@ -93,6 +109,7 @@ export const rawEventSchema = z
     protocolVersion: nonEmptyStringSchema.optional(),
     redactedArguments: z.unknown().optional(),
     repoId: identifierSchema.optional(),
+    repositoryState: repositoryStateSchema.optional(),
     requestedModel: nonEmptyStringSchema.optional(),
     requestedProvider: nonEmptyStringSchema.optional(),
     resolvedModel: nonEmptyStringSchema.optional(),
@@ -102,6 +119,7 @@ export const rawEventSchema = z
     timestamp: isoTimestampSchema,
     toolName: nonEmptyStringSchema.optional(),
     trust: trustLabelSchema,
+    verificationBinding: verificationBindingSchema.optional(),
     worktree: nonEmptyStringSchema.optional(),
   })
   .strict();
@@ -111,6 +129,9 @@ export const supportedRawEventSchema = rawEventSchema.extend({
 });
 
 export type RawEvent = z.infer<typeof rawEventSchema>;
+export type VerificationBinding = z.infer<
+  typeof verificationBindingSchema
+>;
 export type SupportedEventType = z.infer<typeof supportedEventTypeSchema>;
 export type SupportedRawEvent = z.infer<typeof supportedRawEventSchema>;
 

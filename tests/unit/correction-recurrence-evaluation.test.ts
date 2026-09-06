@@ -10,6 +10,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 
 import {
@@ -18,6 +19,7 @@ import {
   loadCorrectionRecurrenceDataset,
   renderCorrectionRecurrenceReport,
 } from "@provenloop/evaluation";
+import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 
 const temporaryDirectories: string[] = [];
 
@@ -36,6 +38,7 @@ const createEvaluationPaths = async (): Promise<{
 };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, {
@@ -58,6 +61,9 @@ describe("Correction Recurrence evaluation", () => {
     expect(report).toMatchObject({
       datasetId: "correction-recurrence",
       datasetVersion: 1,
+      evidenceKind: "synthetic",
+      evaluationPurpose: "regression",
+      fieldEffect: "not_established",
       status: "pass",
       thresholds: {
         evidenceTierAccuracy: 0.95,
@@ -103,6 +109,35 @@ describe("Correction Recurrence evaluation", () => {
     expect(renderCorrectionRecurrenceReport(report)).toContain(
       "RCR improvement: 66.67%",
     );
+  });
+
+  it.each(["binding", "operation"] as const)(
+    "rejects a replay that loses its verification %s in canonical storage",
+    async (missing) => {
+      const original = CanonicalSqliteStore.prototype.episodeSourceEnvelopes;
+      vi.spyOn(CanonicalSqliteStore.prototype, "episodeSourceEnvelopes")
+        .mockImplementation(function (this: CanonicalSqliteStore) {
+          const records = original.call(this);
+          return missing === "operation"
+            ? records.filter((record) => record.event.eventType !== "tool.started")
+            : records.map((record) => ({
+              ...record,
+              event: { ...record.event, verificationBinding: undefined },
+            }));
+        });
+      await expect(evaluateCorrectionRecurrenceDataset(
+        await loadCorrectionRecurrenceDataset(),
+        await createEvaluationPaths(),
+      )).rejects.toThrow("Synthetic correction proof did not survive canonical storage");
+    },
+  );
+
+  it("rejects relabeling the synthetic corpus as field evidence", async () => {
+    const dataset = await loadCorrectionRecurrenceDataset();
+    expect(() => correctionRecurrenceDatasetSchema.parse({
+      ...dataset,
+      evidenceKind: "observational",
+    })).toThrow();
   });
 
   it("fails when Correction Recurrence does not improve", async () => {

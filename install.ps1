@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.7",
+    [string]$Version = "0.1.0-alpha.0.8",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,

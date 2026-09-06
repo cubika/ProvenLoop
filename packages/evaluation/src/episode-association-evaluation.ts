@@ -63,6 +63,8 @@ const episodeAssociationCaseSchema = z
 
 export const episodeAssociationDatasetSchema = z
   .object({
+    evidenceKind: z.literal("synthetic").default("synthetic"),
+    evaluationPurpose: z.literal("regression").default("regression"),
     cases: z.array(episodeAssociationCaseSchema).min(20).max(50),
     datasetId: z.string().min(1),
     datasetVersion: z.number().int().positive(),

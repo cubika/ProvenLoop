@@ -543,7 +543,7 @@ describe("Copilot extension capture runtime", () => {
     ]);
   });
 
-  it("emits a canonical git.commit when refreshed HEAD changes", async () => {
+  it("records observed HEAD changes without claiming a new commit", async () => {
     const session = new FakeSession();
     const persisted: CaptureEventInput[] = [];
     const parentCommit =
@@ -631,7 +631,7 @@ describe("Copilot extension capture runtime", () => {
               ],
             },
           },
-          eventType: "git.commit",
+          eventType: "git.head_changed",
           repoId: "repo-1",
           sessionId: "session-1",
         }),
@@ -736,7 +736,7 @@ describe("Copilot extension capture runtime", () => {
       expect.arrayContaining([
         expect.objectContaining({
           commitSha: childCommit,
-          eventType: "git.commit",
+          eventType: "git.head_changed",
         }),
       ]),
     );
@@ -815,7 +815,7 @@ describe("Copilot extension capture runtime", () => {
       expect.arrayContaining([
         expect.objectContaining({
           commitSha: firstCommit,
-          eventType: "git.commit",
+          eventType: "git.head_changed",
         }),
       ]),
     );
@@ -922,7 +922,7 @@ describe("Copilot extension capture runtime", () => {
       expect.arrayContaining([
         expect.objectContaining({
           commitSha: childCommit,
-          eventType: "git.commit",
+          eventType: "git.head_changed",
         }),
       ]),
     );
@@ -1177,6 +1177,7 @@ describe("Copilot extension capture runtime", () => {
 
   it("does not let a stale refresh overwrite a newer context event", async () => {
     const session = new FakeSession();
+    let refreshCalls = 0;
     let resolveRefresh:
       ((snapshot: { readonly branch: string }) => void) | undefined;
     const persistedBranches: (string | undefined)[] = [];
@@ -1202,10 +1203,13 @@ describe("Copilot extension capture runtime", () => {
           }
         },
       },
-      refreshWorkspace: async () =>
-        new Promise((resolve) => {
+      refreshWorkspace: async (workspace) => {
+        refreshCalls += 1;
+        if (refreshCalls > 1) return workspace;
+        return new Promise((resolve) => {
           resolveRefresh = resolve;
-        }),
+        });
+      },
       retryDelayMs: 1,
       sessionId: "session-1",
       shutdownDeadlineMs: 1_000,
@@ -1257,6 +1261,7 @@ describe("Copilot extension capture runtime", () => {
     });
 
     expect(await runtime.shutdown()).toBe(true);
+    expect(refreshCalls).toBe(2);
     expect(persistedBranches).toEqual([
       "feature/new-context",
     ]);

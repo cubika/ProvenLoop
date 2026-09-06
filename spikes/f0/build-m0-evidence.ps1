@@ -17,13 +17,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "report-digest.ps1")
 
 function Read-Json([string]$Path) {
     Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
 }
 
 function Get-Digest([string]$Path) {
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+    Get-ReportDigest $Path
 }
 
 function Assert-Fields(
@@ -93,6 +94,8 @@ function Assert-NumberFields(
         if (
             $null -eq $item -or
             $item.GetType() -notin $numberTypes -or
+            [double]::IsNaN([double]$item) -or
+            [double]::IsInfinity([double]$item) -or
             [double]$item -lt 0
         ) {
             throw "$Label field '$field' must be a non-negative number."
@@ -282,6 +285,30 @@ $reportDigests = @(
 if (@($reportDigests | Select-Object -Unique).Count -ne 5) {
     throw "M0 source reports must have distinct SHA-256 digests."
 }
+$directory = Split-Path -Parent ([IO.Path]::GetFullPath($OutputPath))
+$artifactDirectory = Join-Path $directory "m0-source-reports"
+New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+$reportArtifacts = @()
+foreach ($sourcePath in @(
+    $CaptureReport,
+    $ProviderDegradationReport,
+    $MarketplaceUpgradeReport,
+    $CapabilityIsolationReport,
+    $ObservedGuardrailsReport
+)) {
+    $digest = Get-Digest $sourcePath
+    $destination = Join-Path $artifactDirectory "$digest.json"
+    if ([IO.Path]::GetFullPath($sourcePath) -ne $destination) {
+        Copy-Item -LiteralPath $sourcePath -Destination $destination -Force
+    }
+    if ((Get-Digest $destination) -ne $digest) {
+        throw "A source report changed while it was retained."
+    }
+    $reportArtifacts += [ordered]@{
+        path = "m0-source-reports\$digest.json"
+        sha256 = $digest
+    }
+}
 
 $classifications = @(
     "available",
@@ -304,6 +331,7 @@ $evidence = [ordered]@{
         probeVersion = 1
         captureRunIds = @($capture.captureRunIds)
         reportDigests = $reportDigests
+        reportArtifacts = $reportArtifacts
     }
     capture = [ordered]@{
         status = [string]$capture.status
@@ -406,7 +434,6 @@ $evidence = [ordered]@{
     }
 }
 
-$directory = Split-Path -Parent $OutputPath
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 $json = $evidence | ConvertTo-Json -Depth 8
 [IO.File]::WriteAllText(

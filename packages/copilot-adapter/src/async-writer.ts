@@ -136,7 +136,7 @@ export class AsyncCaptureWriter {
       receivedEvents: this.#receivedEvents,
       state: this.#stopped
         ? "stopped"
-        : this.#lastError === undefined
+        : this.#lastError === undefined && this.#droppedEvents === 0 && this.#degradedEvents === 0
           ? "healthy"
           : "degraded",
       writeFailures: this.#writeFailures,

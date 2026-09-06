@@ -1,4 +1,5 @@
 import {
+  access,
   mkdtemp,
   readFile,
   readdir,
@@ -11,10 +12,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { captureQueueItemSchema } from "@provenloop/contracts";
-import { InternalCaptureEventError } from "@provenloop/domain";
+import { CopilotEventMapper } from "@provenloop/copilot-adapter";
+import { createCaptureDeduplicationKey, InternalCaptureEventError } from "@provenloop/domain";
 import {
   CaptureQueueLeaseTimeoutError,
-  CorruptCaptureQueueItemError,
   InvalidCaptureQueueTransitionError,
   StaleCaptureQueueClaimError,
   WindowsCaptureQueue,
@@ -179,7 +180,7 @@ describe("Windows durable capture queue", () => {
     );
 
     expect(item.state).toBe("pending");
-    expect(files).toEqual([
+    expect(files.filter((name) => name.endsWith(".json"))).toEqual([
       "queue-item-1.json",
     ]);
     expect(persisted).not.toContain(knownSecret);
@@ -382,7 +383,7 @@ describe("Windows durable capture queue", () => {
     });
   });
 
-  it("surfaces malformed items without deleting in-flight temp files", async () => {
+  it("isolates malformed items without blocking healthy capture or deleting in-flight files", async () => {
     const root = await createTemporaryDirectory();
     await writeFile(join(root, ".queue-stale.tmp"), "partial", "utf8");
     await writeFile(join(root, "unrelated.tmp"), "keep", "utf8");
@@ -394,12 +395,98 @@ describe("Windows durable capture queue", () => {
     expect(await readdir(root)).toEqual(
       expect.arrayContaining([
         ".queue-stale.tmp",
-        "corrupt.json",
         "unrelated.tmp",
       ]),
     );
-    await expect(queue.list()).rejects.toBeInstanceOf(
-      CorruptCaptureQueueItemError,
-    );
+    expect(await queue.list()).toEqual([]);
+    expect(await queue.quarantineIssues()).toEqual([
+      expect.objectContaining({ queueItemId: "corrupt" }),
+    ]);
+    await queue.enqueueIfSourceAbsent(createInput());
+    expect((await queue.claimNext("healthy-worker"))?.state).toBe("claimed");
+  });
+
+  it("does not scan acknowledged bodies on the enqueue and claim hot paths", async () => {
+    const root = await createTemporaryDirectory();
+    let sequence = 0;
+    const queue = new WindowsCaptureQueue(root, {
+      idGenerator: () => `hot-${++sequence}`,
+    });
+    await queue.initialize();
+    const archived = await queue.enqueue(createInput());
+    const claim = await queue.claimNext("worker");
+    if (claim?.state !== "claimed") throw new Error("Expected claim");
+    await queue.acknowledge(claim);
+    const archivedPath = join(root, `${archived.queueItemId}.json`);
+    await writeFile(archivedPath, "{", "utf8");
+    await queue.enqueueIfSourceAbsent({
+      ...createInput(), sourceEventId: "fresh-source",
+    });
+    expect(await queue.depth()).toBe(1);
+    expect((await queue.claimNext("worker"))?.envelope.sourceEventId).toBe("fresh-source");
+    await expect(access(archivedPath)).resolves.toBeUndefined();
+    expect(await queue.quarantineIssues()).toEqual([]);
+    await queue.list();
+    expect(await queue.quarantineIssues()).toHaveLength(1);
+  });
+
+  it("recovers a source reservation whose process died before publishing", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = new WindowsCaptureQueue(root);
+    await queue.initialize();
+    await queue.enqueue(createInput());
+    const recoveringInput = { ...createInput(), sourceEventId: "second-source" };
+    const sourceIndex = join(root, `.source-${createCaptureDeduplicationKey(recoveringInput)}.idx`);
+    await writeFile(sourceIndex, "missing-crashed-item\n", "utf8");
+    const recovered = await queue.enqueueIfSourceAbsent(recoveringInput);
+    expect(recovered.status).toBe("enqueued");
+    expect(await queue.depth()).toBe(2);
+  });
+
+  it("persists and redacts capture quality, workspace state, and semantic proof", async () => {
+    const root = await createTemporaryDirectory();
+    const queue = new WindowsCaptureQueue(root);
+    await queue.initialize();
+    const mapper = new CopilotEventMapper({
+      adapterVersion: "1.0.82-0", sessionId: "proof-session",
+      copyLimits: { maxStringChars: 32_768 },
+      workspace: { repoId: "repo-1", worktree: "C:\\repo", branch: "main" },
+    });
+    const secret = "ghp_1234567890abcdefghijklmnopqrst";
+    mapper.map({
+      id: "proof-start", parentId: null, timestamp: "2026-09-05T00:00:00.000Z",
+      type: "tool.execution_start",
+      data: {
+        toolCallId: "proof-call", toolName: "powershell",
+        arguments: { command: `dotnet test C:\\repo\\${secret}.csproj` },
+      },
+    });
+    const mapped = mapper.map({
+      id: "proof-complete", parentId: "proof-start", timestamp: "2026-09-05T00:00:01.000Z",
+      type: "tool.execution_complete",
+      data: {
+        toolCallId: "proof-call", success: true,
+        result: {
+          content: "Tests completed.",
+          contents: [{ type: "terminal", text: "Tests completed.", exitCode: 0, cwd: "C:\\repo" }],
+        },
+      },
+    });
+    if (mapped.status !== "mapped" || mapped.additionalEvents?.[0] === undefined) {
+      throw new Error("Expected structured verification evidence");
+    }
+    const result = await queue.enqueueIfSourceAbsent(mapped.additionalEvents[0], { environment: {} });
+    if (result.status !== "enqueued") throw new Error("Expected queue publication");
+    expect(result.item.envelope.event).toMatchObject({
+      repositoryState: "known_repo",
+      captureQuality: { schemaVersion: 1 },
+      evidence: {
+        kind: "command_verification",
+        commandFamily: "dotnet-test",
+        workingDirectory: "C:\\repo",
+        targetPaths: [expect.stringContaining("[REDACTED]")],
+      },
+    });
+    expect(JSON.stringify(result.item)).not.toContain(secret);
   });
 });

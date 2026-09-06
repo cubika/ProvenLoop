@@ -13,20 +13,25 @@ import {
   commitAncestryEdgesFromEnvelopes,
 } from "./commit-ancestry.js";
 import { sha256 } from "./digest.js";
+import {
+  isCreatedCommitEvent,
+  isVerificationEvent,
+  trustedExecution,
+  verificationOutcome,
+} from "./verification-proof.js";
 
 export interface BranchContextBuilderOptions {
   readonly ttlMs?: number;
 }
 
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
-const MATERIAL_EVENT_TYPES = new Set([
-  "build.completed",
-  "file.changed",
-  "git.commit",
-  "session.error",
-  "test.completed",
-  "tool.failed",
-]);
+const isMaterialEvent = (envelope: CaptureEnvelope): boolean =>
+  isCreatedCommitEvent(envelope) ||
+  verificationOutcome(envelope) !== "unknown" ||
+  (
+    trustedExecution(envelope) &&
+    ["file.changed", "session.error", "tool.failed"].includes(envelope.event.eventType)
+  );
 
 const sortedUnique = (values: Iterable<string>): string[] =>
   [...new Set(
@@ -73,8 +78,11 @@ const goalFromMessage = (
 };
 
 const eventState = (envelope: CaptureEnvelope): string | undefined => {
+  if (!isMaterialEvent(envelope) && !isVerificationEvent(envelope)) {
+    return undefined;
+  }
   const event = envelope.event;
-  if (event.eventType === "git.commit" && event.commitSha !== undefined) {
+  if (isCreatedCommitEvent(envelope) && event.commitSha !== undefined) {
     return `Commit ${event.commitSha}`;
   }
   if (event.eventType === "file.changed") {
@@ -85,9 +93,10 @@ const eventState = (envelope: CaptureEnvelope): string | undefined => {
   }
   if (
     event.eventType === "build.completed" ||
-    event.eventType === "test.completed"
+    event.eventType === "test.completed" ||
+    event.eventType === "verification.completed"
   ) {
-    return `${event.eventType}: ${event.completionStatus ?? "observed"}`;
+    return `${event.eventType}: ${verificationOutcome(envelope)}`;
   }
   if (
     event.eventType === "tool.failed" ||
@@ -239,7 +248,7 @@ export class BranchContextBuilder {
       );
       const initialMaterialEvents = relevant.filter(
         (envelope) =>
-          MATERIAL_EVENT_TYPES.has(envelope.event.eventType) ||
+          isMaterialEvent(envelope) ||
           hasExplicitContinuationMarker(envelope),
       );
       if (initialMaterialEvents.length === 0) {
@@ -287,16 +296,13 @@ export class BranchContextBuilder {
         }),
       );
       const verificationEvents = windowedRelevant.filter((envelope) =>
-        [
-          "build.completed",
-          "session.error",
-          "test.completed",
-          "tool.failed",
-        ].includes(envelope.event.eventType),
+        isVerificationEvent(envelope) ||
+        (trustedExecution(envelope) &&
+          ["session.error", "tool.failed"].includes(envelope.event.eventType)),
       );
       const materialEvents = windowedRelevant.filter(
         (envelope) =>
-          MATERIAL_EVENT_TYPES.has(envelope.event.eventType) ||
+          isMaterialEvent(envelope) ||
           hasExplicitContinuationMarker(envelope),
       );
       const associatedGoalMessages = new Map<

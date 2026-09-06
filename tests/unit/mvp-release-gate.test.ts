@@ -96,7 +96,7 @@ const evidence = (): MvpReleaseEvidence => ({
 });
 
 describe("MVP release readiness", () => {
-  it("returns Go only for complete stable evidence", () => {
+  it("does not turn complete attestations and synthetic regression into field-effect proof", () => {
     const readiness = evaluateMvpReleaseReadiness({
       automated: automated(),
       evidence: evidence(),
@@ -105,15 +105,17 @@ describe("MVP release readiness", () => {
     });
 
     expect(readiness).toMatchObject({
-      decision: "go",
-      limitations: [],
+      decision: "no_go",
     });
     expect(
-      readiness.checks.every((check) => check.status === "pass"),
-    ).toBe(true);
+      readiness.checks.find((check) => check.checkId === "field-effect-evidence")?.status,
+    ).toBe("blocked");
+    expect(readiness.limitations).toContain(
+      "Synthetic regression results are not observed user benefits or controlled field effects.",
+    );
   });
 
-  it("limits research thresholds to Conditional Go", () => {
+  it("records restricted research scope without pretending field effects were evaluated", () => {
     const readiness = evaluateMvpReleaseReadiness({
       automated: automated(),
       evidence: evidence(),
@@ -121,10 +123,8 @@ describe("MVP release readiness", () => {
       releaseTarget: "research",
     });
 
-    expect(readiness.decision).toBe("conditional_go");
-    expect(readiness.limitations).toContain(
-      "Research thresholds permit only the recorded limited Canary until its expiry.",
-    );
+    expect(readiness.decision).toBe("no_go");
+    expect(readiness.checks.find((check) => check.checkId === "conditional-canary")?.status).toBe("pass");
   });
 
   it("returns No-Go for missing review evidence or hard guardrail failures", () => {

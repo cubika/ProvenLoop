@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -10,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { PROVENLOOP_VERSION } from "@provenloop/contracts";
 
 import {
   type M0AcceptanceEvidence,
@@ -25,11 +27,14 @@ const createTemporaryDirectory = async (): Promise<string> => {
     join(tmpdir(), "provenloop-m0-gate-"),
   );
   temporaryDirectories.push(directory);
+  await Promise.all(["1", "2", "3", "4", "5"].map((value) =>
+    writeFile(join(directory, `artifact-${value}.json`), JSON.stringify({ fixtureArtifact: value }), "utf8"),
+  ));
   return directory;
 };
 
 const digest = (suffix: string): string =>
-  `${"0".repeat(63)}${suffix}`;
+  createHash("sha256").update(JSON.stringify({ fixtureArtifact: suffix })).digest("hex");
 
 const passingEvidence = (
   codeVersion: string,
@@ -46,7 +51,7 @@ const passingEvidence = (
       "Windows-10",
       "Windows-11",
     ],
-    pluginVersion: "0.1.0-alpha.0.7",
+    pluginVersion: PROVENLOOP_VERSION,
     probeVersion: 1,
     reportDigests: [
       digest("1"),
@@ -55,6 +60,10 @@ const passingEvidence = (
       digest("4"),
       digest("5"),
     ],
+    reportArtifacts: ["1", "2", "3", "4", "5"].map((value) => ({
+      path: `artifact-${value}.json`,
+      sha256: digest(value),
+    })),
     runtimeDigest,
   },
   capabilityIsolation: {
@@ -105,7 +114,7 @@ const passingEvidence = (
     settingsRestoredExactly: true,
     source: "cubika/ProvenLoop",
     status: "pass",
-    toVersion: "0.1.0-alpha.0.7",
+    toVersion: PROVENLOOP_VERSION,
     uninstallPreservedData: true,
   },
   observedGuardrails: {
@@ -620,6 +629,7 @@ describe("M0 aggregate release gate", () => {
     const root = await createTemporaryDirectory();
     const notRepository = join(root, "not-a-repository");
     await mkdir(notRepository);
+    await writeFile(join(notRepository, ".git"), "gitdir: missing-git-directory\n", "utf8");
     const result = await runM0ReleaseGate({
       cwd: notRepository,
       outputRoot: join(root, "runs"),

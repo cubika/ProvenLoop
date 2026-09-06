@@ -1,4 +1,6 @@
 {
+  "evidenceKind": "synthetic",
+  "evaluationPurpose": "regression",
   "datasetId": "correction-recurrence",
   "datasetVersion": 1,
   "opportunities": [

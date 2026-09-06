@@ -567,6 +567,7 @@ describe("local MCP registration target", () => {
     expect(messages[0]).toMatchObject({
       id: 1,
       result: {
+        instructions: expect.stringContaining("new coding task"),
         protocolVersion: "2025-06-18",
         serverInfo: {
           name: "provenloop",
@@ -623,6 +624,13 @@ describe("local MCP registration target", () => {
         cwd: "C:\\repo",
         handlers,
         sessionId: "session-1",
+        resolveTrustedContext: async () => ({
+          cwd: "C:\\repo",
+          sessionId: "session-1",
+          workspaceVersion: "unit-workspace",
+          repositoryState: "known_outside_repo",
+          repositoryObservedAt: new Date().toISOString(),
+        }),
       },
     );
     input.write(
@@ -642,12 +650,13 @@ describe("local MCP registration target", () => {
     input.end();
     await running;
 
-    expect(handlers.context).toHaveBeenCalledWith({
+    expect(handlers.context).toHaveBeenCalledWith(expect.objectContaining({
       cwd: "C:\\repo",
       prompt: "Run package validation.",
       sessionId: "session-1",
       tokenBudget: 200,
-    });
+      trustedWorkspace: expect.objectContaining({ repositoryState: "known_outside_repo" }),
+    }));
     expect(JSON.parse(content)).toMatchObject({
       id: 1,
       result: {
@@ -691,6 +700,13 @@ describe("local MCP registration target", () => {
         cwd: "C:\\trusted",
         handlers,
         sessionId: "trusted-session",
+        resolveTrustedContext: async () => ({
+          cwd: "C:\\trusted",
+          sessionId: "trusted-session",
+          workspaceVersion: "unit-workspace",
+          repositoryState: "known_outside_repo",
+          repositoryObservedAt: new Date().toISOString(),
+        }),
       },
     );
     input.write(

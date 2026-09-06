@@ -573,6 +573,7 @@ export const completeM0DailyAcceptance = async (
       .filter((sample) => Number.isFinite(sample) && sample >= 0);
     const captureMetrics = {
       callbackDuration: {
+        population: "process_tail_samples_not_window_complete",
         maxMs:
           callbackSamples.length === 0
             ? null
@@ -618,10 +619,14 @@ export const completeM0DailyAcceptance = async (
     };
     const guardrails = {
       duplicateCanonicalFactCount: duplicateEventIds,
-      foregroundBlockingFailureCount: 0,
+      foregroundBlockingFailureCount: null,
       internalSessionPersistenceCount,
-      missingRequiredEventCount:
-        reconciliationFailureCount + malformedEventCount,
+      missingRequiredEventCount: null,
+      malformedEventCount,
+      reconciliationFailureCount,
+      crossRepositoryLeakageCount: null,
+      deletionPropagationFailureCount: null,
+      population: "observed_canonical_records",
       schemaVersion: 1,
       secretPersistenceCount,
     };
@@ -632,8 +637,6 @@ export const completeM0DailyAcceptance = async (
       reconciliationFailureCount > 0 ||
       malformedEventCount > 0;
     const incomplete =
-      callbackSamples.length === 0 ||
-      captureMetrics.foregroundAddedLatencyP95Ms === null ||
       !drain.completed ||
       !postReconciliationDrain.completed;
     const status: M0DailyAcceptanceResult["status"] =
@@ -653,6 +656,9 @@ export const completeM0DailyAcceptance = async (
     ]);
     const report = {
       completedAt,
+      evidenceKind: "observational",
+      observationCompleted: !incomplete,
+      releaseReadiness: "not_evaluated",
       findings: [
         ...(failed
           ? [
@@ -668,6 +674,7 @@ export const completeM0DailyAcceptance = async (
           captureMetrics.foregroundAddedLatencyP95Ms === null
             ? [
                 "Paired foreground latency evidence must be attached separately.",
+                "Unmeasured guardrails remain unknown; this report does not approve a release.",
               ]
             : []
         ),
@@ -729,18 +736,20 @@ export const completeM0DailyAcceptance = async (
 
 - Run: \`${state.runId}\`
 - Status: **${status.toUpperCase()}**
+- Purpose: capture observation only; release readiness was not evaluated
 - Started: ${state.startedAt}
 - Completed: ${completedAt}
 - Canonical events: ${records.length}
-- Callback duration P95: ${
+- Callback duration P95 (process tail samples, not a complete window): ${
           captureMetrics.callbackDuration.p95Ms ?? "unavailable"
         } ms
 - Delivery latency P95: ${
           captureMetrics.deliveryLatency.p95Ms ?? "unavailable"
         } ms
-- Missing or malformed events: ${
-          guardrails.missingRequiredEventCount
-        }
+- Missing required events: unknown (no expected event manifest)
+- Malformed events observed: ${malformedEventCount}
+- Reconciliation failures: ${reconciliationFailureCount}
+- Foreground blocking failures: unknown (not measured)
 - Duplicate canonical facts: ${duplicateEventIds}
 - Secret persistence: ${secretPersistenceCount}
 - Internal Session persistence: ${

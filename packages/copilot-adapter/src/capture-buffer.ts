@@ -3,6 +3,7 @@ import {
   sha256,
   stableJson,
 } from "@provenloop/domain";
+import { boundedCaptureQuality, newCaptureQuality } from "./capture-evidence.js";
 
 export type CaptureBufferOfferStatus =
   | "accepted"
@@ -89,10 +90,16 @@ const metadataOnly = (
   if (content === undefined) {
     return metadata;
   }
-  return {
+  const quality = metadata.captureQuality ?? newCaptureQuality();
+  const degraded = {
     ...metadata,
     contentDigest: sha256(content),
+    captureQuality: boundedCaptureQuality({
+      ...quality,
+      omittedFields: [...new Set(["content", ...quality.omittedFields])],
+    }),
   };
+  return degraded;
 };
 
 const sameCaptureContext = (

@@ -27,6 +27,14 @@ import {
   redactPotentialSecrets,
 } from "./secret-detection.js";
 
+import {
+  loadObservationManifest,
+  observationManifestSchema,
+  ObservationManifestInputError,
+  SYNTHETIC_REGRESSION_LIMITATION,
+  type ObservationManifest,
+} from "./observation-manifest.js";
+
 export type M1ReleaseTarget = "research" | "stable";
 export type M1ReleaseGateStatus = "fail" | "pass";
 
@@ -37,11 +45,14 @@ export interface M1ReleaseGateCheck {
 }
 
 export interface M1ReleaseReport {
+  readonly evidenceKind: "synthetic";
+  readonly evaluationPurpose: "regression";
+  readonly observationEvidence?: ObservationManifest;
   readonly branchContinuation?: BranchContinuationEvaluationReport;
   readonly checks: readonly M1ReleaseGateCheck[];
   readonly codeVersion: string;
   readonly completedAt: string;
-  readonly exitCode: 0 | 1 | 3;
+  readonly exitCode: 0 | 1 | 2 | 3;
   readonly limitations: readonly string[];
   readonly releaseTarget: M1ReleaseTarget;
   readonly reportVersion: 1;
@@ -51,6 +62,7 @@ export interface M1ReleaseReport {
 }
 
 export interface RunM1ReleaseGateOptions {
+  readonly observationManifestPath?: string;
   readonly codeVersion?: string;
   readonly cwd?: string;
   readonly datasetPath?: string;
@@ -67,6 +79,9 @@ export interface RunM1ReleaseGateResult {
 
 const m1ReleaseReportSchema = z
   .object({
+    evidenceKind: z.literal("synthetic"),
+    evaluationPurpose: z.literal("regression"),
+    observationEvidence: observationManifestSchema.optional(),
     branchContinuation: z.unknown().optional(),
     checks: z.array(
       z
@@ -87,6 +102,7 @@ const m1ReleaseReportSchema = z
     exitCode: z.union([
       z.literal(0),
       z.literal(1),
+      z.literal(2),
       z.literal(3),
     ]),
     limitations: z.array(z.string()),
@@ -329,6 +345,8 @@ const renderM1ReleaseReport = (
       : renderBranchContinuationReport(report.branchContinuation);
   return `# ProvenLoop M1 release gate
 
+Synthetic regression only; this report does not establish real user benefits.
+
 ## Result
 
 | Field | Value |
@@ -425,6 +443,7 @@ export const runM1ReleaseGate = async (
     if (containsKnownSecret(codeVersion)) {
       throw new Error("M1 codeVersion cannot contain a known secret.");
     }
+    const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
     const branchContinuation =
       await evaluateBranchContinuationDataset(
         await loadBranchContinuationDataset(options.datasetPath),
@@ -444,14 +463,17 @@ export const runM1ReleaseGate = async (
         ? "pass"
         : "fail";
     const report: M1ReleaseReport = {
+      evidenceKind: "synthetic",
+      evaluationPurpose: "regression",
+      ...(observationEvidence === undefined ? {} : { observationEvidence }),
       branchContinuation,
       checks,
       codeVersion,
       completedAt: now().toISOString(),
       exitCode: status === "pass" ? 0 : 1,
-      limitations: checks
+      limitations: [SYNTHETIC_REGRESSION_LIMITATION, ...checks
         .filter((check) => check.status === "fail")
-        .map((check) => check.message),
+        .map((check) => check.message)],
       releaseTarget,
       reportVersion: 1,
       runId,
@@ -465,6 +487,8 @@ export const runM1ReleaseGate = async (
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const report: M1ReleaseReport = {
+      evidenceKind: "synthetic",
+      evaluationPurpose: "regression",
       checks: [
         {
           checkId: "m1-infrastructure",
@@ -474,7 +498,7 @@ export const runM1ReleaseGate = async (
       ],
       codeVersion,
       completedAt: now().toISOString(),
-      exitCode: 3,
+      exitCode: error instanceof ObservationManifestInputError ? 2 : 3,
       limitations: [
         "The M1 aggregate gate could not complete.",
       ],

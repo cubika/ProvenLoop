@@ -8,6 +8,7 @@ import {
   createCaptureEnvelope,
   InternalCaptureEventError,
   isProvenLoopInternalEnvironment,
+  redactCaptureEnvelopeForPersistence,
   sha256,
 } from "@provenloop/domain";
 
@@ -34,6 +35,21 @@ const createInput = () => ({
 });
 
 describe("capture envelope identity", () => {
+  it("preserves explicit verification bindings through persistence redaction", () => {
+    const verificationBinding = {
+      correctionEventId: "event-correction",
+      operationEventId: "event-operation",
+    };
+    const envelope = createCaptureEnvelope({
+      ...createInput(),
+      eventType: "verification.completed",
+      verificationBinding,
+    });
+    expect(envelope.event).toHaveProperty("verificationBinding", verificationBinding);
+    expect(redactCaptureEnvelopeForPersistence(envelope).envelope.event)
+      .toHaveProperty("verificationBinding", verificationBinding);
+  });
+
   it("generates stable event and deduplication identities", () => {
     const first = createCaptureEnvelope(createInput(), {
       capturedAt: timestamp,

@@ -14,16 +14,24 @@ import {
 } from "./event-mapper.js";
 
 export interface CopilotSessionLike {
+  readonly sessionId?: string;
+  readonly workspacePath?: string;
   on(listener: (event: CopilotSessionEvent) => void): unknown;
   disconnect?(): Promise<void> | void;
 }
 
 export interface CopilotExtensionCaptureOptions {
+  readonly enabled?: boolean;
   readonly internalSession: boolean;
   readonly mapper: CopilotEventMapper;
   readonly onDiagnostic?: (message: string) => void;
   readonly onStopped?: () => Promise<void> | void;
-  readonly refreshWorkspace?: () => Promise<CopilotWorkspaceSnapshot>;
+  readonly onWorkspaceChanged?: (
+    workspace: CopilotWorkspaceSnapshot,
+    source: "session" | "refresh",
+  ) => void;
+  readonly onWorkspaceRefreshStarted?: () => void;
+  readonly refreshWorkspace?: (workspace: CopilotWorkspaceSnapshot) => Promise<CopilotWorkspaceSnapshot>;
   readonly shutdownDeadlineMs: number;
   readonly writer: AsyncCaptureWriter;
 }
@@ -52,16 +60,6 @@ export class InvalidExtensionCaptureConfigurationError extends Error {
   }
 }
 
-const asPendingGitContext = (data: unknown): boolean | undefined => {
-  if (data === null || typeof data !== "object") {
-    return undefined;
-  }
-  const pending = (
-    data as Readonly<Record<string, unknown>>
-  ).pendingGitContext;
-  return typeof pending === "boolean" ? pending : undefined;
-};
-
 export class CopilotExtensionCapture {
   #callbackCount = 0;
   #callbackDurationMaxMs = 0;
@@ -76,8 +74,10 @@ export class CopilotExtensionCapture {
   #malformedEvents = 0;
   readonly #onDiagnostic: ((message: string) => void) | undefined;
   readonly #onStopped: (() => Promise<void> | void) | undefined;
+  readonly #onWorkspaceChanged: CopilotExtensionCaptureOptions["onWorkspaceChanged"];
+  readonly #onWorkspaceRefreshStarted: (() => void) | undefined;
   readonly #refreshWorkspace:
-    (() => Promise<CopilotWorkspaceSnapshot>) | undefined;
+    ((workspace: CopilotWorkspaceSnapshot) => Promise<CopilotWorkspaceSnapshot>) | undefined;
   #activeRefresh: Promise<void> | undefined;
   #closing = false;
   #refreshWorkspacePending = false;
@@ -87,6 +87,7 @@ export class CopilotExtensionCapture {
   #shutdownPromise: Promise<boolean> | undefined;
   #stoppedNotification: Promise<void> | undefined;
   #started = false;
+  #startSubmitted = false;
   #unsupportedEvents = 0;
   #workspaceGeneration = 0;
   #workspaceRefreshFailures = 0;
@@ -100,9 +101,12 @@ export class CopilotExtensionCapture {
       throw new InvalidExtensionCaptureConfigurationError();
     }
     this.#internalSession = options.internalSession;
+    this.#enabled = options.enabled ?? true;
     this.#mapper = options.mapper;
     this.#onDiagnostic = options.onDiagnostic;
     this.#onStopped = options.onStopped;
+    this.#onWorkspaceChanged = options.onWorkspaceChanged;
+    this.#onWorkspaceRefreshStarted = options.onWorkspaceRefreshStarted;
     this.#refreshWorkspace = options.refreshWorkspace;
     this.#shutdownDeadlineMs = options.shutdownDeadlineMs;
     this.#writer = options.writer;
@@ -116,12 +120,13 @@ export class CopilotExtensionCapture {
   }
 
   public start(): void {
-    if (this.#started) {
+    if (this.#started || this.#closing) {
       return;
     }
     this.#started = true;
-    if (!this.#internalSession) {
+    if (!this.#internalSession && this.#enabled) {
       this.#writer.submit(this.#mapper.sessionStarted());
+      this.#startSubmitted = true;
     }
   }
 
@@ -130,8 +135,8 @@ export class CopilotExtensionCapture {
   ): CopilotEventMappingResult {
     this.start();
     const result = this.handle(event);
-    if (event.type === "session.shutdown") {
-      void this.shutdown();
+    if (event?.type === "session.shutdown") {
+      void this.shutdown().catch((error: unknown) => this.#diagnostic(error));
     }
     return result;
   }
@@ -139,12 +144,8 @@ export class CopilotExtensionCapture {
   public handle(event: CopilotSessionEvent): CopilotEventMappingResult {
     const startedAt = performance.now();
     try {
-      if (!this.#enabled) {
-        this.#disabledEventsSkipped += 1;
-        return {
-          status: "ignored",
-          reason: "capability_disabled",
-        };
+      if (this.#closing) {
+        return { status: "ignored", reason: "capability_disabled" };
       }
       if (this.#internalSession) {
         this.#internalEventsSkipped += 1;
@@ -153,13 +154,31 @@ export class CopilotExtensionCapture {
           reason: "internal_session",
         };
       }
+      if (!this.#enabled) {
+        this.#disabledEventsSkipped += 1;
+        if (event.type === "session.context_changed" || event.type === "session.start") {
+          const context = this.#mapper.map(event);
+          if (context.status === "mapped" || context.status === "unsupported") {
+            this.#workspaceGeneration += 1;
+            this.#notifyWorkspace("session");
+            this.#scheduleWorkspaceRefresh();
+          }
+        } else if (event.type === "tool.execution_complete") {
+          this.#scheduleWorkspaceRefresh();
+        }
+        return {
+          status: "ignored",
+          reason: "capability_disabled",
+        };
+      }
       const result = this.#mapper.map(event);
       if (
-        event.type === "session.context_changed" &&
-        result.status === "unsupported" &&
-        asPendingGitContext(event.data) !== true
+        ((event.type === "session.context_changed" && result.status === "unsupported") ||
+          (event.type === "session.start" && result.status === "mapped"))
       ) {
         this.#workspaceGeneration += 1;
+        this.#notifyWorkspace("session");
+        this.#scheduleWorkspaceRefresh();
       }
       switch (result.status) {
         case "ignored":
@@ -173,6 +192,9 @@ export class CopilotExtensionCapture {
           break;
         case "mapped":
           this.#writer.submit(result.value);
+          for (const derived of result.additionalEvents ?? []) {
+            this.#writer.submit(derived);
+          }
           break;
         case "unsupported":
           this.#unsupportedEvents += 1;
@@ -214,13 +236,24 @@ export class CopilotExtensionCapture {
   public updateWorkspace(snapshot: CopilotWorkspaceSnapshot): void {
     this.#workspaceGeneration += 1;
     const commitEvent = this.#mapper.updateWorkspace(snapshot);
-    if (commitEvent !== undefined) {
+    this.#notifyWorkspace("refresh");
+    if (commitEvent !== undefined && this.#enabled) {
       this.#writer.submit(commitEvent);
     }
   }
 
   public setEnabled(enabled: boolean): void {
+    if (this.#closing || this.#enabled === enabled) return;
+    this.#mapper.resetCaptureChain();
     this.#enabled = enabled;
+    if (enabled && this.#started && !this.#startSubmitted && !this.#internalSession) {
+      this.#writer.submit(this.#mapper.sessionStarted());
+      this.#startSubmitted = true;
+    }
+  }
+
+  public currentWorkspace(): CopilotWorkspaceSnapshot {
+    return this.#mapper.currentWorkspace();
   }
 
   public refreshWorkspace(): void {
@@ -269,14 +302,20 @@ export class CopilotExtensionCapture {
     const refreshWorkspace = this.#refreshWorkspace;
     const refreshGeneration = this.#workspaceGeneration;
     this.#refreshingWorkspace = true;
+    try {
+      this.#onWorkspaceRefreshStarted?.();
+    } catch (error) {
+      this.#diagnostic(error);
+    }
     const activeRefresh = new Promise<void>((resolve) => {
       setImmediate(() => {
-        void refreshWorkspace()
+        void refreshWorkspace(this.#mapper.currentWorkspace())
         .then((snapshot) => {
           if (this.#workspaceGeneration === refreshGeneration) {
             const commitEvent =
               this.#mapper.updateWorkspace(snapshot);
-            if (commitEvent !== undefined) {
+            this.#notifyWorkspace("refresh");
+            if (commitEvent !== undefined && this.#enabled) {
               this.#writer.submit(commitEvent);
             }
           } else {
@@ -290,7 +329,8 @@ export class CopilotExtensionCapture {
                 ...current,
                 commitParents: snapshot.commitParents,
               });
-              if (commitEvent !== undefined) {
+              this.#notifyWorkspace("refresh");
+              if (commitEvent !== undefined && this.#enabled) {
                 this.#writer.submit(commitEvent);
               }
             } else if (
@@ -370,6 +410,14 @@ export class CopilotExtensionCapture {
       this.#diagnostic(error);
     });
     return this.#stoppedNotification;
+  }
+
+  #notifyWorkspace(source: "session" | "refresh"): void {
+    try {
+      this.#onWorkspaceChanged?.(this.#mapper.currentWorkspace(), source);
+    } catch (error) {
+      this.#diagnostic(error);
+    }
   }
 
   #diagnostic(value: unknown): void {

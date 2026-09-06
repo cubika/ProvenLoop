@@ -1,7 +1,7 @@
 # ProvenLoop Implementation Checklist
 
 **Status:** Active  
-**Updated:** 2026-09-02
+**Updated:** 2026-09-06
 
 **Immediate target:** M0 observation foundation, followed by the M1 + M2
 validated MVP.
@@ -9,12 +9,17 @@ validated MVP.
 This checklist turns the product design, architecture, roadmap, and validation
 documents into an executable delivery order. Work is complete only when its
 behavior is covered by the evaluation spine; code completion alone is not
-completion.
+completion. Existing checked items record earlier implementation/fixture
+coverage, not a fresh validation of the `0.1.0-alpha.0.8` artifacts or field
+acceptance. The Windows Design Partner Preview includes the M0-M2 repairs and
+user controls below; new-version acceptance remains unchecked pending retained
+results. `0.1.0-alpha.1` remains an unapproved quality-release target.
 
 ## 1. Delivery rules
 
 - [ ] Keep the MVP a TypeScript/Node.js modular monolith: a small Copilot
-  capture Extension and one shared local host.
+  capture Extension, stdio MCP, and leased worker sharing one packaged codebase,
+  not a requirement for one OS process.
 - [ ] Treat SQLite domain state as canonical; FTS, rendered context, and agent
   assets are rebuildable projections.
 - [ ] Keep Extension callbacks bounded: copy allowed fields, enqueue to memory,
@@ -42,14 +47,16 @@ F0 integration spikes
   -> canonical SQLite and worker
   -> Copilot adapter and control CLI
   -> basic Work Episode builder
-  -> M0 acceptance
   -> M1 Branch Context and retrieval
   -> M2 correction learning
-  -> M1 + M2 product evaluation
+  -> explicit rule -> later-session retrieval -> explicit feedback -> observation
+  -> M0 field acceptance + controlled M1/M2 product evaluation
 ```
 
 Independent work may proceed in parallel only after its shared contracts are
 frozen.
+M0 acceptance still gates quality release, but unresolved field measurements
+need not serialize all safe M1/M2 development behind them.
 
 ## 3. F0: feasibility decisions
 
@@ -123,6 +130,7 @@ frozen.
   - `domain`
   - `platform-windows`
   - `storage-sqlite`
+  - `retrieval`
   - `evaluation`
   - `copilot-adapter`
   - `host`
@@ -221,7 +229,8 @@ frozen.
 - [x] Add entropy-based detection for unknown token formats.
 - [x] Minimize stored tool arguments and result bodies.
 - [x] Preserve a safe error and digest when content is removed.
-- [ ] Add a second redaction pass to the future retrieval boundary.
+- [ ] Revalidate writer/worker redaction of new structured evidence and
+  capture-quality paths, plus existing retrieval-time filtering.
 - [x] Test false positives as well as seeded-secret recall.
 
 ### 6.3 Persistent queue
@@ -232,6 +241,7 @@ frozen.
 - [x] Add bounded retry with explicit last error and next-attempt time.
 - [x] Recover claimed items after process failure.
 - [x] Retain successful items only for the configured diagnostic period.
+  This is acknowledged-queue pruning, not canonical raw-event retention.
 - [x] Prevent recursive events marked `PROVENLOOP_INTERNAL=1`.
 
 ### 6.4 Extension capture
@@ -243,8 +253,20 @@ frozen.
 - [x] Return control without waiting for worker availability or persistence.
 - [x] Surface capture degradation through status and logs without failing
   Copilot.
-- [x] Reconcile supported Session files after gaps and restarts.
+- [x] Implement supported Session-file reconciliation.
+- [x] Wire bounded current-Session reconciliation into the existing
+  background observation loop using actual SDK identity/path and join observation
+  time; validate the scheduler/helper source regressions and built entry with
+  SDK/command-runner fixtures and real queue/worker/store.
+- [x] Verify automatic missing-argument enrichment preserves the original
+  envelope, excludes pre-observation records, and joins the SDK Session once
+  in built integration coverage.
+- [ ] Validate recovery on a real installed SDK host and retain explicit
+  acceptance-window evidence; regression fixtures do not establish field acceptance.
 - [ ] Benchmark capture-added latency.
+- [ ] Retain producer-path regressions for native tool/turn/shell completion,
+  missing exit status, truncated targets, unknown repository state, and
+  independent operation proof.
 
 ### 6.5 Definition of done
 
@@ -266,6 +288,10 @@ frozen.
 - [x] Store source IDs and content digests on all derived records.
 - [x] Keep projection schemas outside domain lifecycle authority.
 - [x] Test migration upgrade, failed migration recovery, and database restore.
+- [ ] Revalidate current-schema preflight, pre-upgrade snapshots, restore
+  identity/manifest checks, recovery journals, and deletion non-resurrection.
+- [ ] Prove late enrichment preserves the immutable original envelope,
+  capture-quality history, and source provenance.
 
 ### 7.2 Worker
 
@@ -335,10 +361,9 @@ frozen.
 - [x] ProvenLoop can be stopped or broken while Copilot remains usable.
 - [x] Installation requires no wrapper command for ordinary Copilot use.
 - [x] Daily operation requires no additional model API key.
-- [ ] Capability disable stops only the selected capture, retrieval, or worker
-  behavior. Capture and the on-demand worker are operational; retrieval remains
-  unavailable until its runtime consumer is wired to the shared capability
-  state.
+- [ ] Validate capability isolation in the installed 0.8 preview path.
+  Capture, worker, and retrieval are wired to persisted capability state;
+  automated coverage is not the full real installed-host matrix.
 
 ## 9. Batch 6: basic Work Episode builder
 
@@ -362,15 +387,17 @@ frozen.
 
 ### 9.3 Evaluation
 
-- [x] Prepare 20-50 anonymized real or realistic episodes.
+- [x] Prepare the 24-pair synthetic Episode association dataset.
+- [ ] Retain 20-50 real, appropriately minimized Episodes for field validation.
 - [x] Label same-episode and different-episode pairs.
 - [x] Report precision, recall, wrong merge, and wrong split separately.
 - [x] Record ambiguous cases rather than forcing a confident label.
 
 ### 9.4 Definition of done
 
-- [x] Association precision is at least 95%.
-- [x] Association recall is at least 90%.
+- [x] Synthetic association precision meets the 95% regression threshold.
+- [x] Synthetic association recall meets the 90% regression threshold.
+- [ ] Establish both thresholds on retained independent real Episodes.
 - [x] Wrong merges are visible as a distinct release metric.
 - [x] Every episode relation can be explained using concrete source evidence.
 
@@ -383,7 +410,8 @@ frozen.
 - [ ] Unsupported Completion Claim count is zero.
 - [ ] Seeded secret persistence and cross-repository leakage are zero.
 - [ ] Capture-added latency P95 is at most 10 ms.
-- [x] Parser and episode-builder quality thresholds pass.
+- [x] Parser and episode-builder synthetic quality thresholds pass.
+- [ ] Revalidate the repaired native producer and real Episode quality.
 - [ ] `provenloop doctor` reports actionable failures.
 - [x] `report.json`, `report.md`, Evidence Ledger, dataset versions, and code
   version are retained for the release decision.
@@ -398,7 +426,9 @@ frozen.
 - [x] Store goal, accepted decisions, constraints, implementation state,
   unfinished work, and recent verification evidence.
 - [x] Verify repository, branch, and HEAD before retrieval.
-- [x] Stop automatic recall after branch merge/deletion or context expiry.
+- [x] Stop automatic recall on repository/branch/HEAD mismatch or context expiry.
+- [ ] Add automatic branch merge/deletion discovery if required; expiry is not
+  physical cleanup.
 - [x] Keep Branch Context a rebuildable short-lived projection.
 
 ### 11.2 Knowledge backend
@@ -423,6 +453,11 @@ frozen.
 - [x] Return zero to three items and allow an empty result.
 - [x] Deduplicate repeated injection within a session.
 - [x] Fail closed with no context on timeout or backend degradation.
+- [ ] Validate 0.8 MCP instructions/plugin skill and per-call trusted
+  live Session snapshot with stale, ambiguous, outside-repo, and moved-workspace cases.
+- [ ] Verify exact real-user feedback approval; helpful/provided must not
+  imply adoption or a successful outcome.
+- [ ] Verify Branch Context feedback never changes Knowledge lifecycle.
 
 ### 11.4 User control and deletion
 
@@ -434,17 +469,24 @@ frozen.
 - [x] Block dependent work while deletion is active.
 - [x] Recompute or deactivate dependent Knowledge.
 - [x] Run the deletion propagation gate before reporting success.
+- [ ] Revalidate 0.8 Knowledge list/show/confirm/replace/revoke with
+  stale digests, explicit confirmation, and named counterevidence resolution.
+- [ ] Verify old confirmation cannot clear later failures or corrections.
 
 ### 11.5 M1 gate
 
-- [x] Evaluate at least 30 Branch Continuation pairs.
-- [x] Repeated Context Token median decreases by at least 30%.
-- [x] TTV median decreases by at least 15%.
-- [x] Retrieval Precision@3 is at least 90%.
-- [x] Wrong Injection is at most 2% for research and at most 1% for stable
-  release.
-- [x] Outcome Success falls by no more than two percentage points.
-- [x] Retrieval latency P95 is at most 150 ms.
+- [x] Implement the 32-pair synthetic Branch Continuation gate, including
+  token/TTV fixture comparisons, precision, wrong injection, and latency checks.
+- [ ] Re-run that gate for the final current source and retain its artifacts.
+- [ ] Evaluate at least 30 independent real Branch Continuation pairs.
+- [ ] Demonstrate repeated Context Token median reduction of at least 30%.
+- [ ] Demonstrate TTV median reduction of at least 15%.
+- [ ] Establish real Retrieval Precision@3 of at least 90%.
+- [ ] Establish Wrong Injection at most 2% for research and 1% for stable.
+- [ ] Establish Outcome Success decline of no more than two percentage points.
+- [ ] Establish installed-path retrieval latency P95 of at most 150 ms.
+
+Synthetic fixture timing/outcome values do not measure real-user improvement.
 
 ## 12. M2: evidence-backed correction learning
 
@@ -454,6 +496,9 @@ frozen.
 - [x] Record scope, expected behavior, trigger, task family, subsystem, source
   corrections, and verification evidence.
 - [x] Require a verified result before correction-based Knowledge can activate.
+- [ ] Revalidate full `VerificationBinding`: correction and captured operation,
+  ordered parent chain, Session/repository/worktree identity, command target,
+  trusted completion, and independent support.
 - [x] Record Correction Opportunities before observing their outcomes.
 
 ### 12.2 Knowledge lifecycle
@@ -479,21 +524,35 @@ frozen.
 
 ### 12.4 M2 gate
 
-- [x] Evaluate at least 20 independent Correction Opportunities before claiming
-  a measured percentage improvement.
-- [x] RCR improves by at least 20% relative to baseline.
-- [x] Knowledge provenance completeness is 100%.
-- [x] Evidence Tier label accuracy is at least 95%.
-- [x] Valid direct counterevidence immediately stops automatic injection.
-- [x] Wrong Injection remains at most 2% for research and at most 1% for stable
-  release.
+- [x] Implement the 24-pair synthetic Correction Recurrence gate with provenance,
+  evidence tier, counterevidence, recurrence, and wrong-injection checks.
+- [ ] Re-run the strict-proof regression fixtures for the final source.
+- [ ] Observe at least 20 independent real Correction Opportunities before
+  claiming a measured percentage improvement; preserve unknown/censored cases.
+- [ ] Demonstrate RCR improvement of at least 20% against a real baseline.
+- [ ] Establish real Knowledge provenance completeness of 100%.
+- [ ] Establish Evidence Tier label accuracy of at least 95%.
+- [ ] Confirm direct counterevidence stops injection on the native installed path.
+- [ ] Establish real Wrong Injection at most 2% for research and 1% for stable.
+
+### 12.5 First-use observations — 0.8 acceptance
+
+- [ ] Verify explicit scoped rule -> later-session Context -> Explain ->
+  approved feedback -> local observation using the actual installed MCP path.
+- [ ] Validate `observations show/export`, UTC date/session filtering, version
+  filtering, bounded coverage, and privacy-minimized output.
+- [ ] Keep provided context, explicit adoption, feedback, verification, and
+  unknown outcomes separate; do not infer task time or causal benefit.
+- [ ] Validate observation invalidation and collector/deletion lease ordering.
 
 ## 13. M1 + M2 MVP Go/No-Go
 
 The aggregate `provenloop eval mvp` command is implemented and retains M0, M1,
 M2, manual review, Shadow, observation-window, and rollback checks in one
 atomic report. The checklist remains open because the current real decision is
-No-Go until M0 blockers and retained release evidence are completed.
+No-Go. In addition to M0 and retained release evidence, current
+`field-effect-evidence` remains blocked: synthetic fixtures, observation
+manifests, and maintainer attestations cannot establish controlled benefit.
 
 - [ ] Run event/process integrity, Branch Continuation, Correction Recurrence,
   Negative Trigger, and Safety/Recovery suites.
@@ -525,8 +584,8 @@ These items must not expand the first implementation batch.
 
 ## 15. First executable slice
 
-The first coding slice should prove one complete path before adding more event
-types:
+The original fixture slice established the following path. It remains the
+smallest regression path to revalidate when its capture/storage contracts change:
 
 ```text
 fixture Extension event
@@ -541,7 +600,8 @@ fixture Extension event
   -> JSON/Markdown report and stable exit code
 ```
 
-The slice is complete when:
+0.8 rerun checklist (not a claim that the original implementation
+is still missing):
 
 - [ ] a valid event passes;
 - [ ] a malformed event remains visible and fails;

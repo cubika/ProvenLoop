@@ -1,12 +1,19 @@
 # ProvenLoop Technical Architecture
 
-**Status:** Proposed architecture  
-**Updated:** 2026-08-30
+**Status:** 0.1.0-alpha.0.8 preview architecture with explicitly deferred capabilities
+
+**Updated:** 2026-09-06
 
 This document describes both the executable near-term architecture and the
 long-term logical architecture. They use the same event, evidence, domain, and
 evaluation contracts. Later milestones enable additional consumers and state
 transitions; they do not introduce a second architecture.
+
+Current implementation descriptions apply to the `0.1.0-alpha.0.8` Windows
+Design Partner Preview evidence candidate. M3-M6 consumers remain targets.
+Synthetic regression coverage is not native-host acceptance, controlled benefit
+evidence, or M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
+target. New-version artifact validation must be retained separately.
 
 ## 1. Architecture goals
 
@@ -102,8 +109,9 @@ The diagram is the target logical architecture, not the first implementation
 backlog. The executable M0-M2 slice is:
 
 ```text
-Extension -> async writer -> Queue -> Worker -> Parser -> canonical SQLite
-Session files -> bounded Reconciler ----^
+SDK producer -> Extension mapper -> bounded buffer -> async writer -> Queue
+Session files -> bounded Reconciler -> same mapper/writer ----------^
+Queue -> leased Worker -> redaction + classification -> canonical SQLite
                                             |
                                             +-> basic Work Episode
                                             +-> Correction Key and admission policy
@@ -131,6 +139,24 @@ An event type may be captured before its consuming milestone is active. For
 example, M0 can persist a directly observed revert, and M2 can stop Knowledge
 when explicit counterevidence is already linked. M3 adds automated discovery
 and delayed association of Review, CI, Fix, Bug, and Revert evidence.
+
+### 2.2 First-use product boundary
+
+The first useful interaction does not require automatic inference. A user can
+confirm a real, narrowly scoped rule or handoff, retrieve it in a later Session,
+inspect its source, and record feedback. This is `user_confirmed` Knowledge,
+not evidence that ProvenLoop independently learned or verified a rule.
+
+The production acceptance path crosses the actual adapter, queue, worker,
+canonical store, MCP entry point, and subsequent Session. Constructing a
+`test.completed` event directly in a domain fixture does not prove that a real
+tool result reaches the learner. Registering an MCP tool does not prove the
+host calls it, and returning context does not prove that it was used.
+
+Runtime repair should preserve the modular monolith and existing worker.
+Additional backends, model-assisted retrospective, and Playbooks are not
+prerequisites for this first-use path. Recovery, source isolation, and deletion
+guarantees still apply to the initial pilot.
 
 ## 3. Component responsibilities
 
@@ -176,9 +202,10 @@ and `1.0.83-4` are verified; compatible versions without ProvenLoop evidence
 remain visible to Doctor as unverified. Production plugin installation uses a
 marketplace because direct path installs are deprecated and cannot be disabled
 through the normal lifecycle commands.
-The operational adapter generates a local marketplace containing the capture
-Extension and stdio MCP registration, then uses Copilot's normal marketplace
-and plugin lifecycle commands. Its state records the detected version,
+Installed releases use the release-pinned remote marketplace; isolated
+development can generate a local marketplace containing the capture Extension
+and stdio MCP registration. Both use Copilot's normal marketplace and plugin
+lifecycle commands. Adapter state records the detected version,
 capability switches, last explicit errors, and whether ProvenLoop changed the
 user's Extension opt-in setting so that disable and uninstall can restore it.
 The data root carries a path-bound ownership marker before mutable state is
@@ -223,6 +250,31 @@ atomic source-identity index in the queue so concurrent writers cannot normally
 create duplicate queue items. Internal Session IDs stop parsing immediately
 after the header, before content-bearing records are read.
 
+Explicit acceptance completion invokes reconciliation. The 0.8
+installed Extension also wires `reconcileCurrentSessionCapture` into its
+existing background observation loop. `runInstalledCopilotExtension` uses the
+actually joined SDK Session's `sessionId` and public `workspacePath`. Automatic
+reconciliation requires a matching `SESSION_ID` and an absolute workspace
+directory whose basename equals that Session ID. Its parent is the trusted
+Session-state root; the join observation time becomes `minimumTimestamp`.
+Missing or mismatched SDK workspace metadata produces a diagnostic and skips
+automatic reconciliation, never a guessed path or history enumeration.
+
+The loop runs worker/admission first. After a completed worker run, current-
+Session reconciliation is due every 30 seconds, followed by observation
+collection. Newly queued/enriched data or exhausted reconciliation budgets
+schedule two-second catch-up; idle or pending repairs without progress retain
+the 30-second interval. Each pass remains bounded to 8 MiB, 500 events, and
+1,500 ms, with the helper's capability, internal-Session, worker-lease, and
+path/link checks. Actual runtime `onStopped` or `SIGTERM` stops the loop.
+No foreground callback I/O or additional service is introduced.
+
+Built integration coverage invokes the real Extension entry with SDK/command-
+runner fixtures and a real queue, worker, and store: it verifies one join,
+automatic missing-argument enrichment, unchanged original envelopes, and
+exclusion of pre-observation records. This is regression evidence, not native
+SDK-host field observation, controlled benefit, or release approval.
+
 Command and HTTP lifecycle Hooks are not used for normal capture. F0 found both
 paths too slow. The complete design and acceptance gate are defined in
 [Copilot event capture design](copilot-event-capture-design.md).
@@ -238,6 +290,14 @@ Queue requirements:
 - bounded retention after successful processing;
 - dead-letter state with explicit errors.
 
+The durable queue has no total byte/item capacity limit. The worker's
+`maxQueueDepth: 10_000` is a pressure signal, not a storage quota. The installed
+worker defaults to 100 items per batch and prunes acknowledged items older than
+seven days after acquiring its worker lease. This pruning does not remove aged
+pending/dead-letter items or canonical raw events; pausing the worker can still
+allow disk backlog to grow. Per-item read safety is bounded to 2 MiB. These are
+implementation defaults, not additional CLI flags.
+
 The Batch 3 persistence boundary uses a versioned `CaptureEnvelope` containing
 the stable source identity, deterministic deduplication key, redacted
 `RawEvent`, bounded content, and the applied redaction rule version. Queue state
@@ -249,10 +309,19 @@ event more than once.
 
 The Extension runtime maps supported SDK events synchronously into bounded
 copies, then submits them to a count-and-byte-limited FIFO. User and assistant
-text is copied up to an explicit character limit. Arbitrary structured tool
-arguments are not enumerated in the callback; they receive an explicit
-`omitted_in_callback` marker, while known result, error, metric, and code-change
-scalars are copied directly. Queue I/O starts on a later event-loop turn.
+text is copied up to an explicit character limit. Tool arguments use bounded
+allowlisted fields for supported operations; arbitrary objects are never
+recursively enumerated in the callback. Omitted or truncated evidence must
+remain distinguishable from a complete empty value. Queue I/O starts on a
+later event-loop turn.
+
+The native SDK producer bridge retains `captureQuality` (omitted/truncated
+field paths and original lengths), `repositoryState`, and allowlisted
+`CaptureEvidence`. It connects supported tool starts/completions and explicit
+exit evidence to domain verification rather than inferring success from tool
+transport completion. Writer and worker redaction both cover these structured
+fields, command targets, and content. Missing, omitted, or truncated proof
+fields cannot be substituted with complete-looking defaults.
 
 When pressure prevents a full event from fitting, the buffer first retains
 metadata plus a content digest; if even metadata cannot fit, it drops the event
@@ -260,8 +329,13 @@ and aggregates the missing range. The writer persists that range as a
 `capture_gap` after normal queue writes resume. Gap bookkeeping has independent
 byte and context-count limits. If those limits are reached across workspace
 changes, the remaining range is marked `contextMixed` rather than attributed
-to the first repository. All buffer and gap limits are explicit runtime
-configuration, not hidden constants.
+to the first repository. Low-level constructors expose buffer/gap limits; the
+installed entry uses fixed defaults, not user-facing CLI flags. Current defaults
+and recovery budgets are listed in the
+[capture design](copilot-event-capture-design.md#52-内存缓冲区).
+This is best-effort capture: a crash before durable enqueue can lose buffered
+events or gaps. Neither an absent gap record nor an incomplete reconciliation
+pass proves lossless archival.
 
 The runtime accepts `joinSession` and workspace-refresh providers at its
 boundary. This keeps the bundled Copilot SDK and asynchronous Git inspection
@@ -275,9 +349,12 @@ The worker starts on demand when queue work exists. A lock prevents duplicate
 workers. It processes events in batches and yields to interactive workloads.
 Queue items remain durable while a consumer is paused or unavailable.
 
-The first canonical store uses Node 22's built-in SQLite behind the
-`storage-sqlite` package. Startup enables WAL, foreign keys, and a bounded busy
-timeout, then applies contiguous migrations while holding `BEGIN IMMEDIATE`.
+The canonical store uses Node 22's built-in SQLite behind the `storage-sqlite`
+package. Startup enables WAL, foreign keys, and a bounded busy timeout.
+The 0.8 schema is **10**. Ordinary opens reject an existing older schema
+with a migration-required error, and reject schemas newer than the runtime.
+Only explicit maintenance permits contiguous migrations under `BEGIN IMMEDIATE`;
+new empty databases can initialize normally.
 The initial migration creates canonical raw-event, parser-error, identity,
 queue-processing, Episode, evidence, process-claim, feedback, deletion,
 metric, and evaluation-run tables. Search projections remain outside these
@@ -304,25 +381,47 @@ provider-error streak, and queue-depth pressure. An open circuit returns the
 explicit reasons and leaves pending work untouched. The check repeats within a
 batch so newly interactive or resource-constrained conditions stop additional
 low-priority work.
-Queue-only pressure is treated specially: each worker run may drain one item
-before pausing again, so the pressure signal cannot permanently block the only
-consumer capable of reducing that backlog.
+Queue-only pressure is treated specially: the worker may continue draining
+within its configured batch budget, rechecking capability and other resource
+pressure before each claim. A large backlog cannot permanently block its only
+consumer, while CPU/memory/disk pressure can still pause it.
 
-SQLite backups use the built-in online backup protocol. Restore first proves
-that the source has the current canonical migration ledger, STRICT runtime
-tables, exact columns and primary keys, and exact non-partial unique indexes.
-Only then is it copied into the target through SQLite's transactional backup
-path and reopened for a final health check.
+`provenloop upgrade` acquires worker/projection/observation
+maintenance leases, requests Extension shutdown, and creates a verified
+pre-migration snapshot at `data\backups\pre-upgrade-<id>.db`. The snapshot has
+`.deletion.key` and `.manifest.json` companions and, when available,
+`.runtime.json` locator metadata. It then migrates and replaces integration
+assets. Failed replacement may restore the snapshot only if canonical data
+still matches the post-migration fingerprint; intervening writes are preserved
+and automatic rollback is refused with capabilities paused for recovery.
+
+SQLite backup/restore uses the online backup protocol. Validation checks
+integrity, the source version's declared migration ledger and exact schema
+objects, and supported runtime compatibility—not just a matching `user_version`.
+Restore verifies supplied backup manifests and deletion-key integrity, rejects
+incomplete deletion operations, and requires every completed installed
+tombstone to exist unchanged in the source. It does not silently merge away
+or discard deletion history. A restore barrier, recovery journal, verified
+previous snapshot, and generation checks protect against interrupted restore
+and stale writers. Unknown writes or incomplete recovery preserve the journal
+and require explicit review. Backup/restore APIs are internal; there is no
+documented public restore command.
+New backup manifests include optional caller-supplied `runtimeVersion` metadata;
+it is not independently inferred executable provenance. Restore also supports
+structurally validated legacy backups without a manifest, and missing keys only
+where deletion safety permits. The storage constructor does not create an
+automatic pre-migration snapshot; the maintenance upgrade orchestrates that step.
 
 The M0 capture Gate binds the complete canonical `CaptureEnvelope` to an
 Evidence Ledger entry by run, Ledger ID, event ID, timestamp, SHA-256 digest,
 and deterministic event identity. Changing content or redaction metadata
 invalidates the Gate, not only changes to the inner `RawEvent`.
 
-The initial deployment is a modular monolith with a small capture Extension and
-one shared local ProvenLoop host containing the MCP server, worker, domain
-modules, and CLI control surface. Components are code boundaries, not
-independently deployed local services.
+The initial deployment is one packaged modular monolith, not one OS process.
+Copilot hosts Extension and stdio MCP processes; the operational CLI and
+on-demand worker share the same packages and local data. OS-owned leases
+serialize worker and maintenance ownership. These are process and module
+boundaries, not independently deployed local microservices.
 
 The Windows implementation uses a named pipe as an OS-owned process lease, not
 an unbounded stale lock file. The platform boundary owns data-root resolution,
@@ -349,7 +448,9 @@ interface InferenceProvider {
 Installation performs the one-time Copilot integration. Subsequent supported
 background calls reuse the user's existing Copilot sign-in without copying or
 persisting credentials, without an additional API key, and without per-call
-authorization prompts. F0 must verify that this is possible through a
+authentication prompts. This does not authorize persistent Knowledge changes,
+scope changes, destructive controls, or Playbook activation on the user's
+behalf. F0 must verify authentication reuse through a
 supported integration path for the declared Copilot version.
 
 If Copilot is signed out, rate-limited, incompatible, or unavailable,
@@ -430,6 +531,11 @@ M0 implements enough deterministic grouping to measure precision, recall,
 wrong merge, and wrong split. M1 adds cross-session and Branch Context behavior.
 Incorrect merges are treated as more harmful than conservative splits.
 
+An Episode association organizes history; it is not a verification claim.
+Sharing a branch, being close in time, or appearing in the same Session must
+not allow an unrelated test to certify a correction. Observing a new HEAD is
+also distinct from proving that the current task created that commit.
+
 ### 3.6 Correction learner and admission policy
 
 The M2 correction learner:
@@ -448,14 +554,31 @@ supersede, or broaden Knowledge.
 
 Correction Knowledge admission is deterministic and fail closed. The policy
 requires the user-trusted correction, a later successful `tool` or `system`
-test/build/verification event in the same Work Episode, matching scope and
-applicability, and a complete canonical proof chain. Context-use records and
+test/build/verification event bound to that correction and its operation,
+matching repository, workspace, scope and applicability, and a complete
+canonical proof chain. Same-Episode membership alone is insufficient.
+`VerificationBinding` contains `correctionEventId` and `operationEventId`.
+The operation must be a captured trusted `tool.started` with a usable command,
+matching operation and Session identity, and an ordered parent chain back to
+the correction in the same repository/worktree. Missing parents, an unrelated
+turn, incomplete target capture, unknown repository identity, or contradictory
+completion evidence fail closed.
+Repeated evidence requires independent verification rather than counting the
+same successful invocation once per correction. Context-use records and
 recalled Knowledge IDs are never accepted as supporting evidence. Automatic
 scope feedback cannot broaden Knowledge; only an explicit user `set_scope`
 event may change its scope. The same policy runs before lifecycle persistence
 and again when canonical search hits are rechecked. Its decision retains the
 applies-when and non-applicability conditions, source Episode and evidence
 references, conflicts, and supersession relation.
+
+Verification, counterevidence, and feedback retain their event-time ordering.
+An old confirmation cannot resolve a newer failure. A current user resolution
+must identify the counterevidence it resolves via `resolvesEvidenceIds`;
+ordinary confirmation does not erase unreviewed or later counterevidence.
+Missing repository identity
+means the scope is unresolved, not that repository content becomes personal
+Knowledge. A personal scope requires an explicit user choice.
 
 Context retrieval records the trusted Session immediately. The deterministic
 Work Episode projection subsequently associates each context-use record only
@@ -465,14 +588,14 @@ paired correction and before that verification; ambiguous Episode associations
 remain unset and cannot create a self-strengthening edge.
 
 Canonical retrieval loads admission evidence only for the current search hits.
-SQLite v7 indexes raw event identity, context-use Episode identity, and
-feedback target identity. It also maintains an indexed
+The migration introduced in SQLite schema v7 indexes raw event identity,
+context-use Episode identity, and feedback target identity. It also maintains an indexed
 `correction_key_sources` mapping rebuilt from canonical Correction Keys, so
 admission cost does not grow as a JavaScript or JSON virtual-table scan of the
 complete local history.
 
-The M2 release gate uses a frozen Correction Recurrence dataset with 24
-independent baseline/context held-out trace pairs. Each case rebuilds training
+The M2 release gate uses a frozen synthetic Correction Recurrence dataset with
+24 baseline/context held-out trace pairs. Each case rebuilds training
 Correction Keys and Knowledge, retrieves Context through the production
 service, records application feedback, projects the Context use into the
 held-out Episode, and lets `CorrectionCaptureBuilder` derive both Opportunities.
@@ -485,7 +608,8 @@ both replay databases, code provenance, research or stable thresholds, and
 explicit input/product/infrastructure exit codes. The gate writes the complete
 run into a hidden staging directory and atomically renames that directory only
 after both JSON and Markdown reports are complete, so readers never observe a
-partially published report pair.
+partially published report pair. These fixtures test production logic; their
+RCR, timing, and outcome inputs do not measure real users' gains.
 
 The MVP aggregate release gate runs M0, M1, and M2 in parallel against one
 frozen code version and retains their complete reports under one staged run
@@ -497,7 +621,11 @@ The evidence is bound to the exact code version, dataset versions, and stable
 M0/M1/M2 evidence digests. When the built CLI is running, the binding also
 hashes every executed package `dist` JavaScript artifact so stale compiled code
 cannot inherit a source-only approval. Research thresholds can produce only an
-expiring Conditional Go restricted to named repository or design-partner targets.
+expiring Conditional Go restricted to named repository or design-partner targets
+under the release policy. The 0.8 evaluator additionally keeps
+`field-effect-evidence` blocked: neither synthetic replay, an observational
+manifest, nor maintainer attestation establishes controlled field benefit.
+Thus the current inputs cannot yield Go or Conditional Go.
 Missing or stale evidence, any blocked subgate, or any safety/data-correctness
 failure produces No-Go.
 The output and evidence locations must be outside the repository or ignored by
@@ -632,6 +760,13 @@ The evaluator compares:
 - current approved Playbook;
 - candidate Playbook.
 
+Reports distinguish synthetic regression, field observation, and controlled
+comparison. Fixture-supplied timing, recurrence, or outcome values do not
+measure actual user benefit. Field summaries retain unknown outcomes and
+unmeasured safety values as unknown rather than zero. Context exposure,
+explicit feedback about use, and independent outcome evidence are separate
+observations; none is silently substituted for another.
+
 Evaluation uses held-out episodes and negative trigger examples. A candidate
 cannot be tested only on the episodes from which it was derived.
 
@@ -682,6 +817,13 @@ interface RawEvent {
   claimId?: string;
   redactedArguments?: unknown;
   resultDigest?: string;
+  repositoryState?: "known_repo" | "known_outside_repo" | "unknown";
+  captureQuality?: CaptureQuality;
+  evidence?: CaptureEvidence;
+  verificationBinding?: {
+    correctionEventId: string;
+    operationEventId: string;
+  };
   exitCode?: number;
   completionStatus?: "requested" | "running" | "succeeded" | "failed" | "cancelled";
   timestamp: string;
@@ -689,8 +831,19 @@ interface RawEvent {
 }
 ```
 
-Raw events are immutable during normal retention and are never injected
-directly into model context. Source Delete and Purge are explicit exceptions:
+`CaptureQuality` and `CaptureEvidence` are versioned, bounded contracts in
+`packages\contracts\src\capture-metadata.ts`, not arbitrary metadata bags.
+
+Source identity, original event facts, and redaction provenance are immutable
+during normal retention and are never injected directly into model context.
+Controlled late enrichment may fill missing content, redacted arguments, or
+result digests from a supported Session-file source. It retains source and
+original-envelope digests in an append-only enrichment table; already recorded
+facts and all event metadata, including `captureQuality`, stay unchanged.
+Newly derived verification is separate evidence, not reclassification of the
+original event. Enrichment cannot rewrite workspace, parent, time, trust,
+status, or content to create a proof.
+Source Delete and Purge are explicit exceptions:
 they physically remove in-scope payloads and dependent data according to the
 deletion workflow in section 5.
 
@@ -803,8 +956,9 @@ scope IDs come from trusted adapter identity; workflow scope additionally
 requires an explicit `Workflow:` value.
 
 Repeated messages with the same normalized semantics produce one stable key.
-Successful `test.completed`, `build.completed`, or `verification.completed`
-events later in the same Work Episode extend its verification evidence.
+Only successful trusted `test.completed`, `build.completed`, or
+`verification.completed` events satisfying the complete `VerificationBinding`
+and canonical proof requirements in section 3.6 extend verification evidence.
 Correction-based Knowledge that references a key with no verification evidence
 fails the canonical retrieval recheck even if an FTS projection still contains
 it.
@@ -972,7 +1126,7 @@ Playbook identity, evidence, approval, or active version.
 interface FeedbackEvent {
   schemaVersion: 1;
   feedbackId: string;
-  targetType: "knowledge" | "playbook" | "episode" | "process_claim";
+  targetType: "branch_context" | "knowledge" | "playbook" | "episode" | "process_claim";
   targetId: string;
   kind:
     | "confirm"
@@ -994,6 +1148,7 @@ interface FeedbackEvent {
     | "analyzer"
     | "process_verifier";
   evidenceRef: string;
+  resolvesEvidenceIds?: string[];
   scopeChange?: {
     scope: "personal" | "workflow" | "repository" | "branch";
     scopeId?: string;
@@ -1003,7 +1158,8 @@ interface FeedbackEvent {
 }
 ```
 
-Feedback is append-only. Current state is rebuilt from events.
+Feedback is append-only. Current state is rebuilt from events with event-time
+ordering; resolution IDs are not blanket permission to ignore future evidence.
 
 ### 4.10 ProcessClaim
 
@@ -1038,13 +1194,18 @@ interface ContextUseRecord {
   requestId: string;
   episodeId?: string;
   sessionId: string;
+  repoId?: string;
+  branch?: string;
+  codeVersion?: string;
   candidateKnowledgeIds: string[];
   returnedKnowledgeIds: string[];
   appliedKnowledgeIds: string[];
   renderedTokens: number;
   latencyMs: number;
   feedback?: "helpful" | "ignored" | "irrelevant" | "wrong" | "stale";
+  retrievalStatus?: "provided" | "no_match" | "disabled" | "muted" | "degraded";
   createdAt: string;
+  updatedAt?: string;
 }
 
 interface CorrectionOpportunity {
@@ -1061,9 +1222,13 @@ interface CorrectionOpportunity {
 }
 ```
 
-These records support Retrieval Precision, Wrong Injection, repeated Context
-tokens, RCR, and TTV without inferring the metric denominator after seeing the
-result.
+These records preserve exposure, explicit adoption reports, feedback, identity,
+and retrieval status without deriving applicability after seeing the result.
+`appliedKnowledgeIds` requires explicit user-reported application; returning an
+item or marking it helpful does not populate adoption automatically. The ID
+arrays contain kind-qualified Knowledge and Branch Context references.
+Optional identity/status fields remain absent when unknown. The records alone
+cannot establish TTV, final task success, causal benefit, or zero safety harm.
 
 ### 4.12 Evaluation contracts
 
@@ -1130,31 +1295,37 @@ specification.
 
 ## 5. Storage architecture
 
-Suggested local layout:
+Implemented Windows layout (default root; CLI supports `--data-root`):
 
 ```text
-%USERPROFILE%\.provenloop\
-  config.json
-  queue/
-  state/
-  provenloop.db
-  projections/
-    fts/
-    backends/
-  contexts/
-  artifacts/
-    knowledge/
-    playbooks/
-    agent-packages/
-  evaluations/
-  logs/
+%LOCALAPPDATA%\ProvenLoop\
+  .provenloop-root.json
+  data\
+    provenloop.db
+    provenloop.db.deletion.key
+    backups\
+    adapter-state.json
+    worker-heartbeat.json
+    projection-dirty.json
+    internal-sessions\
+  queue\
+  backends\
+    knowledge.db
+  integration\
+  artifacts\
+  evaluation\
+    m0-daily\
+    observations\
+  logs\
+  temp\
 ```
 
 Storage boundaries:
 
-- SQLite domain tables are canonical for raw events, relations, Episodes,
-  Outcome links, Knowledge lifecycle, Playbook lifecycle, process claims,
-  feedback, deletion state, queue state, metrics, and evaluation records.
+- SQLite domain tables are canonical for captured events, relations, Episodes,
+  Knowledge lifecycle, process claims, feedback, and deletion state. The
+  file-backed queue owns delivery state; SQLite records committed processing.
+  Outcome/Playbook lifecycle consumers remain milestone-gated.
 - Immutable, content-addressed Markdown may be the canonical body of an
   approved user-reviewable Knowledge or Playbook artifact. SQLite remains
   canonical for its scope, provenance, lifecycle, active pointer, and deletion
@@ -1174,20 +1345,30 @@ Normal correction, dispute, revocation, and supersession are append-only.
 User-initiated Forget, Delete by Source/Session/Episode, and Purge use a
 separate persistent deletion workflow:
 
-1. record a deletion operation and block new dependent work;
-2. locate raw payloads, domain rows, artifacts, projections, caches,
-   evaluation samples, queue items, and content-bearing logs by source;
-3. physically delete the requested content and recompute dependent Knowledge
-   and Playbook state;
+1. record a deletion operation and block dependent canonical/queue work;
+2. locate in-scope canonical payloads, dependent rows and enrichment, queue
+   items, and projected Knowledge by source identity;
+3. physically delete the selected content and recompute or deactivate
+   dependent Knowledge;
 4. rebuild or invalidate search projections;
 5. run a deterministic deletion Gate proving the content is no longer
    retrievable;
-6. retain only the minimal non-identifying tombstone allowed by the product
-   deletion contract.
+6. retain content-free tombstones with keyed target/blocked-identity digests
+   needed to reject replay; they are local correlation metadata, not a promise
+   of complete anonymity;
+7. invalidate local observation projections under the observation lease before
+   reporting CLI success.
 
-Purge removes the database, artifacts, projections, queue, cache, evaluations,
-logs, and tombstones. Immutable hashes never justify retaining deleted source
-content or a reversible source reference.
+This Gate covers the managed canonical/queue/projection path, not an exhaustive
+scan of every file a user has copied. Recovery backups are not rewritten by
+targeted deletion; restore rejects backups missing the installed tombstones.
+Independent exports, copied backups, Copilot Session files, and unrelated logs
+must be managed separately. Future artifact consumers must add their deletion
+propagation before being enabled.
+
+Purge removes the ownership-verified data root, including its managed backups,
+artifacts, queue, evaluations, logs, and tombstones, only after active Extensions
+confirm shutdown. It does not delete independent copies outside that root.
 
 ## 6. Knowledge backend boundary
 
@@ -1241,17 +1422,43 @@ Records deterministic actions such as helpful, irrelevant, wrong, stale,
 confirm, revoke, mute for this session, and change scope. Natural language may
 invoke these actions, but it is not the only control surface.
 
-The M1 implementation exposes all three tools over stdio JSON-RPC. Context
+The M1 implementation exposes all three tools over stdio JSON-RPC.
+MCP initialization `instructions` and the bundled plugin skill request one
+task-relevant Context call before substantive work; they do not guarantee that
+the host follows that instruction.
+
+Context
 returns at most three items, clamps caller budgets to a 1,200-token rendered
 ceiling, serializes requests per Session to prevent duplicate injection, and
 uses deadline-bound SQLite read workers so timeout cannot be hidden by a
 synchronous database call. Branch-scoped Knowledge uses a composite repository
 and branch scope identity; matching a branch name alone is never sufficient.
 The MCP model-facing schema does not accept repository paths, Session IDs, or
-workflow scope IDs. The host binds those identities from the MCP process and
-adapter runtime before invoking retrieval. Scope feedback may select the Scope
+workflow scope IDs. The host refreshes a trusted, short-lived live Session and
+workspace snapshot rather than relying on startup cwd or model claims.
+Unknown, stale, or ambiguous identity fails closed for affected retrieval;
+`known_outside_repo` is distinct from `unknown`. Scope feedback may select the Scope
 kind, but non-personal Scope IDs are also derived by the host and cannot be
 provided by the model.
+
+Trusted-context publication can continue with retrieval enabled and capture
+disabled without writing capture content. Snapshot and repository observations
+expire independently; a heartbeat does not make old Git facts fresh. Reader
+probe contention returns unavailable context rather than trusting a stale
+producer. See the capture design for the installed freshness and size bounds.
+
+Every persistent MCP feedback proposal requires the real user's exact
+`confirm PL-<code>` (or `确认 PL-<code>`) message, captured through the trusted
+Session. Approval lasts at most five minutes and is bound to the action,
+target kind/ID, request, scope, reason, resolution IDs, adoption flag, Session,
+and workspace version. The unchanged retry is idempotent; changed parameters
+require approval of the new proposal. The model cannot supply its own approval
+evidence. User confirmation establishes `user_confirmed`, not external proof.
+Non-approval or malformed real-user input invalidates prior approval and is not
+retained as prompt content in the trusted snapshot; Agent/autopilot/subagent
+messages cannot authorize feedback.
+Branch Context supports helpful, irrelevant, wrong, and stale feedback only;
+it records observations without creating or upgrading a Knowledge Card.
 Feedback events and their Knowledge state transitions commit atomically, and
 source or Session deletion removes dependent feedback and Context-use records.
 If deleting the originating Session removes a state-changing feedback event,
@@ -1274,6 +1481,11 @@ provenloop doctor
 provenloop enable [capability]
 provenloop disable [capability]
 provenloop remember --content <text> --when <condition> --scope <scope>
+provenloop knowledge list [--scope <scope>] [--state <state>]
+provenloop knowledge show <knowledge-id> [--scope <scope>]
+provenloop knowledge confirm <knowledge-id> --expect <digest> --confirm [--resolve <id1,id2>]
+provenloop knowledge replace <knowledge-id> --content <text> --expect <digest> --confirm [--resolve <id1,id2>]
+provenloop knowledge revoke <knowledge-id> --expect <digest> --confirm
 provenloop correct <knowledge-id> [--reason <text>]
 provenloop mute <knowledge-id> --session <session-id>
 provenloop worker run [--batch-size <count>]
@@ -1281,6 +1493,8 @@ provenloop forget <knowledge-or-playbook>
 provenloop delete --source <source>
 provenloop delete --session <session>
 provenloop delete --episode <episode>
+provenloop observations show [--date YYYY-MM-DD] [--session <id>]
+provenloop observations export [--date YYYY-MM-DD] [--session <id>]
 provenloop uninstall
 provenloop purge
 ```
@@ -1293,6 +1507,17 @@ hard-deletes the Knowledge body, feedback, usage records, mute projections, and
 search projection, then archives Knowledge that superseded or conflicted with
 the forgotten item. Purge is a dedicated alias for the guarded full uninstall
 and removes the owned local data root.
+Knowledge review/mutation and observation commands are included in 0.8.
+`knowledge show` supplies the latest `expectedDigest`; each mutation checks it again and
+requires `--confirm`. Revoke preserves review history, unlike Forget. Workflow
+review requires the matching live SDK workflow/workspace; `--workflow` alone
+is not authority.
+The CLI uses the same trusted registry resolver as MCP, with the host's
+`SESSION_ID` locator. It requires `--workflow` to match the trusted
+`workflowScopeId`, `--cwd` to match the live workspace, and a known repository
+or known-outside-repository state. A standalone call without an active trusted
+producer cannot authorize workflow scope; setting a locator is not itself proof.
+No new persisted workflow configuration or environment key is introduced.
 
 ## 8. Technology choice
 
@@ -1386,21 +1611,23 @@ identifiers.
 
 The database may grow with years of work. Runtime context must not.
 
-Scaling mechanisms:
+Implemented runtime bounds:
 
 - stable topic keys merge repeated evidence;
-- episode compaction keeps relationships and conclusions;
-- raw-event retention is configurable;
-- candidates expire when never confirmed;
-- approved knowledge is periodically consolidated;
 - retrieval is Top-k with a rendered token ceiling;
 - same-session deduplication;
 - progressive disclosure through explanation calls;
 - stale and unused guidance loses rank.
 
+Episode compaction, configurable raw-event retention, automatic candidate
+cleanup, and periodic Knowledge consolidation are future policies, not default
+storage guarantees. Projection expiry suppresses retrieval; it is not physical
+deletion. Acknowledged queue cleanup is separate from canonical raw retention.
+
 ## 12. Observability
 
-Track:
+The evaluation design tracks the following where evidence is available; M3-M5
+metrics remain future requirements, not automatically populated telemetry:
 
 - capture delivery, added latency, and queue latency;
 - worker backlog and failures;
@@ -1424,13 +1651,30 @@ Track:
 
 The MVP needs CLI diagnostics, not a full dashboard.
 
+Ordinary preview use produces privacy-minimized local observation summaries
+without requiring a daily acceptance start/stop ritual. Explicit acceptance windows
+remain available for reproducible maintainer experiments. A completed daily
+summary is not release approval: paired latency, platform coverage, fault
+injection, and other release qualifications remain maintainer responsibilities.
+Summaries must not contain raw prompts, code, command arguments, or tool
+results, and an observation-only summary must not make a causal benefit claim.
+`observations show` reports UTC windows, code/plugin versions, keyed
+Session/repository digests, coverage, retrieval invocations/no-match/provided
+counts, explicitly reported adoption, feedback, observed corrections,
+verification counts, and available capture-health snapshots. Missing values
+remain unknown; `not_observed` is not `not_invoked`. Task duration and baseline
+assignment are unavailable and task outcome stays unknown.
+`observations export` prints a bounded current-code-version manifest to stdout;
+it does not export raw evidence or confer release approval.
+
 ## 13. Architectural decisions
 
 1. ProvenLoop is a learning layer, not an agent runtime.
 2. One architecture spans M0-M6; later milestones activate compatible
    capabilities rather than replacing the core.
 3. The initial deployment is a modular monolith with a small capture Extension
-   and one shared local host, not a set of local microservices.
+   and shared leased worker/domain packages, not one OS process or a set of
+   local microservices.
 4. Extension callbacks copy; asynchronous writers persist; workers analyze.
 5. Work Episode is the aggregation boundary.
 6. Outcomes and feedback are append-only evidence during normal operation;

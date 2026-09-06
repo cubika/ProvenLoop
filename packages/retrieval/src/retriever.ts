@@ -87,6 +87,7 @@ export class CanonicalKnowledgeRetriever {
       }
       const backendQuery = {
         limit: pageSize,
+        ...(query.match === undefined ? {} : { match: query.match }),
         offset,
         text: query.text,
       };

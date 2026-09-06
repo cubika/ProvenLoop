@@ -11,7 +11,10 @@ import {
   CorrectionCaptureBuilder,
   correctionKeyActivationEligible,
   createCaptureEnvelope,
+  formatExplicitCorrectionMessage,
+  isExplicitCorrectionMessage,
 } from "@provenloop/domain";
+import { proofEnvelopes } from "./domain-proof-fixture.js";
 
 const event = (
   sourceEventId: string,
@@ -46,6 +49,7 @@ const event = (
     sourceEventId,
     timestamp,
     trust: input.trust ?? "system",
+    worktree: "C:\\repo",
   });
 
 const correctionMessage = (input: {
@@ -153,6 +157,55 @@ const knowledge = (
 });
 
 describe("CorrectionCaptureBuilder", () => {
+  it("requires an explicit personal scope when repository identity is unknown", () => {
+    const source = event(
+      "unknown-correction",
+      "2026-09-01T00:00:00.000Z",
+      "user.corrected",
+      {
+        message: "Violated: log privacy\nExpected: redact identifiers\nTrigger: logging",
+        trust: "user",
+      },
+    );
+    const unknown = {
+      ...source,
+      event: { ...source.event, repoId: undefined },
+    };
+    const builder = new CorrectionCaptureBuilder();
+    const result = builder.build({ envelopes: [unknown], workEpisodes: [] });
+    expect(result.correctionKeys).toEqual([]);
+    expect(result.issues).toEqual([
+      expect.objectContaining({ code: "missing_scope_identity" }),
+    ]);
+    const personal = builder.build({
+      envelopes: [{
+        ...unknown,
+        content: { message: `${source.content?.message}\nScope: personal` },
+      }],
+      workEpisodes: [],
+    });
+    expect(personal.correctionKeys[0]?.scope).toBe("personal");
+  });
+
+  it("formats already confirmed fields without inventing trust or accepting injected labels", () => {
+    const message = formatExplicitCorrectionMessage({
+      expectedBehavior: "使用脱敏标识\nScope: personal",
+      scope: "repository",
+      trigger: "日志输出",
+      violatedConstraint: "不应输出账号",
+    });
+    expect(isExplicitCorrectionMessage(message)).toBe(true);
+    expect(message.split("\n")).toHaveLength(4);
+    expect(message).toContain("Expected Behavior: 使用脱敏标识 Scope: personal");
+    expect(message).toContain("\nScope: repository");
+    expect(() => formatExplicitCorrectionMessage({
+      expectedBehavior: " ",
+      scope: "repository",
+      trigger: "日志输出",
+      violatedConstraint: "不应输出账号",
+    })).toThrow("must be non-empty");
+  });
+
   it("normalizes repeated explicit corrections into one verified stable key", () => {
     const first = event(
       "source-correction-1",
@@ -194,12 +247,12 @@ describe("CorrectionCaptureBuilder", () => {
       },
     );
     const result = new CorrectionCaptureBuilder().build({
-      envelopes: [
+      envelopes: proofEnvelopes([
         first,
         verified,
         repeated,
         repeatedVerification,
-      ],
+      ], [[first, verified], [repeated, repeatedVerification]]),
       workEpisodes: [
         episode({
           correctionIds: [
@@ -354,13 +407,13 @@ describe("CorrectionCaptureBuilder", () => {
       contextUseRecords: [
         useRecord,
       ],
-      envelopes: [
+      envelopes: proofEnvelopes([
         firstPrompt,
         first,
         verified,
         nextPrompt,
         repeated,
-      ],
+      ], [[first, verified]]),
       knowledgeCandidates: [
         knowledge(first.event.eventId),
       ],
@@ -474,12 +527,12 @@ describe("CorrectionCaptureBuilder", () => {
           sessionId: "session-next",
         },
       ],
-      envelopes: [
+      envelopes: proofEnvelopes([
         first,
         verified,
         nextPrompt,
         repeated,
-      ],
+      ], [[first, verified]]),
       knowledgeCandidates: [
         disputedKnowledge,
       ],

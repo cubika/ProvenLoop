@@ -27,16 +27,23 @@ export interface StartCopilotExtensionCaptureOptions {
   readonly buffer: BoundedCaptureBufferOptions;
   readonly copyLimits: CopilotCallbackCopyLimits;
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly enabled?: boolean;
   readonly internalSessionIds?: ReadonlySet<string>;
   readonly joinSession: (
     options: {
       readonly onEvent: (event: CopilotSessionEvent) => void;
+      readonly refreshWorkspace: () => void;
     },
   ) => Promise<CopilotSessionLike>;
   readonly onDiagnostic?: (message: string) => void;
   readonly onStopped?: () => Promise<void> | void;
+  readonly onWorkspaceChanged?: (
+    workspace: CopilotWorkspaceSnapshot,
+    source: "session" | "refresh",
+  ) => void;
+  readonly onWorkspaceRefreshStarted?: () => void;
   readonly queue: CaptureQueueSink;
-  readonly refreshWorkspace?: () => Promise<CopilotWorkspaceSnapshot>;
+  readonly refreshWorkspace?: (workspace: CopilotWorkspaceSnapshot) => Promise<CopilotWorkspaceSnapshot>;
   readonly retryDelayMs: number;
   readonly sessionId: string;
   readonly shutdownDeadlineMs: number;
@@ -78,6 +85,7 @@ export const startCopilotExtensionCapture = async (
     retryDelayMs: options.retryDelayMs,
   });
   const runtime = new CopilotExtensionCapture({
+    ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
     internalSession,
     mapper,
     ...(options.onDiagnostic === undefined
@@ -90,6 +98,10 @@ export const startCopilotExtensionCapture = async (
       : {
           onStopped: options.onStopped,
         }),
+    ...(options.onWorkspaceChanged === undefined ? {} : { onWorkspaceChanged: options.onWorkspaceChanged }),
+    ...(options.onWorkspaceRefreshStarted === undefined ? {} : {
+      onWorkspaceRefreshStarted: options.onWorkspaceRefreshStarted,
+    }),
     ...(options.refreshWorkspace === undefined
       ? {}
       : {
@@ -139,6 +151,7 @@ export const startCopilotExtensionCapture = async (
       onEvent: (event) => {
         runtime.receive(event);
       },
+      refreshWorkspace: () => runtime.refreshWorkspace(),
     });
   } catch (error) {
     await runtime.shutdown();

@@ -1,7 +1,12 @@
 # Copilot 异步事件采集方案
 
-**状态：** Proposed，等待 F0-001 实测通过
-**更新：** 2026-08-29
+**状态：** Extension 可行性已通过；完整 M0 验收仍开放
+**更新：** 2026-09-06
+
+`0.1.0-alpha.0.8` 是 Windows Design Partner Preview 证据候选版，包含本文描述的
+原生证明桥、采集质量、有界当前 Session 对账和可信实时 Session 控制。
+历史 Windows 11 最小 Extension probe 不等于完整生产链已通过真实宿主验收；
+新版本工件须单独验证，`0.1.0-alpha.1` 质量发布目标仍未获批准。
 
 ## 1. 要解决的问题
 
@@ -28,7 +33,7 @@ Copilot CLI Session
         |
         | session events
         v
-ProvenLoop Extension
+ProvenLoop Extension mapper
         |
         | bounded memory buffer
         v
@@ -39,7 +44,7 @@ Async queue writer
 Persistent event queue
         |
         v
-Shared host and worker
+Leased shared worker -> second redaction -> canonical SQLite
 ```
 
 正常采集路径不安装 command 或 HTTP lifecycle Hook。Hooks 以后只用于确实
@@ -74,7 +79,8 @@ SDK programmatic Hook 仍是 request/response 调用，Copilot 会等待 callbac
 - 重复投递不产生重复事实；
 - Extension 中断后可以发现缺口并恢复已落盘事件；
 - 内部 ProvenLoop Session 不进入学习队列；
-- 未验证的 Copilot 版本显式停用采集，不猜测兼容性。
+- 不兼容的事件/协议版本显式拒绝；仅缺少 ProvenLoop 实测记录但能力兼容的新版本
+  标记为 unverified，不把它与 incompatible 混为一谈。
 
 ## 4. 明确不做什么
 
@@ -87,7 +93,8 @@ F0 和 M0 不做以下工作：
 - 不为采集单独启动多个常驻服务；
 - 不在 Extension callback 中调用模型、GitHub 或其他外部网络服务。
 
-M0 只需要一个 Extension 进程、已有的原子文件队列和一个共享 Host。
+M0 使用一个发布包内的 Extension、MCP 和共享 Worker 模块。它们可以位于不同 OS
+进程，租约协调共享状态；不是一个进程的承诺，也不是多个独立部署的微服务。
 
 ## 5. 组件职责
 
@@ -108,21 +115,39 @@ callback 禁止执行同步文件 I/O、网络请求、Git 查询、数据库操
 Repository、Branch 和 HEAD 使用异步维护的 workspace snapshot。Extension 在
 Session 启动时建立快照，并在可能改变 Git 状态的工具完成后刷新。callback
 只附加当前快照，不现场执行 Git 命令。快照不可用时写入 `unknown`，不能用
-稍后观察到的状态回填。
+稍后观察到的状态回填。`known_repo`、`known_outside_repo`、`unknown` 必须区分；
+正在刷新或已过期的工作区不能为新事件签发旧 Repository 的证明。
 
 ### 5.2 内存缓冲区
 
 每个 Extension 进程维护一个有界 FIFO 缓冲区，同时限制事件数量和总字节数。
-具体上限由 F0 压测确定，不在设计阶段猜一个大数。
+源码提供显式的数量、字节及字段上限；默认配置是否满足真实负载仍需 F0 压测证明。
+
+0.8 安装入口使用以下固定默认值；底层 constructor 可配置，但它们不是新增 CLI
+参数，也不是已经通过全平台性能验收的指标：
+
+| 项目 | 当前默认值 |
+|---|---:|
+| callback 字符串复制 | 32,768 字符 |
+| 内存事件缓冲 | 1 MiB / 1,000 条 |
+| 独立 gap 缓冲 | 128 KiB / 64 个上下文 |
+| writer 重试间隔 | 1,000 ms |
+| 关闭 drain deadline | 5,000 ms |
 
 缓冲区满时不能静默丢弃：
 
 1. 停止接收新的大字段，只保留事件元数据和内容摘要；
 2. 累计缺失范围和事件数量；
 3. writer 恢复后写入一条 `capture_gap`；
-4. Reconciler 根据缺口范围尝试补齐。
+4. Reconciler 在受支持的 Session 文件仍保留事件时尝试补齐。
+
+`captureQuality` 记录被省略或截断的字段及原长度。省略字段不等于完整空值，
+metadata-only 事件也不能当成完整验证证据。缺口聚合本身同样有界；混合工作区缺口
+必须标记 `contextMixed`，不能错误归给第一个 Repository。
 
 这不是正常流控方式。任何 `capture_gap` 都会进入健康状态和 M0 Gate。
+这是有界 best-effort 捕获，不是无损原始归档。持久入队前崩溃或 drain deadline
+耗尽，仍可能丢失内存事件和尚未持久化的 gap；无法从缺少 gap 推断不存在丢失。
 
 ### 5.3 异步 queue writer
 
@@ -137,10 +162,17 @@ writer 在 Extension 进程内运行，但不占用 callback 调用栈。它负�
 - 更新本进程的持久化水位。
 
 每条事件使用独立文件和唯一名称。多个 Copilot Session 可以并发写队列，
-不需要共享文件锁。
+通过原子身份索引及短期操作协调去重；不能从“每事件独立文件”推导出完全不需要并发控制。
 
 writer 不等待 Worker，也不直接写 canonical SQLite。Worker 停止时，队列继续
 积压。
+持久队列没有总字节/条数配额；1 MiB / 1,000 条限制仅属于内存缓冲。Worker 的
+10,000 条 queue-depth 阈值是压力信号，不是磁盘容量上限。当前单项读取安全上限为
+2 MiB；默认 worker batch 为 100 条。
+
+Worker 取得租约后会清理超过七天的 acknowledged 队列项及相关状态/来源索引。
+这不是 pending/dead-letter 的过期删除，也不是 canonical Raw Event 保留期。
+这些底层默认值没有对应的新增安装 CLI 参数。
 
 ### 5.4 Shared Host 和 Worker
 
@@ -158,17 +190,43 @@ Extension 只负责安全交付原始事件，不包含领域逻辑。
 
 ### 5.5 Reconciler
 
-Reconciler 是恢复组件，不持续 tail Copilot 文件。它在以下时间运行：
+Reconciler 是恢复组件，不持续 tail 全部 Copilot 历史。当前明确的维护者入口是
+`provenloop acceptance complete`；0.8 安装入口已将可信当前 Session 的有界对账
+接入已有后台 observation 调度，底层 helper 也保留 programmatic export。
+`doctor --repair-capture` 不是已实现的 CLI 命令，Doctor 不应被当成任意历史扫描入口。
 
-- Host 启动；
-- Extension 报告 `capture_gap`；
-- Session 正常关闭后；
-- 用户执行 `provenloop doctor --repair-capture`。
+`runInstalledCopilotExtension` 从实际加入的 SDK Session 读取 `sessionId` 和公开
+`workspacePath`。只有 `SESSION_ID` 匹配、路径为绝对目录且 basename 等于 Session ID
+时，才以其 dirname 作为可信 `sessionStateRoot`，并以加入时的观察时间作为
+`minimumTimestamp`。SDK 路径缺失或不匹配时记录诊断并跳过自动对账，不猜路径、不枚举历史。
 
-Host 启动和 `doctor` 不能只依赖 `capture_gap`。Extension 可能在 gap
-落盘前崩溃。Reconciler 会枚举最近修改过的受支持 Session，将其 source event
-ID 与 pending queue 和 canonical capture watermark 对比，再扫描缺失范围。
-已有 gap 时可以缩小扫描范围。
+后台循环先运行 worker/admission；仅在 worker run 完成后，每 30 秒执行到期的当前
+Session 对账，再收集 observations。新增 queued/enriched 数据或预算耗尽会安排两秒
+catch-up；空闲或待修复但无进展时保持 30 秒间隔。helper 仍检查
+plugin/capture/worker/internal 状态、worker lease 及路径/链接边界。
+实际 runtime `onStopped` 或 `SIGTERM` 会停止循环，不引入前台 callback I/O 或新服务。
+
+built integration fixture 使用真实 Extension 入口、SDK/command-runner fixture 和
+真实 queue/worker/store，覆盖自动补齐省略参数、保留原始 envelope、排除观察开始前记录
+及只加入一次 Session。这是回归覆盖，不替代 0.8 工件验证、原生 SDK 宿主现场观察或受控收益证明。
+
+对账不能只依赖 `capture_gap`：Extension 可能在 gap 落盘前崩溃。以可信 Session 根、
+版本和时间窗口限定输入，并设置文件/行/事件/字节/时间预算及可恢复游标。预算耗尽
+必须返回未完成状态，不能显示“全部恢复”。只按当前批次的 source identity 查询 queue
+和 canonical completeness，避免为少量新事件扫描整个 canonical 历史。
+
+当前 Session helper 每次默认限制为 8 MiB / 500 条事件 / 1,500 ms，源行上限
+1 MiB，只处理完整行；没有换行符的尾部等待后续补齐。源路径限于可信 SDK 根下当前
+Session 的常规 `events.jsonl`，拒绝链接/路径逃逸，不枚举兄弟或历史 Session。
+观察下界会持久化，且不能早于当前 capability-state revision 或调用方指定的更晚下界；
+旧记录仅可用于定位因果映射，不伪装为新观察。
+
+续读游标是进程内不透明状态，不是持久化 seek checkpoint。待补全缓存最多 500 项 /
+8 MiB，并限制重试；超量会报告并留待后续扫描，不保证所有超大字段都能补齐。
+
+迟到的完整 start/complete 证据可以触发受控补全：保留原始 envelope、首次
+`captureQuality` 和来源摘要，另存 enrichment。缺失父链、来源冲突、工作区变化或
+不完整命令仍不能形成 `VerificationBinding`；删除 Tombstone 不能被恢复路径绕过。
 
 它按受支持的 Copilot 版本读取 `events.jsonl`。内部文件格式没有稳定兼容承诺，
 因此每个解析器必须声明适用版本，未知格式进入显式错误。
@@ -192,8 +250,8 @@ OTel 是可选的元数据对账通道。默认只允许：
 M0 不默认启用 OTel。它只作为诊断或 Extension 不可用时的候选 fallback，
 并且必须先通过独立的性能和隐私测试。
 
-ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。用户要求严格
-本地模式时，`doctor` 检查该设置并给出明确提示，修改仍需用户确认。
+ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。严格本地模式下的专项
+检查属于待验证运维要求，不把普通 `doctor` 描述为已审计 Copilot 所有遥测配置。
 
 ## 6. 事件映射
 
@@ -203,6 +261,7 @@ ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。用户�
 | `user.message` | `prompt.submitted` 或 `user.corrected` | event ID、session、timestamp、content | 完整显式纠正标记映射为 `user.corrected`；否则为普通 Prompt |
 | `tool.execution_start` | `tool.started` | call ID、tool name、arguments | 表示调用，不表示完成 |
 | `tool.execution_complete` | `tool.completed` 或 `tool.failed` | call ID、success、result 或 error | 与 start 分开保存 |
+| `assistant.turn_start` | `agent.turn_started` | event ID、turnId、parent | turnId 映射为 operationId；状态 running、model trust；保留可用 model，不表示验证成功 |
 | `assistant.message` | `agent.message` | message ID、content、parent | 保存有界回复内容 |
 | `assistant.turn_end` | `agent.turn_completed` | turn ID | 只表示 turn 结束 |
 | `session.idle` | `session.idle` | session、timestamp | ephemeral，不作为恢复依据 |
@@ -210,6 +269,21 @@ ProvenLoop 不会静默修改 Copilot 自己的 `remoteExport` 设置。用户�
 | `session.shutdown` | `session.ended` | session、reason、timestamp | best effort，不作为唯一关闭信号 |
 | `subagent.started` | `subagent.started` | parent、agent identity | M0 可采集但暂不消费 |
 | `subagent.completed` 或 `subagent.failed` | 对应 subagent 事件 | parent、status、error | 保留过程证据 |
+
+原生 SDK 语义桥可在原始工具完成事件之外生成 `test.completed`、`build.completed`
+或 `verification.completed`，但须满足：
+
+- 命令来自已捕获的可信内建 shell start，目标和 cwd 完整且属于同一已知 worktree；
+- 支持的 structured terminal / `shell_exit` 结果提供明确 exitCode；
+- start 与 complete 的调用、Session、Repository、Branch/HEAD 状态一致；
+- async/detached、未知退出码、冲突状态、MCP 同名工具或被截断命令不能充当成功验证；
+- 自动纠正证明还要求 `VerificationBinding` 指向纠正和操作，完整有序父链回到该用户纠正。
+
+SDK 的 `success: true` 可能只表示工具协议完成，不等于测试 exitCode 为零。
+turn 结束不等于任务成功；HEAD 快照变化不等于当前任务创建了 Commit。
+新增 turn/parent 变体须按实际支持事件保留，不能为了补链合成已发生的执行。
+原生事件 fixture 能验证 mapper，不等于已在真实已安装 Copilot 上观察到全部变体。
+不认识的、看似 canonical 的 SDK 事件名仍走 unsupported 路径，不能提升为可信系统事实。
 
 Adapter 必须保留 Copilot source event ID。Deduplication key 优先使用：
 
@@ -281,6 +355,21 @@ ProvenLoop 的后台推理在启动 Copilot 前生成明确 Session ID，并登�
 
 第二遍脱敏在 Worker 写 canonical SQLite 前执行。两个边界使用同一组规则版本，
 但各自记录 redaction result 和规则版本。
+两遍均覆盖 `captureQuality`、结构化 evidence、目标路径、工作目录和内容，不仅处理
+正文字符串。脱敏后的证据必须仍保留“哪些字段不可用”的事实，不能借补全还原 Secret。
+质量记录和待补全缓存合并后的字段数同样有界；饱和标记保留“部分细节已被丢弃”的事实。
+
+### 9.1 可信实时 Context 与内容采集分离
+
+retrieval 开启、capture 关闭时，独立可信 Context publisher 仍可维护 SDK Session 身份，
+但不因此写入 capture 队列。Snapshot 最多 16 KiB，每 10 秒 heartbeat，最大年龄 60 秒；
+Repository 观察本身也最多 60 秒，heartbeat 不能刷新旧 Git 事实。Git 查询异步执行，
+在真实用户消息、相关 SDK/tool 变化和约 30 秒刷新周期中更新；等待期间隐藏旧 repo/branch/HEAD。
+读取者会检查 producer/Session 租约并串行化短期存活探测；竞争时返回不可用，而不是返回旧信任。
+
+Snapshot 仅保留五分钟内精确的 `confirm PL-<12位小写十六进制>` 或对应中文确认。
+其他真实用户消息、无效/超大消息及工作区身份变化会使旧批准失效；Agent、autopilot
+或 subagent 消息不能授权。非批准 Prompt 不保存在可信 Context snapshot 中。
 
 ## 10. 交付语义
 
@@ -303,7 +392,7 @@ ProvenLoop 的后台推理在启动 Copilot 前生成明确 Session ID，并登�
 
 1. 从 marketplace 安装插件；
 2. 静态检查插件清单、CLI 版本和 bundled SDK protocol；
-3. 在第一个真实 Session 中完成 Extension runtime probe；
+3. 在后续第一个真实 Session 中验证 Extension runtime，而非安装时宣称已完成真实采集；
 4. 创建数据目录和权限；
 5. 注册 MCP 和 Extension；
 6. 不修改用户现有登录凭据。
@@ -333,7 +422,7 @@ Copilot。
 
 `session.shutdown` 可能在 Extension 被终止前不可见。Extension 同时处理
 `SIGTERM`，并在 CLI 提供的退出宽限期内尝试清空缓冲区。无论哪条信号先到，
-drain 都有短 deadline。未完成的部分由 Reconciler 补账。
+drain 都有短 deadline。未完成的部分由 Reconciler 在存在受支持源记录时尝试补账；缺少源记录或超预算必须报告限制。
 
 关闭路径不能无限等待磁盘、Worker 或模型。
 
@@ -350,7 +439,7 @@ drain 都有短 deadline。未完成的部分由 Reconciler 补账。
 | malformed event | dead letter | 不受影响 |
 | OTel 不可用 | 关闭 OTel 对账 | Extension 继续 |
 | Session 文件格式未知 | Reconciler 跳过并报告版本错误 | 不受影响 |
-| Extension 进程崩溃 | 下次启动或关闭时对账 | 当前 Session 继续 |
+| Extension 进程崩溃 | 后续受限当前 Session 对账或显式 acceptance 恢复；不保证补齐新观察下界之前的历史 | 当前 Session 继续 |
 
 所有失败都必须有明确状态。禁止返回空成功、伪造 completion 或静默丢弃。
 
@@ -372,8 +461,9 @@ drain 都有短 deadline。未完成的部分由 Reconciler 补账。
 启动时缺少必需事件或字段，采集进入 `incompatible`。新增未知事件可以作为
 unknown envelope 保存，不能自动映射为已知领域事件。
 
-首个候选版本仍是 Copilot CLI `1.0.82-0`。Extension spike 通过前，这个版本
-只表示 Hook、MCP 和本地运行时已验证，不表示异步采集已支持。
+历史 Extension spike 在 Copilot CLI `1.0.82-0` 上通过可行性验证。
+安装兼容基线为 `>=1.0.71`，已有 `1.0.82-0` 和 `1.0.83-4` 的兼容记录；
+这不代表本轮新证明桥已在所有版本及全部事件路径上通过验收。
 
 ## 14. 实施顺序
 
@@ -394,7 +484,7 @@ unknown envelope 保存，不能自动映射为已知领域事件。
 - 固定 Extension 与 Worker 的版本边界；
 - 添加事件 fixture 和 unknown-version 路径。
 
-完成 A 且 F0-001 解除后，Batch 1 可以继续。
+最小 Extension spike 通过即可继续 Batch 1；完整 F0-001 仍阻塞 M0 质量验收。
 
 ### C. Batch 3 durable capture
 
@@ -410,12 +500,12 @@ unknown envelope 保存，不能自动映射为已知领域事件。
 - 增加 Session 文件 Reconciler；
 - 增加 capability matrix；
 - 评估 metadata-only OTel；
-- 增加 `doctor` 状态和修复命令；
+- 完善 Doctor 状态、显式 acceptance 对账和有界当前 Session 恢复；
 - 冻结第一个受支持的 Extension 版本范围。
 
 ## 15. 验收和 Go/No-Go
 
-Extension 方案满足以下条件才解除 F0-001：
+以下为尚需完整证据支持的 M0 采集验收目标，不是 0.8 工件测试结果声明：
 
 - Windows 10 和 11 各采集至少 500 个代表性事件；
 - Prompt、工具成功、工具失败、取消、resume、shutdown 和 subagent 均有样本；
