@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.10",
+    [string]$Version = "0.1.0-alpha.0.11",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -102,7 +102,7 @@ if ($null -eq $nodeCommand) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($null -eq $winget) {
         throw (
-            "Node.js 22 is required. Install Node.js >=22.16 and <23, " +
+            "Node.js >=22.16.0 is required. Install a compatible Node.js runtime, " +
             "then run this installer again."
         )
     }
@@ -135,19 +135,25 @@ if ($null -eq $nodeCommand) {
 $nodeText = (& $nodeCommand.Source --version | Out-String).Trim()
 Require-Success "Node.js version check"
 $nodeVersion = [Version]($nodeText.TrimStart("v"))
-if (
-    $nodeVersion.Major -ne 22 -or
-    $nodeVersion -lt [Version]"22.16.0"
-) {
+if ($nodeVersion -lt [Version]"22.16.0") {
     throw (
-        "ProvenLoop requires Node.js >=22.16 and <23. " +
-        "Detected $nodeText. Install Node.js 22 and rerun the installer."
+        "ProvenLoop requires Node.js >=22.16.0. " +
+        "Detected $nodeText. Upgrade Node.js and rerun the installer."
     )
 }
 & $nodeCommand.Source -e (
-    "const { backup, DatabaseSync } = require('node:sqlite');" +
+    "const { backup, DatabaseSync } = (() => {" +
+    "const emitWarning = process.emitWarning;" +
+    "process.emitWarning = (warning, ...args) => {" +
+    "if (warning !== 'SQLite is an experimental feature and might change at any time' || " +
+    "args[0] !== 'ExperimentalWarning') Reflect.apply(emitWarning, process, [warning, ...args]);" +
+    "};" +
+    "try { return require('node:sqlite'); } " +
+    "finally { process.emitWarning = emitWarning; }" +
+    "})();" +
     "const db = new DatabaseSync(':memory:', { timeout: 1 });" +
-    "if (typeof backup !== 'function') process.exit(1);" +
+    "if (typeof backup !== 'function' || " +
+    "db.prepare('PRAGMA busy_timeout').get().timeout !== 1) process.exit(1);" +
     "db.close();"
 ) 2>$null
 if ($LASTEXITCODE -ne 0) {
@@ -166,9 +172,9 @@ if ($null -eq $npmCommand) {
 $npmText = (& $npmCommand.Source --version | Out-String).Trim()
 Require-Success "npm version check"
 $npmVersion = [Version]$npmText
-if ($npmVersion.Major -lt 11 -or $npmVersion.Major -ge 12) {
+if ($npmVersion.Major -lt 11) {
     throw (
-        "ProvenLoop requires npm >=11 and <12. " +
+        "ProvenLoop requires npm >=11. " +
         "Detected npm $npmText."
     )
 }

@@ -1,13 +1,13 @@
 # ProvenLoop 产品验收与质量评估方案
 
-**当前边界（2026-09-06）：** `0.1.0-alpha.0.10` 是 Windows Design Partner Preview
+**当前边界（2026-09-07）：** `0.1.0-alpha.0.11` 是 Windows Design Partner Preview
 证据候选版，包含观察导出、严格原生证明链、有界当前 Session 对账和现场效果门禁修订。
 合成回归、真实观察、受控收益比较和发布批准是四类不同证据，不能互相替代。
 新版本工件须单独验证；M0/MVP 质量发布仍为 No-Go，`0.1.0-alpha.1` 尚未获批准。
 
 **状态：** Proposed validation plan  
 **版本：** 1.0  
-**更新日期：** 2026-09-06
+**更新日期：** 2026-09-07
 
 ---
 

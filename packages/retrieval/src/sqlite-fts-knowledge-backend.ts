@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
+import { DatabaseSync, loadNodeSqlite } from "@provenloop/storage-sqlite";
 import { searchableText } from "./search-text.js";
 
 import type {
@@ -22,7 +22,7 @@ const normalizedIds = (ids: readonly string[]): string[] =>
 
 const READ_WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
-const { DatabaseSync } = require("node:sqlite");
+const { DatabaseSync } = (${loadNodeSqlite.toString()})(require);
 
 try {
   const database = new DatabaseSync(workerData.path, {

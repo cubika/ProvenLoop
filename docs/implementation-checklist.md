@@ -1,7 +1,7 @@
 # ProvenLoop Implementation Checklist
 
 **Status:** Active  
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
 **Immediate target:** M0 observation foundation, followed by the M1 + M2
 validated MVP.
@@ -10,7 +10,7 @@ This checklist turns the product design, architecture, roadmap, and validation
 documents into an executable delivery order. Work is complete only when its
 behavior is covered by the evaluation spine; code completion alone is not
 completion. Existing checked items record earlier implementation/fixture
-coverage, not a fresh validation of the `0.1.0-alpha.0.10` artifacts or field
+coverage, not a fresh validation of the `0.1.0-alpha.0.11` artifacts or field
 acceptance. The Windows Design Partner Preview includes the M0-M2 repairs and
 user controls below; new-version acceptance remains unchecked pending retained
 results. `0.1.0-alpha.1` remains an unapproved quality-release target.

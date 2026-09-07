@@ -1,9 +1,9 @@
 # ProvenLoop implementation blockers
 
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
 This list tracks missing **acceptance evidence**, not a claim that the associated
-code is absent. `0.1.0-alpha.0.10` is a Windows Design Partner Preview evidence
+code is absent. `0.1.0-alpha.0.11` is a Windows Design Partner Preview evidence
 candidate. Its capture/storage/feedback repairs require their own retained
 version-bound validation and native-host observations; historical probe results
 do not approve the new path. `0.1.0-alpha.1` remains an unapproved quality-release
@@ -107,7 +107,7 @@ Exit conditions:
 - verify the runtime-switch and database-recovery boundaries separately;
   an older package is not automatically compatible with a newer schema.
 
-## 0.1.0-alpha.0.10 acceptance boundary
+## 0.1.0-alpha.0.11 acceptance boundary
 
 - Retain final lint, typecheck, targeted/full test, build, and packed-artifact
   results for the evaluated source; this documentation does not assert they ran.

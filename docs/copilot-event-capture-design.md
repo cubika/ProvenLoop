@@ -1,9 +1,9 @@
 # Copilot 异步事件采集方案
 
 **状态：** Extension 可行性已通过；完整 M0 验收仍开放
-**更新：** 2026-09-06
+**更新：** 2026-09-07
 
-`0.1.0-alpha.0.10` 是 Windows Design Partner Preview 证据候选版，包含本文描述的
+`0.1.0-alpha.0.11` 是 Windows Design Partner Preview 证据候选版，包含本文描述的
 原生证明桥、采集质量、有界当前 Session 对账和可信实时 Session 控制。
 历史 Windows 11 最小 Extension probe 不等于完整生产链已通过真实宿主验收；
 新版本工件须单独验证，`0.1.0-alpha.1` 质量发布目标仍未获批准。

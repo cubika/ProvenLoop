@@ -2,6 +2,21 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.11] - 2026-09-07
+
+Windows Design Partner Preview compatibility update. Carries forward the 0.10
+capability scope without changing schema 10 or the M0/MVP acceptance boundary.
+
+### Fixed
+
+- Remove artificial Node.js and npm upper bounds from the installer, package
+  engines, and Doctor. Keep Node.js `>=22.16.0`, npm `>=11`, and the SQLite API
+  checks; include Node.js 24 in CI alongside the pinned development baseline.
+- Suppress only SQLite's experimental-feature notice during module loading,
+  including the search Worker and installer probe, without hiding other warnings
+  or database errors. Avoid the Windows PowerShell 5.1 native-warning exception
+  that could otherwise interrupt installation.
+
 ## [0.1.0-alpha.0.10] - 2026-09-06
 
 Windows Design Partner Preview evidence candidate. Carries forward the full

@@ -16,6 +16,7 @@ describe("release version", () => {
     const [
       rootPackage,
       cliPackage,
+      lockfile,
       marketplace,
       plugin,
       extension,
@@ -24,6 +25,7 @@ describe("release version", () => {
     ] = await Promise.all([
       readFile("package.json", "utf8"),
       readFile("packages/cli/package.json", "utf8"),
+      readFile("package-lock.json", "utf8"),
       readFile(".github/plugin/marketplace.json", "utf8"),
       readFile("plugins/provenloop/plugin.json", "utf8"),
       readFile(
@@ -39,16 +41,28 @@ describe("release version", () => {
 
     expect(JSON.parse(rootPackage)).toMatchObject({
       engines: {
-        node: ">=22.16.0 <23",
+        node: ">=22.16.0",
+        npm: ">=11",
       },
       version: PROVENLOOP_VERSION,
     });
     expect(JSON.parse(cliPackage)).toMatchObject({
       engines: {
-        node: ">=22.16.0 <23",
+        node: ">=22.16.0",
+        npm: ">=11",
       },
       version: PROVENLOOP_VERSION,
     });
+    const lockedPackages = JSON.parse(lockfile).packages;
+    for (const name of ["", "packages/cli"]) {
+      expect(lockedPackages[name]).toMatchObject({
+        engines: {
+          node: ">=22.16.0",
+          npm: ">=11",
+        },
+        version: PROVENLOOP_VERSION,
+      });
+    }
     expect(JSON.parse(marketplace)).toMatchObject({
       metadata: {
         version: PROVENLOOP_VERSION,

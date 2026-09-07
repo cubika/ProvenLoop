@@ -1,1 +1,1 @@
-export const PROVENLOOP_VERSION = "0.1.0-alpha.0.10";
+export const PROVENLOOP_VERSION = "0.1.0-alpha.0.11";

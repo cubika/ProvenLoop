@@ -59,11 +59,11 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-06):** `0.1.0-alpha.0.10` is the Windows Design
+**Version boundary (2026-09-07):** `0.1.0-alpha.0.11` is the Windows Design
 Partner Preview evidence candidate. It includes Knowledge review commands,
 automatic local observations, the native SDK proof bridge, trusted live-session
 feedback controls, and bounded current-session reconciliation. See the
-[release notes](docs/releases/0.1.0-alpha.0.10.md) and
+[release notes](docs/releases/0.1.0-alpha.0.11.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -109,7 +109,9 @@ ProvenLoop/
 ## Development
 
 Development was initially verified with Node.js 22.18.0 and npm 11. The declared
-runtime range is Node.js `>=22.16.0 <23` and npm `>=11 <12`.
+runtime range is Node.js `>=22.16.0` and npm `>=11`, without artificial upper
+bounds. The installer also checks the required SQLite APIs. `.nvmrc` and
+`packageManager` pin the reproducible development baseline, not runtime ceilings.
 
 ```powershell
 npm ci
@@ -141,7 +143,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -262,7 +264,7 @@ Enable retrieval with `provenloop enable retrieval` if it is disabled. Open a
 `provenloop_context` before a relevant testing task, then `provenloop_explain`
 for the returned item. Inspect the rule, scope, applicability, and source.
 
-In `0.1.0-alpha.0.10`, inspect and maintain rules explicitly:
+In `0.1.0-alpha.0.11`, inspect and maintain rules explicitly:
 
 ```powershell
 provenloop knowledge list --scope repository
@@ -349,7 +351,7 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.10`, an evidence-collection prerelease, not M0/MVP approval |
+| Preview candidate | `0.1.0-alpha.0.11`, an evidence-collection prerelease, not M0/MVP approval |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
 | M2 implementation | Strictly bound correction proofs, counterevidence-aware lifecycle, user-confirmed rule review, and local observational summaries |

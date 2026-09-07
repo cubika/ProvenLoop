@@ -23,7 +23,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   backup,
   DatabaseSync,
-} from "node:sqlite";
+} from "./node-sqlite.js";
 
 import {
   branchContextSchema,

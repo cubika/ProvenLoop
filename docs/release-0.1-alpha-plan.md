@@ -1,20 +1,20 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.10 evidence candidate; quality-release acceptance remains open
+**Status:** 0.11 evidence candidate; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
-**Evidence candidate:** `0.1.0-alpha.0.10` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.11` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.10 release notes](releases/0.1.0-alpha.0.10.md).
+[0.11 release notes](releases/0.1.0-alpha.0.11.md).
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
-storage/capture repairs are included in the 0.10 candidate scope. Checked
-engineering items below refer to previously recorded work; the versioned 0.10
+storage/capture repairs are included in the 0.11 candidate scope. Checked
+engineering items below refer to previously recorded work; the versioned 0.11
 artifacts require a fresh retained validation and publication record.
 
 ## 1. Goal
@@ -86,7 +86,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
@@ -121,7 +121,8 @@ No installed manifest may reference the source checkout or a developer-specific
 absolute path.
 
 A later Windows release may use Winget or MSI and bundle Node.js. The first
-Alpha may require the pinned Node.js 22 runtime.
+Alpha requires an external Node.js runtime meeting the declared minimum and
+SQLite API requirements, not a single pinned major version.
 
 ## 4. Delivery order
 

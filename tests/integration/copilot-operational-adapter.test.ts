@@ -1573,6 +1573,43 @@ describe("Copilot operational adapter", () => {
     await expect(access(retainedPath)).resolves.toBeUndefined();
   });
 
+  it.each([
+    ["20.20.0", "fail"],
+    ["22.15.99", "fail"],
+    ["22.16.0", "pass"],
+    ["22.18.0", "pass"],
+    ["23.11.0", "pass"],
+    ["24.14.0", "pass"],
+    ["25.0.0", "pass"],
+    ["26.0.0", "pass"],
+  ])("reports Node %s runtime compatibility as %s", async (version, status) => {
+    const root = await createTemporaryDirectory();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: new FakeCommandRunner(),
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+    });
+    const descriptor = Object.getOwnPropertyDescriptor(process.versions, "node");
+    if (descriptor === undefined) {
+      throw new Error("The Node.js version descriptor is unavailable.");
+    }
+    Object.defineProperty(process.versions, "node", { ...descriptor, value: version });
+    try {
+      const health = await adapter.doctor();
+      expect(health.checks).toContainEqual({
+        id: "runtime.node",
+        message: status === "pass"
+          ? `Node ${version} is supported.`
+          : `Node ${version} is below the required >=22.16.0.`,
+        status,
+      });
+    } finally {
+      Object.defineProperty(process.versions, "node", descriptor);
+    }
+  });
+
   it("reports operational health including the synthetic capture path", async () => {
     const root = await createTemporaryDirectory();
     const runner = new FakeCommandRunner();
@@ -1589,6 +1626,10 @@ describe("Copilot operational adapter", () => {
     expect(health.status).toBe("degraded");
     expect(health.checks).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          id: "runtime.node",
+          status: "pass",
+        }),
         expect.objectContaining({
           id: "storage.sqlite",
           status: "pass",

@@ -82,6 +82,9 @@ const requireSuccess = (
       `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
     );
   }
+  if (result.stderr.includes("ExperimentalWarning: SQLite is an experimental feature")) {
+    throw new Error(`${operation} emitted the SQLite experimental notice.`);
+  }
 };
 
 const pathExists = async (path) => {

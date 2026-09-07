@@ -1,21 +1,32 @@
 # ProvenLoop 0.1 Alpha installation
 
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
 ## Supported environment
 
 | Component | Supported version |
 |---|---|
 | Operating system | Windows 10 or Windows 11, x64 |
-| Node.js | `>=22.16.0 <23` |
-| npm | `>=11 <12` |
+| Node.js | `>=22.16.0`, with the required `node:sqlite` APIs |
+| npm | `>=11` |
 | GitHub Copilot CLI | `>=1.0.71` |
-| ProvenLoop | `0.1.0-alpha.0.10` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.11` evidence candidate |
 
-The URL below targets the `0.1.0-alpha.0.10` Windows Design Partner Preview.
+The relaxed Node.js/npm ranges apply starting with `0.1.0-alpha.0.11`. Older
+tagged installers and tarballs retain their original requirements; use the new
+versioned installer below. Newer major versions are not rejected solely by
+version number; the installer still checks SQLite backup and busy-timeout support.
+The Node.js 22 Winget default and pinned development tools are reproducibility
+choices, not upper bounds.
+
+The runtime also suppresses only SQLite's experimental-feature notice
+during SQLite module loading, including the background search reader. Other
+warnings and SQLite errors remain visible.
+
+The URL below targets the `0.1.0-alpha.0.11` Windows Design Partner Preview.
 It includes Knowledge review, local observations, the native verification
 bridge, trusted feedback approval, and bounded current-session reconciliation.
-See the [release notes](releases/0.1.0-alpha.0.10.md). M0/MVP remain No-Go for
+See the [release notes](releases/0.1.0-alpha.0.11.md). M0/MVP remain No-Go for
 quality release; `0.1.0-alpha.1` is still an unapproved target. Documentation and
 prior source tests do not certify new-version artifacts or controlled benefit.
 
@@ -37,7 +48,7 @@ For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
 ```
 
 The installer:
@@ -58,7 +69,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -67,14 +78,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1)
 )) -NoLearning
 ```
 
 For a manual tarball installation (without the bootstrap's orchestration):
 
 ```powershell
-$version = "0.1.0-alpha.0.10"
+$version = "0.1.0-alpha.0.11"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $downloadRoot = New-Item -ItemType Directory -Force .\.provenloop\downloads
 $package = Join-Path $downloadRoot.FullName "provenloop-cli-$version.tgz"
@@ -133,7 +144,7 @@ replacement for bootstrap rollback. Keep the previous runtime slot and stop
 on any failed command before editing PATH.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.10` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.11` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -146,12 +157,12 @@ provenloop install --no-auto-collect
 
 ## Upgrade
 
-To upgrade from the previous `0.1.0-alpha.0.7` candidate, rerun the versioned
-bootstrap for `0.1.0-alpha.0.10`. It stages the new runtime in a separate slot,
+To upgrade from `0.1.0-alpha.0.10` or an earlier published candidate, rerun the
+versioned bootstrap for `0.1.0-alpha.0.11`. It stages the new runtime in a separate slot,
 performs the integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.10/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
 ```
 
 For a manually downloaded and verified release tarball, use the same
@@ -160,7 +171,7 @@ global prefix or an unqualified `provenloop` command, because either can select
 an older runtime:
 
 ```powershell
-$version = "0.1.0-alpha.0.10"
+$version = "0.1.0-alpha.0.11"
 $runtimeSlot = Join-Path `
   $env:LOCALAPPDATA `
   "ProvenLoopRuntime\versions\$version"

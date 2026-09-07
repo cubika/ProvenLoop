@@ -1,4 +1,8 @@
 export {
+  DatabaseSync,
+  loadNodeSqlite,
+} from "./node-sqlite.js";
+export {
   CanonicalSqliteStore,
   CanonicalMigrationRequiredError,
   DEFAULT_SQLITE_MIGRATIONS,

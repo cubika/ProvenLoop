@@ -1,15 +1,15 @@
 # ProvenLoop Technical Architecture
 
-**Status:** 0.1.0-alpha.0.10 preview architecture with explicitly deferred capabilities
+**Status:** 0.1.0-alpha.0.11 preview architecture with explicitly deferred capabilities
 
-**Updated:** 2026-09-06
+**Updated:** 2026-09-07
 
 This document describes both the executable near-term architecture and the
 long-term logical architecture. They use the same event, evidence, domain, and
 evaluation contracts. Later milestones enable additional consumers and state
 transitions; they do not introduce a second architecture.
 
-Current implementation descriptions apply to the `0.1.0-alpha.0.10` Windows
+Current implementation descriptions apply to the `0.1.0-alpha.0.11` Windows
 Design Partner Preview evidence candidate. M3-M6 consumers remain targets.
 Synthetic regression coverage is not native-host acceptance, controlled benefit
 evidence, or M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
@@ -349,8 +349,11 @@ The worker starts on demand when queue work exists. A lock prevents duplicate
 workers. It processes events in batches and yields to interactive workloads.
 Queue items remain durable while a consumer is paused or unavailable.
 
-The canonical store uses Node 22's built-in SQLite behind the `storage-sqlite`
-package. Startup enables WAL, foreign keys, and a bounded busy timeout.
+The canonical store uses Node.js's built-in SQLite behind the `storage-sqlite`
+package. Its shared loader suppresses only the SQLite experimental notice during
+module loading and immediately restores normal warning handling. The FTS backend
+and its reader Worker use the same loader; other warnings and errors propagate.
+Startup enables WAL, foreign keys, and a bounded busy timeout.
 The 0.10 schema is **10**. Ordinary opens reject an existing older schema
 with a migration-required error, and reject schemas newer than the runtime.
 Only explicit maintenance permits contiguous migrations under `BEGIN IMMEDIATE`;
