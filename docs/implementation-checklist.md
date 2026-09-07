@@ -490,6 +490,44 @@ Synthetic fixture timing/outcome values do not measure real-user improvement.
 
 ## 12. M2: evidence-backed correction learning
 
+### 12.0 Required first-product automatic learning
+
+All items below are pending; existing checked structured-correction work does
+not satisfy them. See architecture sections 3.6.1-3.6.5 and `M2-AUTO-001` through
+`M2-AUTO-008` in product validation.
+
+- [ ] Add source-backed window/job/proposal/typed-receipt contracts and canonical migrations.
+- [ ] Automatically schedule bounded ordinary-language correction windows in an
+  open Session without fixed labels or user-invoked learner tools.
+- [ ] Implement the authenticated no-tools Copilot inference provider, one-time
+  disclosure/consent, internal-session exclusion, budgets and explicit failure states.
+- [ ] Keep inference outside capture callbacks and canonical/projection/maintenance
+  leases; revalidate source, capability and deletion state before result commit.
+- [ ] Persist proposals without rewriting original events or minting user confirmation.
+- [ ] Classify reusable constraints separately from temporary requests, quotations
+  and generic advice; keep unsupported candidates out of ordinary Context.
+- [ ] Merge equivalent proposals only within matching scope and conditions;
+  preserve conflicts and count independent sources rather than retries.
+- [ ] Persist configurable candidate expiry and logical archival; model reruns
+  cannot refresh it, and reevaluation must recheck deletion and revocation.
+- [ ] Add MCP call provenance and narrow input-contract/postcondition verifiers;
+  retain candidate status when only generic success is available.
+- [ ] Wire existing correction admission, lifecycle, FTS and Explain to qualified proposals.
+- [ ] Observe automatic later-task retrieval and use on the real supported host;
+  instructions or a registered tool alone do not pass this requirement.
+- [ ] Check task scope and applicability before ranking; suppress known duplicate
+  guidance while allowing fresh retrieval after a material task/workspace change.
+- [ ] Cover crash/retry deduplication, counterevidence, revocation, source/session
+  deletion and in-flight-result invalidation.
+- [ ] Expose why a window was not scheduled, produced no rule, awaits evidence,
+  activated, paused or failed, plus model usage and source-to-rule latency.
+- [ ] Show bounded activation/delivery notices on the actual user surface, with
+  source/control access, a separate mute preference and deletion invalidation.
+- [ ] Meet frozen discovery, activation and delivery coverage thresholds and both
+  wrong-delivery denominators; preserve misses, unknowns and infrastructure failures.
+- [ ] Pass frozen natural-language evaluation and actual installed/model/host
+  acceptance before describing the first complete product as delivered.
+
 ### 12.1 Correction capture
 
 - [x] Normalize explicit user corrections into frozen Correction Keys.

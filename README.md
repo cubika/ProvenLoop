@@ -72,6 +72,13 @@ Capture is best effort, not lossless archival or full historical ingestion.
 Automated delayed Outcome linking, retrospective analysis, and Playbooks remain
 M3-M5 targets; the diagram above is the long-term learning loop.
 
+**First-product requirement (2026-09-07):** ordinary natural-language corrections
+must automatically produce source-backed proposals, qualify supported low-risk
+rules, and enable later-task reuse without manual remember/retrieve instructions.
+This is required M2 work, not deferred retrospective. The published 0.11 runtime
+does not implement this path yet; see the [automatic-learning design](docs/architecture.md#361-automatic-extraction-in-the-existing-worker)
+and [implementation blocker](docs/implementation-blockers.md#m2-auto-automatic-natural-language-rule-production).
+
 ## Repository structure
 
 ```text
@@ -248,6 +255,10 @@ command target. Same-Episode membership or an unrelated successful command
 is not sufficient.
 
 ## First useful workflow
+
+**Current 0.11 diagnostic/manual path:** the commands below check rule storage,
+retrieval and user controls. They do not satisfy the first-product automatic
+natural-language learning requirement.
 
 The existing `remember` path creates a user-confirmed rule. From its repository,
 for example:

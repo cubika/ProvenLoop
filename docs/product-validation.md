@@ -1,37 +1,49 @@
-# ProvenLoop 产品验收与质量评估方案
+# ProvenLoop Product Acceptance and Quality Evaluation Plan
 
-**当前边界（2026-09-07）：** `0.1.0-alpha.0.11` 是 Windows Design Partner Preview
-证据候选版，包含观察导出、严格原生证明链、有界当前 Session 对账和现场效果门禁修订。
-合成回归、真实观察、受控收益比较和发布批准是四类不同证据，不能互相替代。
-新版本工件须单独验证；M0/MVP 质量发布仍为 No-Go，`0.1.0-alpha.1` 尚未获批准。
+**Current boundary (2026-09-07):** `0.1.0-alpha.0.11` is a Windows Design Partner Preview
+evidence candidate with observation export, strict native proof chains, bounded current-Session
+reconciliation, and revised field-effectiveness gates. Synthetic regression, field observation,
+controlled benefit comparisons, and release approval are four distinct forms of evidence;
+none substitutes for another. New-version artifacts require separate validation. The M0/MVP
+quality release remains No-Go, and `0.1.0-alpha.1` has not been approved.
 
-**状态：** Proposed validation plan  
-**版本：** 1.0  
-**更新日期：** 2026-09-07
+**New first-product gate (2026-09-07, not yet implemented):** Ordinary natural-language
+corrections must trigger background extraction and produce source-backed rule candidates.
+Rules that meet the evidence requirements must be reused in later relevant tasks without
+manual reminders. A `remember` demonstration, fixed-format correction, or manually
+constructed verification event cannot replace this acceptance test. 0.11 has not passed it.
+
+**Status:** Proposed validation plan
+**Version:** 1.0
+**Updated:** 2026-09-07
 
 ---
 
-## 0. 这份文档解决什么问题
+## 0. Questions this document addresses
 
-产品文档回答“要做什么”，架构文档回答“准备怎么做”。开发完成之后，还需要回答
-三个更难的问题：
+The product document explains what to build, and the architecture document explains how
+it is intended to work. After development, three harder questions remain:
 
-1. 这批功能是否真的做对了，可以交付？
-2. ProvenLoop 是否让 Coding Agent 的工作结果变好，而不是只多存了一批数据？
-3. 下一轮应该改什么，依据是什么？
+1. Are these features implemented correctly and ready to deliver?
+2. Does ProvenLoop improve Coding Agent outcomes, beyond storing more data?
+3. What should change next, and what evidence supports that choice?
 
-这三个问题不能靠一次 Demo、几个成功案例或用户一句“感觉不错”回答。ProvenLoop
-本身是一个学习系统，最大的风险不是某个按钮失效，而是它把错误经验包装成正确经验，
-并在后续任务中反复使用。因此，验收必须同时检查功能、学习结果、产品收益和伤害。
+A single demo, a few successful cases, or a user's favorable impression cannot answer
+these questions. ProvenLoop is a learning system. Its greatest risk is presenting incorrect
+lessons as correct and repeatedly using them in later tasks, which matters more than an
+individual broken button. Acceptance must therefore examine functionality, learning
+results, product benefit, and harm.
 
-本方案不重新定义 `product-design.md` 中的产品目标和指标。它规定如何准备证据、如何
-执行验收、如何作出发布决定，以及如何把线上坏案例变成可验证的改进项。
+This plan does not redefine the goals and metrics in `product-design.md`. It specifies
+how to prepare evidence, run acceptance checks, make release decisions, and turn failures
+from production use into verifiable improvements.
 
-### 0.1 可执行性复审结论
+### 0.1 Executability review findings
 
-这套方案的方向可行，但原始版本更像验收政策，还不是验收系统。
+The plan's direction is feasible, but its original form was an acceptance policy rather
+than an acceptance system.
 
-真正的缺口不是“还少几个指标”，而是缺少一条统一、机器可执行的主干：
+The missing foundation is a shared, machine-executable path, beyond additional metrics:
 
 ```text
 Requirement Manifest
@@ -42,125 +54,130 @@ Requirement Manifest
   -> Exit Code
 ```
 
-这条主干从 M0 建立，后续版本只增加新的 Replay Case 和 Gate，不另造一套评估工具。
-首轮只实现 M0-M2 所需能力；完整 Sandbox、Dashboard、全量标注平台和 M3-M6 专用
-评估必须后置。一次搭好的是协议和执行入口，不是一次做完所有评估能力。
+Build this path in M0. Later versions add Replay Cases and Gates to the same evaluation
+tools. The first iteration implements only what M0-M2 need. The full Sandbox, Dashboard,
+complete labeling platform, and M3-M6-specific evaluation must come later. Establish the
+protocols and execution entry points together without implementing every evaluation
+capability at once.
 
 ---
 
-## 1. 对“产品质量”的定义
+## 1. Definition of product quality
 
-ProvenLoop 的质量不是一个总分。它由六个彼此独立的判断构成：
+ProvenLoop quality consists of six independent judgments, without a combined score:
 
-| 维度 | 要回答的问题 | 典型证据 |
+| Dimension | Question | Typical evidence |
 |---|---|---|
-| 功能正确性 | 功能是否按产品规则工作？ | 自动化测试、端到端场景、需求追踪 |
-| 学习正确性 | 系统学到的内容是否有证据、适用范围正确、会被反证修订？ | Episode 回放、盲审、时间切分评估 |
-| 产品收益 | 用户是否少重复 Context、少纠正、能更快完成有效验证？ | RCR、TTV、重复 Context Token、失败重试 |
-| 安全与信任 | 是否泄漏 Secret、跨 Repository 注入、执行未授权动作？ | 对抗测试、权限检查、删除验证、审计记录 |
-| 可靠性与成本 | 集成是否稳定，延迟、资源和失败方式是否可接受？ | P95 延迟、队列积压、恢复演练、CPU/磁盘占用 |
-| 可理解与可控制 | 用户能否知道系统学了什么，并纠正、停用、删除和回滚？ | Explain、Feedback、Forget、Rollback 验收 |
+| Functional correctness | Do features follow product rules? | Automated tests, end-to-end scenarios, requirements traceability |
+| Learning correctness | Is learned content supported by evidence, correctly scoped, and revised by counterevidence? | Episode replay, blind review, temporally split evaluation |
+| Product benefit | Do users repeat less Context, make fewer corrections, and reach valid verification sooner? | RCR, TTV, repeated Context Tokens, failed retries |
+| Safety and trust | Are Secrets leaked, contents injected across Repositories, or unauthorized actions executed? | Adversarial tests, permission checks, deletion verification, audit records |
+| Reliability and cost | Is integration stable, with acceptable latency, resource use, and failure behavior? | P95 latency, queue backlog, recovery drills, CPU/disk usage |
+| Understandability and control | Can users see what was learned, then correct, disable, delete, and roll it back? | Explain, Feedback, Forget, Rollback acceptance |
 
-其中任何一项出现红线问题，都不能用其他维度的高分抵消。TTV 下降 30%，不能抵消
-一次跨 Repository 泄漏；生成了很多 Insight，也不能抵消大部分 Insight 没有证据。
+A critical failure in any dimension cannot be offset by strong results elsewhere. A 30%
+reduction in TTV does not offset a cross-Repository leak. Producing many Insights does
+not offset a lack of evidence for most of them.
 
-正式评估只给出六个维度的状态、指标和证据，不生成“综合质量分”。
-
----
-
-## 2. 四层验收
-
-验收不应全部堆到版本发布前。不同层级回答不同问题。
-
-### 2.1 变更验收
-
-对象是一次代码变更、用户故事或缺陷修复。
-
-每项变更完成时必须有：
-
-- 对应的产品规则或缺陷案例；
-- 正常路径、边界条件和失败路径测试；
-- 对数据、权限、Scope、删除语义和兼容性的影响判断；
-- 必要的可观测事件和错误信息；
-- 可重复执行的验收命令或场景；
-- 没有绕过既有安全规则。
-
-一项功能“可以运行”不等于完成。无法观察它是否出错，或者出错后只能查看原始数据库，
-同样不算完成。
-
-### 2.2 子系统验收
-
-对象是 Event Ingestion、Episode Builder、Outcome Linker、Retriever、
-Retrospective Analyzer、Playbook Evaluator 等完整能力。
-
-子系统验收关注：
-
-- 接口和数据不变量；
-- 与上下游集成后的行为；
-- 错误输入、未知版本和部分数据；
-- 崩溃、重复执行和恢复；
-- 性能边界；
-- 是否产生可用于产品评估的事件。
-
-例如，Episode Builder 不能只验证“能生成 Episode”，还要分别测量关联 Precision、
-Recall、错误合并和错误拆分。
-
-### 2.3 Milestone 验收
-
-对象是 `product-design.md` 和 `roadmap.md` 中的 M0-M6。
-
-Milestone 验收回答的是研究问题。例如 M2 不是验收“Knowledge Card 页面是否存在”，
-而是验收“一次已经验证的纠正，能否减少后续相似任务中的重复纠正”。
-
-Milestone 只有在以下条件同时满足时通过：
-
-1. 范围内功能完成；
-2. 对应离线评估达到研究门槛；
-3. 真实使用或受控试用出现同方向结果；
-4. Guardrail 没有越线；
-5. 失败案例可以解释，数据和报告可复查。
-
-### 2.4 Release 验收
-
-对象是准备交付给更多用户的版本。
-
-Release 验收比 Milestone 更严格。研究门槛只说明“值得继续”，不代表“可以稳定发布”。
-发布前还要完成：
-
-- 全量回归和数据迁移验证；
-- Final Held-out 评估；
-- 安全与隐私专项；
-- Shadow 或 Canary；
-- 升级、降级、禁用和卸载验证；
-- 版本回滚演练；
-- 已知问题和适用边界说明。
+Formal evaluation reports the status, metrics, and evidence for each dimension. It does
+not produce an overall quality score.
 
 ---
 
-## 3. 验收依据：从需求到证据
+## 2. Four levels of acceptance
 
-每项需求都应对应一条可执行的验收记录。建议使用以下结构：
+Acceptance work should happen throughout development. Each level answers different questions.
+
+### 2.1 Change acceptance
+
+This applies to an individual code change, user story, or defect fix.
+
+Every completed change must have:
+
+- A corresponding product rule or defect case;
+- Tests for the normal path, boundaries, and failure paths;
+- An assessment of effects on data, permissions, Scope, deletion semantics, and compatibility;
+- The necessary observable events and error messages;
+- A repeatable acceptance command or scenario;
+- No bypass of existing safety rules.
+
+A feature that runs is not necessarily complete. It is also incomplete if failures cannot
+be observed, or if diagnosing them requires inspecting the raw database.
+
+### 2.2 Subsystem acceptance
+
+This applies to complete capabilities such as Event Ingestion, Episode Builder, Outcome
+Linker, Retriever, Retrospective Analyzer, and Playbook Evaluator.
+
+Subsystem acceptance examines:
+
+- Interface and data invariants;
+- Behavior when integrated with upstream and downstream components;
+- Invalid inputs, unknown versions, and partial data;
+- Crashes, repeated execution, and recovery;
+- Performance boundaries;
+- Whether the subsystem emits events usable for product evaluation.
+
+For example, Episode Builder tests must measure association Precision, Recall, wrong
+merges, and wrong splits separately, as well as checking that it can produce an Episode.
+
+### 2.3 Milestone acceptance
+
+This applies to M0-M6 in `product-design.md` and `roadmap.md`.
+
+Milestone acceptance answers research questions. For M2, the question is whether a
+verified correction reduces repeated corrections in later similar tasks; the existence
+of a Knowledge Card page does not answer it.
+
+A Milestone passes only when all of these conditions hold:
+
+1. The features in scope are complete;
+2. The corresponding offline evaluation meets research thresholds;
+3. Real use or controlled trials show results in the same direction;
+4. Guardrails remain within their limits;
+5. Failures can be explained, and data and reports can be reviewed.
+
+### 2.4 Release acceptance
+
+This applies to a version intended for delivery to more users.
+
+Release acceptance is stricter than Milestone acceptance. Research thresholds indicate
+that work is worth continuing, not that a stable release is ready. Before release, also complete:
+
+- Full regression and data migration validation;
+- Final Held-out evaluation;
+- Dedicated safety and privacy checks;
+- Shadow or Canary;
+- Upgrade, downgrade, disabling, and uninstall validation;
+- A version rollback drill;
+- Documentation of known issues and applicability boundaries.
+
+---
+
+## 3. Acceptance basis: from requirements to evidence
+
+Every requirement should have an executable acceptance record. The following structure is recommended:
 
 ```yaml
 requirement_id: M2-KNOWLEDGE-004
 milestone: M2
-statement: 反证出现后，相关 Knowledge 立即停止自动注入
+statement: Relevant Knowledge immediately stops automatic injection when counterevidence appears
 scope: repository
 preconditions:
-  - 已存在一条 Active Knowledge
-  - 新 Episode 产生 direct revert evidence
+  - An Active Knowledge item already exists
+  - A new Episode produces direct revert evidence
 action:
-  - 运行 Outcome Linker
-  - 发起一个满足原 Trigger 的 Context Request
+  - Run Outcome Linker
+  - Issue a Context Request that matches the original Trigger
 expected:
-  - Knowledge 状态变为 disputed 或 superseded
-  - Context Response 不包含该 Knowledge
-  - Explain 可以看到反证和状态变化
+  - Knowledge state becomes disputed or superseded
+  - Context Response does not contain that Knowledge
+  - Explain shows the counterevidence and state change
 verifier:
   - id: knowledge-disputed-stops-injection
     type: deterministic
 guardrails:
-  - 不影响其他无关 Knowledge
+  - Unrelated Knowledge remains unaffected
 required_evidence:
   - test report
   - event IDs
@@ -168,32 +185,35 @@ required_evidence:
 expected_status: pass
 ```
 
-验收记录有两个用途：开发时避免遗漏，发布后也能确认新版本没有破坏旧承诺。
+Acceptance records prevent omissions during development and allow later releases to
+verify that they have not broken earlier commitments.
 
-需求与证据之间至少要满足以下关系：
+Requirements and evidence must have at least the following relationship:
 
 ```text
-产品规则
-  -> 验收案例
-  -> 自动化测试或人工步骤
-  -> 运行结果
-  -> 版本化报告
+Product rule
+  -> Acceptance case
+  -> Automated test or manual steps
+  -> Run result
+  -> Versioned report
 ```
 
-只写“符合预期”没有复查价值。报告必须能定位到测试、数据集版本、代码版本和失败案例。
+A statement that behavior meets expectations is not reviewable evidence. Reports must
+identify the tests, dataset version, code version, and failure cases.
 
-### 3.1 最小执行内核
+### 3.1 Minimum execution core
 
-M0 必须交付以下五项。缺少任意一项，验收仍然依赖人解释，不能称为可执行。
+M0 must deliver the following five elements. Without any one of them, acceptance still
+depends on human interpretation and cannot be considered executable.
 
 #### Requirement Manifest
 
-记录产品承诺及其 Gate：
+Record product commitments and their Gates:
 
 ```yaml
 requirement_id: PROCESS-CLAIM-001
 milestone: M0
-statement: 只有实际执行证据完整时，才允许声称协议已完成
+statement: A protocol may be claimed complete only when actual execution evidence is complete
 scope: workflow
 replay_specs:
   - false-consensus-missing-external-representative
@@ -208,7 +228,7 @@ release_gate: hard
 
 #### Replay Spec
 
-固定一次可重复验收的输入和预期：
+Freeze the inputs and expectations for a repeatable acceptance run:
 
 ```json
 {
@@ -227,8 +247,8 @@ release_gate: hard
 
 #### Evidence Ledger
 
-Evidence Ledger 在正常运行中是 append-only 的执行证据索引；用户发起 Source Delete
-或 Purge 时，仍遵循产品删除语义。它至少记录：
+The Evidence Ledger is an append-only index of execution evidence during normal operation.
+User-initiated Source Delete and Purge still follow product deletion semantics. It records at least:
 
 ```text
 run_id
@@ -248,11 +268,12 @@ output_digest
 timestamp
 ```
 
-“检测到工具可用”与“工具已成功参与”必须是不同状态。模型自述不能补齐缺失证据。
+Detecting that a tool is available and observing its successful participation must be
+distinct states. Model statements cannot fill gaps in evidence.
 
 #### Deterministic Gate
 
-确定性 Gate 只读取 Spec、Ledger 和可验证产物，输出：
+A deterministic Gate reads only the Spec, Ledger, and verifiable artifacts and returns:
 
 ```text
 pass
@@ -261,13 +282,14 @@ inconclusive
 infrastructure_error
 ```
 
-流程是否执行、命令是否成功、参与者和模型身份、Scope、Secret、删除传播等事实判断，
-不得交给生成结论的模型自评。模型可以提出 Episode 关联或 Insight 候选，但不能为自己
-签发通过证明。
+The model generating a conclusion must not judge its own factual claims about process
+execution, command success, participant and model identities, Scope, Secrets, or deletion
+propagation. Models may propose Episode associations or Insight candidates, but cannot
+issue their own proof of passing.
 
-#### Runner 和退出码
+#### Runner and exit codes
 
-首轮统一入口：
+The first iteration uses these shared entry points:
 
 ```powershell
 provenloop eval run --suite valid-supported-event --out .provenloop\eval
@@ -277,85 +299,90 @@ provenloop eval m2 --out .provenloop\eval
 provenloop eval report --run <run-id>
 ```
 
-`m0-m2` 不是内置 suite 名称。聚合发布决策使用 `provenloop eval mvp`，
-不应把单个 fixture 的通过解释为整个 Milestone 通过。
+`m0-m2` is not a built-in suite name. Aggregate release decisions use `provenloop eval mvp`.
+Passing one fixture must not be interpreted as passing an entire Milestone.
 
-固定退出码：
+Fixed exit codes:
 
-| Exit Code | 含义 |
+| Exit Code | Meaning |
 |---:|---|
-| 0 | 所有必需 Gate 通过 |
-| 1 | 至少一个产品或安全 Gate 失败 |
-| 2 | Spec、Manifest 或数据无效 |
-| 3 | 基础设施错误，结果不能用于发布判断 |
+| 0 | All required Gates passed |
+| 1 | At least one product or safety Gate failed |
+| 2 | Invalid Spec, Manifest, or data |
+| 3 | Infrastructure error; results cannot support a release decision |
 
-每次运行同时生成 `report.json` 和 `report.md`。Markdown 便于阅读，JSON 和退出码才是
-自动门禁依据。
+Each run produces both `report.json` and `report.md`. Markdown supports reading; JSON
+and exit codes determine automated gates.
 
-### 3.2 同一工具，按版本启用不同 Gate
+### 3.2 One tool with Gates enabled by version
 
-| 阶段 | 首次启用的 Gate |
+| Stage | Gates first enabled |
 |---|---|
-| M0 | 采集完整性、Secret、身份、幂等、Process Claim、故障恢复 |
-| M1 | Branch Continuation、Scope、Context Budget、Retrieval Negative、Wrong Injection |
-| M2 | Correction Recurrence、Evidence Tier、反证停用、重复纠正 |
-| M3 | Outcome Link、观察窗口、Revert/Fix 反向修订 |
-| M4 | Insight Evidence、反例、Unsupported Causality |
-| M5 | Playbook Trigger、Non-trigger、权限、Sandbox、Canary、Rollback |
-| M6 | 跨 Agent 去重、能力降级、跨 Agent Scope |
+| M0 | Capture completeness, Secrets, identity, idempotency, Process Claim, failure recovery |
+| M1 | Branch Continuation, Scope, Context Budget, Retrieval Negative, Wrong Injection |
+| M2 | Correction Recurrence, Evidence Tier, disabling on counterevidence, repeated corrections |
+| M3 | Outcome Link, observation windows, retroactive revision from Revert/Fix |
+| M4 | Insight Evidence, counterexamples, Unsupported Causality |
+| M5 | Playbook Trigger, Non-trigger, permissions, Sandbox, Canary, Rollback |
+| M6 | Cross-Agent deduplication, capability degradation, cross-Agent Scope |
 
-Runner、Manifest、Ledger、报告和退出码保持不变。后续只增加 Verifier 和 Replay Suite。
+The Runner, Manifest, Ledger, reports, and exit codes remain unchanged. Later iterations
+add Verifiers and Replay Suites only.
 
 ---
 
-## 4. 测试与评估资产
+## 4. Test and evaluation assets
 
-### 4.1 测试分层
+### 4.1 Test layers
 
-ProvenLoop 需要四类测试，它们不能互相替代。
+ProvenLoop needs four types of tests; none replaces another.
 
-| 类型 | 主要用途 | 例子 |
+| Type | Main purpose | Examples |
 |---|---|---|
-| 单元与属性测试 | 验证确定性规则和不变量 | Scope 判断、状态迁移、Token Budget、幂等 |
-| 集成与故障测试 | 验证组件协作和失败行为 | Queue 恢复、SQLite 锁、未知事件版本、Backend 超时 |
-| 场景与端到端测试 | 验证用户可见结果 | 跨 Session 续接、纠正学习、Revert 反证、Forget |
-| Replay 与产品评估 | 回归验证，或在真实受控条件下评估增益 | Baseline 对比、Held-out Episode、Negative Trigger |
+| Unit and property tests | Verify deterministic rules and invariants | Scope checks, state transitions, Token Budget, idempotency |
+| Integration and fault tests | Verify component interaction and failure behavior | Queue recovery, SQLite locks, unknown event versions, Backend timeouts |
+| Scenario and end-to-end tests | Verify user-visible outcomes | Cross-Session continuation, correction learning, Revert counterevidence, Forget |
+| Replay and product evaluation | Regression verification, or benefit evaluation under real controlled conditions | Baseline comparisons, Held-out Episodes, Negative Triggers |
 
-单元和合成 Replay 验证确定性行为及回归；使用 production builder 不会把合成输入变成
-真实用户实验。真实观察描述实际发生的事，但没有对照就不能归因。受控、独立、预声明的
-真实任务比较才支持收益判断；发布还需要平台、安全、人工评审和恢复证据。
-当前 24 组 Episode 关联、32 组 Branch Continuation、24 组 Correction Recurrence
-夹具应明确标记为 `synthetic_regression`，不计入真实样本量。
+Unit tests and synthetic Replays verify deterministic behavior and regressions. Using a
+production builder does not turn synthetic inputs into a real-user experiment. Field
+observations describe what happened, but cannot establish attribution without a control.
+Only controlled, independent, predeclared comparisons of real tasks support benefit
+judgments. Release also requires platform, safety, human review, and recovery evidence.
+The current fixtures contain 24 Episode association cases, 32 Branch Continuation cases,
+and 24 Correction Recurrence cases. They must be explicitly labeled `synthetic_regression`
+and excluded from real sample counts.
 
-### 4.2 六类核心数据集
+### 4.2 Six core datasets
 
-沿用产品设计中的时间切分：
+Use the temporal split from the product design:
 
 ```text
 Source -> Development -> Final Held-out
 ```
 
-建议维护以下数据集：
+Maintain the following recommended datasets:
 
-1. Branch Continuation：测试跨 Session Context 是否有用。
-2. Correction Recurrence：测试同类纠正是否再次发生。
-3. Outcome Replay：测试 Review、CI、Fix 和 Revert 能否修订早期判断。
-4. Hidden Pattern Retrospective：测试是否能发现未被直接表达的规律。
-5. Negative Trigger：测试相似但不适用时能否不注入。
-6. Safety and Recovery：测试 Secret、恶意内容、跨 Repo、删除和故障恢复。
+1. Branch Continuation: Test whether cross-Session Context is useful.
+2. Correction Recurrence: Test whether similar corrections recur.
+3. Outcome Replay: Test whether Review, CI, Fix, and Revert can revise earlier judgments.
+4. Hidden Pattern Retrospective: Test whether unstated patterns can be discovered.
+5. Negative Trigger: Test whether injection is withheld in similar but inapplicable situations.
+6. Safety and Recovery: Test Secrets, malicious content, cross-Repo boundaries, deletion, and failure recovery.
 
-六类数据集是最终结构，不是 M0 的一次性交付范围。首轮只建设：
+These six datasets define the eventual structure, not the scope of a single M0 delivery.
+The first iteration builds only:
 
-- Event/Process Integrity；
-- Branch Continuation；
-- Correction Recurrence；
-- Negative Trigger；
-- Safety and Recovery 中与 Secret、Scope、删除和故障恢复相关的确定性用例。
+- Event/Process Integrity;
+- Branch Continuation;
+- Correction Recurrence;
+- Negative Trigger;
+- Deterministic cases in Safety and Recovery covering Secrets, Scope, deletion, and failure recovery.
 
-Outcome Replay、Hidden Pattern Retrospective 和完整 Sandbox Replay 在对应 Milestone
-启用，但继续使用同一 Manifest、Spec、Ledger 和报告格式。
+Outcome Replay, Hidden Pattern Retrospective, and complete Sandbox Replay are enabled
+in their respective Milestones, using the same Manifest, Spec, Ledger, and report formats.
 
-每个数据集都需要一个 Manifest：
+Each dataset needs a Manifest:
 
 ```yaml
 dataset_id: correction-recurrence-2026-08
@@ -373,67 +400,71 @@ known_biases:
 content_hash: sha256:...
 ```
 
-### 4.3 防止评估泄漏
+### 4.3 Preventing evaluation leakage
 
-学习系统很容易在无意中“看过答案”。以下规则必须固定：
+A learning system can inadvertently see the answers. Fix the following rules:
 
-- Source Episode 不能同时作为同一 Knowledge 或 Playbook 的 Held-out 样本；
-- Final Held-out 不参与 Prompt、阈值、Trigger 和排序规则调节；
-- 时间 T 之后的 Review、Bug、Fix、Revert 只作为隐藏结果；
-- 同一个任务拆出的多个 Session 必须进入同一数据分区；
-- 高度相似的 Fork、复制项目和重复任务不能跨训练与测试分区；
-- 每次评估记录模型、Prompt、规则、数据、权限和 Repository Snapshot 版本。
+- Source Episodes cannot also be Held-out samples for the same Knowledge or Playbook;
+- Final Held-out data must not influence Prompt, threshold, Trigger, or ranking adjustments;
+- Reviews, Bugs, Fixes, and Reverts after time T are hidden outcomes only;
+- Multiple Sessions from the same task must belong to the same data partition;
+- Highly similar Forks, copied projects, and repeated tasks cannot span training and test partitions;
+- Every evaluation records model, Prompt, rule, data, permission, and Repository Snapshot versions.
 
-如果发生泄漏，该次结果作废，不允许只在报告里备注后继续使用。
+Leakage invalidates the run. Adding a note to the report does not permit continued use of its results.
 
-### 4.4 标注与盲审
+### 4.4 Labeling and blind review
 
-需要人工判断的项目，例如“是否属于同一 Episode”“Insight 是否成立”，采用双人盲审；
-资源不足时，可由同一人在不同时间隐藏系统输出后复审。
+Items requiring human judgment, such as whether records belong to the same Episode or
+whether an Insight is valid, use two-person blind review. When resources are limited,
+the same person may review again at a different time with system outputs hidden.
 
-标注不一致时：
+When labels disagree:
 
-1. 保留双方原始判断；
-2. 记录分歧原因；
-3. 由裁决规则或第三次复审确定最终标签；
-4. 统计分歧率。
+1. Preserve both original judgments;
+2. Record the reason for disagreement;
+3. Determine the final label through adjudication rules or a third review;
+4. Report the disagreement rate.
 
-高分歧通常说明任务定义或标签规则有问题，不应简单归咎于评审者。
+High disagreement usually indicates problems with task definitions or labeling rules
+and should not simply be blamed on reviewers.
 
-### 4.5 生成与校验分离
+### 4.5 Separate generation from verification
 
-评估中需要明确区分两类工作：
+Evaluation must distinguish two kinds of work:
 
 ```text
-生成：
-  发现候选 Episode、相似任务、Insight、Trigger
+Generation:
+  Discover candidate Episodes, similar tasks, Insights, and Triggers
 
-校验：
-  判断证据是否存在、步骤是否执行、Scope 是否匹配、
-  Verifier 是否通过、声明是否被证据支持
+Verification:
+  Determine whether evidence exists, steps ran, Scope matches,
+  Verifiers passed, and evidence supports the claims
 ```
 
-生成可以使用模型。校验优先使用确定性规则、工具退出码和外部 Outcome；语义标签无法
-确定时，使用冻结规则、盲审或与生成器隔离的评审过程。不能让生成结论的同一次调用同时
-决定样本分母、判断自己正确并批准发布。
+Generation may use models. Verification should prefer deterministic rules, tool exit
+codes, and external Outcomes. When semantic labels are uncertain, use frozen rules,
+blind review, or a review process isolated from the generator. The same call that
+generates a conclusion cannot also define the sample denominator, judge itself correct,
+and approve release.
 
 ---
 
-## 5. 各子系统怎么验收
+## 5. Subsystem acceptance
 
 ### 5.1 Event Ingestion
 
-必须验证：
+Must verify:
 
-- 支持事件的识别 Precision 不低于 95%；
-- 重复事件不会产生重复事实；
-- 未知版本显式进入错误或兼容路径；
-- Extension 故障不阻塞 Copilot；
-- Capture 新增延迟 P95 不高于 10 ms；
-- Seeded Secret 持久化为 0；
-- 队列中断后可恢复，失败事件可定位。
+- Precision for recognizing supported events is at least 95%.
+- Duplicate events do not produce duplicate facts.
+- Unknown versions explicitly enter an error or compatibility path.
+- Extension failures do not block Copilot.
+- Capture added latency P95 is no more than 10 ms.
+- Persisted Seeded Secrets: 0.
+- The queue can recover after interruption, and failed events can be located.
 
-坏案例分类：
+Failure categories:
 
 ```text
 missed_event
@@ -446,25 +477,24 @@ silent_parse_failure
 
 ### 5.2 Work Episode Builder
 
-必须分别报告：
+Report separately:
 
-- 关联 Precision；
-- 关联 Recall；
-- 错误合并率；
-- 错误拆分率；
-- 低置信关联的人工纠正成本。
+- Association Precision.
+- Association Recall.
+- Incorrect merge rate.
+- Incorrect split rate.
+- Human correction cost for low-confidence associations.
 
-M0 研究门槛沿用：
+The M0 research thresholds remain:
 
-- Precision 不低于 95%；
-- Recall 不低于 90%。
+- Precision of at least 95%.
+- Recall of at least 90%.
 
-不能只报告总体准确率。把两个无关任务合并，通常比把一个任务拆成两个更危险，因为它
-会污染后续学习。
+Do not report only overall accuracy. Merging two unrelated tasks is usually more dangerous than splitting one task into two because it contaminates subsequent learning.
 
 ### 5.3 Context Retrieval
 
-离线比较：
+Offline comparison:
 
 ```text
 A: No Context
@@ -473,113 +503,151 @@ C: Branch Context + Active Knowledge
 D: Full History Oracle
 ```
 
-核心指标：
+Core metrics:
 
-- Retrieval Precision@3；
-- Wrong Injection；
-- 有用 Context 的漏召回率；
-- Negative Abstention；
-- 渲染后 Token 数；
-- 检索延迟；
-- 用户忽略、纠正和撤销比例。
+- Retrieval Precision@3.
+- Wrong Injection.
+- Miss rate for useful Context.
+- Negative Abstention.
+- Rendered Token count.
+- Retrieval latency.
+- User ignore, correction, and revocation rates.
 
-M1 研究门槛：
+M1 research thresholds:
 
-- 至少 30 个 Branch Continuation 成对任务；
-- 重复 Context Token 中位数下降至少 30%；
-- TTV 中位数下降至少 15%；
-- Precision@3 不低于 90%；
-- Outcome Success 相对 Baseline 下降不超过 2 个百分点；
-- Wrong Injection 不高于 2%。
+- At least 30 paired Branch Continuation tasks.
+- At least a 30% reduction in median repeated Context Tokens.
+- At least a 15% reduction in median TTV.
+- Precision@3 of at least 90%.
+- Outcome Success no more than 2 percentage points below Baseline.
+- Wrong Injection no more than 2%.
 
-稳定发布时 Wrong Injection 必须收紧到不高于 1%。
+For a stable release, Wrong Injection must tighten to no more than 1%.
 
 ### 5.4 Correction Learning
 
-评估单位是 Correction Opportunity，不是 Knowledge Card 数量。
+#### Initial automatic extraction acceptance
 
-一次机会在结果出现前按冻结规则形成：
+The following Requirement IDs must enter the existing Evaluation/MVP Gate. These are new requirements, not existing runtime checks. Implementation cannot consist only of adding documentation checkboxes.
 
-- 已存在经过验证的 Correction Key；
-- 新任务在 Scope、Task Family、Subsystem、Intent 和 Trigger 上适用；
-- 系统有机会在用户纠正前使用该 Knowledge；
-- 不因随后成功、失败或缺少结果而重新定义适用性。
+| Requirement | Required observation |
+|---|---|
+| `M2-AUTO-001` Automatic triggering | The installed plugin automatically schedules processing when an open Session receives an ordinary Chinese or English correction, without `remember`, fixed fields, an explicit extraction tool, or Session closure |
+| `M2-AUTO-002` Extraction provenance | The model actually reads bounded, redacted excerpts; the rule and applicability conditions trace back to original user statements and operations, without fabricated user confirmation or native events |
+| `M2-AUTO-003` Operation verification | Both native test/build scenarios and real MCP parameter corrections have positive examples of automatic activation; unrelated success, ordinary MCP success, and model self-assessment cannot serve as proof |
+| `M2-AUTO-004` Later reuse | A new related task obtains the rule without a user reminder to call a memory tool; record whether behavior actually follows it, without equating delivery with adoption |
+| `M2-AUTO-005` Isolation and degradation | No tool permissions; internal calls are excluded from learning; disabled learning, insufficient quota, expired sign-in, rate limits, and timeouts have explicit states and do not block foreground work |
+| `M2-AUTO-006` Lifecycle | Retries do not add duplicate support, and old results cannot override new counterevidence; after source-data deletion, disablement, or revocation, in-flight results and rebuilds cannot restore the rule |
+| `M2-AUTO-007` Coverage and noise | Candidate discovery, activation, and later delivery each meet the thresholds below; one-time requests are not retained as rules, synonymous entries are merged, and conflicts and candidate expiration follow policy |
+| `M2-AUTO-008` User visibility | The normal work interface automatically shows brief feedback about actual activation and delivery, with provenance and disable/delete controls; candidates, repeated evidence, and unchanged states do not repeatedly interrupt users, and disabling notifications does not disable learning |
 
-`outcomeKnown` 是后续分析状态，不是创建机会的前提。单独报告所有预声明机会、
-结果可判定的分析样本和 censored/unknown 样本；计算 RCR 时说明纳入标准及分母。
-不得先筛选成功任务，再把剩余样本称为全部纠正机会。
+Freeze at least 40 ordinary-language windows, including at least 20 positive examples and 20 closely related negative examples. Cover Chinese and English, multi-step corrections, MCP parameter/tool selection, varied wording, ordinary questions, quoted text, excerpts containing secrets, and injection attempts. Include closely related comparisons between persistent project constraints and one-time requests, synonymous repetition, retries in the same operation chain, similar conditions with conflicting conclusions, expired candidates, content already covered by project instructions, and unrelated tasks.
 
-核心指标：
+Evaluate candidate discovery separately from activation eligibility. A model cannot be the final judge of its own output. Label completeness, provenance completeness, and blocking of scenarios prohibited from automatic activation must all be 100%. Independent human annotators must label usable rule content and applicability conditions, with Precision of at least 95%. Leakage, misuse across repositories, and fabricated confirmation must be zero. This Precision applies to usable rule content and applicability conditions. Report candidate correctness, misses, and rejection reasons separately; increasing candidate count is not a goal. Recognizing persistent intent does not authorize the model to confirm a rule.
+
+The initial controlled acceptance thresholds for `M2-AUTO-007` follow. These are product targets that remain to be implemented, not measured results. Labels and supported scenarios must be frozen before execution; system output must not be used to reduce denominators.
+
+| Metric | Denominator and success condition | Initial threshold |
+|---|---|---:|
+| Candidate discovery Recall | Among independently labeled reusable correction opportunities, the proportion producing a candidate with correct semantics and provenance; an opportunity with no candidate counts as a miss | ≥90% |
+| Automatic activation rate for qualified rules | Among rules across all labeled opportunities that have supported verification, clear scope, and no counterevidence, the proportion automatically persisted as Active; includes rules missed during extraction | ≥90% |
+| Unprompted delivery rate in later tasks | Among later tasks labeled in advance as requiring the rule and matching its scope/conditions, the proportion actually provided the rule before the relevant operation without a user reminder; failure to activate because of an upstream miss still counts as failure | ≥95% |
+| Wrong delivery rate | Items with the wrong Scope, wrong Trigger, expiration, or counterevidence / all provided items; also calculate tasks receiving at least one incorrect item / all tasks receiving content | Both measures ≤2% during research and ≤1% for formal release |
+| Negative Abstention | Among all later tasks labeled in advance as inapplicable, the proportion not provided the rule; includes independent host observation when no call occurs | ≥98% |
+
+The discovery and activation denominators must each contain at least 20 independent positive examples. Also prepare at least 20 applicable later tasks and 20 inapplicable tasks. Report "insufficient evidence" when scenarios are insufficient; a missing denominator cannot count as a pass. Label actual compliance in related tasks separately. Both complete host scenarios, test commands and MCP parameters, must show compliance. Report compliant, noncompliant, and unknown counts across all tasks. Receiving a rule does not count as adoption.
+
+Controlled runs use authorization, provider, and resource conditions frozen in advance, and retain all attempts. Sign-in, budget, or host failures are reported separately and make that controlled acceptance run incomplete. Do not discard failures and declare a pass. Field observations separately report all opportunities and the subset that can be adjudicated. Unlabeled opportunities must not be recorded as successes or zero errors. Passing on a small sample does not prove the same rates in production.
+
+Repeated sources, retries in the same operation chain, and window revisions must not add synonymous Active entries or duplicate support. Incompatible conditions must not be merged to broaden scope. Candidates are archived when they expire; replay or model-prompt changes do not reset the deadline. Only new independent evidence or an explicit human action may request reassessment, and a human action does not directly grant activation eligibility. One-time requests must not become persistent rules. Quotations and generic advice must not enter ordinary Context. All these targeted negative cases must pass.
+
+`M2-AUTO-008` requires observed activation notifications and later-delivery explanations in the installed host without diagnostic commands. By default, each task has at most one learning-change summary and one delivery explanation. No-rule results, candidates awaiting verification, and repeated evidence do not produce individual notifications. The same learning change is not announced again across tasks, though delivery may be explained again when a new related task actually receives the rule. Check provenance and control entry points, notification disablement, and cancellation of in-flight notifications after disablement/deletion. Background logs alone, tool results the Agent does not display, or its own claim that it has "remembered" do not pass. Candidate content must not be hidden in status messages delivered to the executing Agent.
+
+In controlled scenarios with authorization, an available provider, and no budget/resource pause, the target p95 from the final required native evidence to rule persistence is within 120 seconds. Report timeout, paused, and queued samples separately; do not discard them and present the remainder as overall performance. Existing foreground latency, safety, and Wrong Injection thresholds still apply and are not relaxed for the added model.
+
+A provider substitute with fixed responses proves only scheduling and the state machine. Retain version-bound evidence of the actual sign-in state, real model calls, installed artifact, and native host, and observe reuse in another normal task. Passing controlled replay still does not prove improved user productivity.
+
+#### Correction recurrence and benefit
+
+The evaluation unit is a Correction Opportunity, not the number of Knowledge Cards.
+
+An opportunity is defined by frozen rules before the outcome appears:
+
+- A verified Correction Key already exists.
+- The new task matches its Scope, Task Family, Subsystem, Intent, and Trigger.
+- The system has an opportunity to use the Knowledge before the user corrects it.
+- Applicability is not redefined because of later success, failure, or missing outcomes.
+
+`outcomeKnown` is a later analysis state, not a prerequisite for creating an opportunity. Report all predeclared opportunities, the analysis sample with adjudicable outcomes, and censored/unknown samples separately. State inclusion criteria and the denominator when calculating RCR. Do not select successful tasks first and describe the remainder as all correction opportunities.
+
+Core metric:
 
 ```text
 RCR =
-后续相似任务中再次出现的 Correction Key 数
+Number of Correction Keys that recur in later similar tasks
 /
-存在可复用既有纠正的机会数
+Number of opportunities with an existing reusable correction
 ```
 
-M2 研究门槛：
+M2 research thresholds:
 
-- RCR 相对 Baseline 下降至少 20%；
-- Knowledge 来源完整率 100%；
-- Evidence Tier 标注准确率不低于 95%；
-- 反证出现后立即停止自动注入；
-- Wrong Injection 不高于 2%。
+- RCR at least 20% lower than Baseline.
+- Knowledge provenance completeness of 100%.
+- Evidence Tier labeling accuracy of at least 95%.
+- Automatic injection stops immediately when counterevidence appears.
+- Wrong Injection no more than 2%.
 
-样本太少时不应发布一个漂亮百分比。少于 20 次独立机会时，报告所有案例和方向性结果，
-不宣称已经证明产品收益。
-即使合成夹具超过 20 组，也不能满足真实机会数量要求；普通观察中的“后续纠正”计数
-不是经过受控比较的 RCR 改善。
+Do not publish an attractive percentage from an insufficient sample. With fewer than 20 independent opportunities, report every case and directional findings without claiming proven product benefit. Even more than 20 synthetic fixture groups cannot satisfy the real-opportunity requirement. Counts of "later corrections" in ordinary observations are not RCR improvements established through controlled comparison.
 
 ### 5.5 Outcome Linker
 
-重点不是“建立了多少链接”，而是链接是否可靠、错误链接是否会改变 Knowledge。
+Evaluate link reliability and whether incorrect links can change Knowledge, not just how many links were created.
 
-必须验证：
+Must verify:
 
-- `direct` 关联 Precision 不低于 95%；
-- `plausible` 及以上 Precision 不低于 90%，Recall 不低于 80%；
-- `uncertain` 不能单独激活、削弱或重写 Knowledge；
-- Later Revert 能反向削弱原结论；
-- 未结束观察窗口的 Episode 保持 `censored`；
-- 用户可以拆分、合并或否认关联。
+- Precision for `direct` associations is at least 95%.
+- Precision for `plausible` and stronger associations is at least 90%, with Recall of at least 80%.
+- `uncertain` associations cannot independently activate, weaken, or rewrite Knowledge.
+- A Later Revert can weaken the original conclusion retroactively.
+- Episodes with open observation windows remain `censored`.
+- Users can split, merge, or reject associations.
 
-对错误关联单独统计伤害：
+Report harm from incorrect associations separately:
 
 ```text
-仅展示错误
-错误改变排序
-错误停止正确 Knowledge
-错误激活 Knowledge
-错误跨 Scope 传播
+Incorrect display only
+Incorrect ranking change
+Incorrectly stopping valid Knowledge
+Incorrect Knowledge activation
+Incorrect propagation across Scope
 ```
 
 ### 5.6 Deep Retrospective
 
-采用盲测：只提供时间 T 之前的 Episode，隐藏 T 之后的 Review、Bug、Fix 或专家标签。
+Use blinded evaluation: provide only Episodes before time T and hide Reviews, Bugs, Fixes, or expert labels after T.
 
-评价内容：
+Evaluate:
 
-- Pattern 是否存在；
-- 假设是否有支持证据；
-- 是否区分观察、相关、假设和因果；
-- 是否主动检查反例；
-- Applicability 和 Non-applicability 是否清楚；
-- 后续隐藏结果是否支持该 Insight；
-- 使用 Insight 后是否改善真实任务结果。
+- Whether the Pattern exists.
+- Whether evidence supports the hypotheses.
+- Whether observation, correlation, hypothesis, and causality are distinguished.
+- Whether counterexamples are actively checked.
+- Whether Applicability and Non-applicability are clear.
+- Whether later hidden outcomes support the Insight.
+- Whether using the Insight improves real task outcomes.
 
-正式指标：
+Formal metrics:
 
-- Evidence Coverage 100%；
-- Insight Precision 不低于 80%；
-- Unsupported Causality 不高于 2%；
-- 每个 Insight 包含反例检查，或说明为什么无法检查。
+- Evidence Coverage of 100%.
+- Insight Precision of at least 80%.
+- Unsupported Causality no more than 2%.
+- Every Insight includes a counterexample check or explains why it could not be performed.
 
-“没有发现可靠规律”是合格输出。为了提高 Insight 数量而降低门槛，属于产品退化。
+"No reliable pattern found" is an acceptable output. Lowering thresholds to increase the number of Insights is product regression.
 
 ### 5.7 Playbook
 
-比较：
+Comparison:
 
 ```text
 A: No Knowledge / No Playbook
@@ -588,125 +656,120 @@ C: Current Approved Playbook
 D: Candidate Playbook
 ```
 
-Candidate 只有在独立 Held-out 上相对当前可用方案产生增益，才可以进入 Canary。
+A Candidate may enter Canary only if it improves on the currently available approach on an independent Held-out set.
 
-发布门槛：
+Release thresholds:
 
-- 至少 50 个 Held-out 成对回放；
-- Trigger Precision 不低于 95%；
-- Negative Abstention 不低于 98%；
-- 来源、权限、Trigger、Non-trigger 和 Verifier 完整率 100%；
-- Severe Harm 为 0；
-- 收益置信区间下界大于 0；
-- 可以一键回滚到前一版本。
+- At least 50 paired Held-out replays.
+- Trigger Precision of at least 95%.
+- Negative Abstention of at least 98%.
+- Provenance, permissions, Trigger, Non-trigger, and Verifier completeness of 100%.
+- Severe Harm of 0.
+- The lower bound of the benefit confidence interval is greater than 0.
+- One-click rollback to the previous version is available.
 
 ---
 
-## 6. 系统级 Guardrail
+## 6. System-level Guardrails
 
-以下指标是发布门槛，不是优化目标：
+These metrics are release thresholds, not optimization targets:
 
-| 指标 | 稳定发布门槛 |
+| Metric | Stable-release threshold |
 |---|---:|
-| Wrong Injection | 不高于 1% |
-| Harm Rate | 不高于 0.5% |
+| Wrong Injection | No more than 1% |
+| Harm Rate | No more than 0.5% |
 | Severe Harm | 0 |
-| Secret 持久化或输出 | 0 |
-| 跨 Repository 泄漏 | 0 |
-| Retrieval Latency P95 | 不高于 150 ms |
-| Capture Added Latency P95 | 不高于 10 ms |
+| Secret persistence or output | 0 |
+| Leakage across Repositories | 0 |
+| Retrieval Latency P95 | No more than 150 ms |
+| Capture Added Latency P95 | No more than 10 ms |
 | Evidence Coverage | 100% |
-| 删除传播失败 | 0 |
+| Deletion propagation failures | 0 |
 | Unsupported Completion Claim | 0 |
 
-Severe Harm 包括 Secret 泄漏、跨 Repository 内容泄漏和未授权破坏动作。只要出现一次，
-本次发布即为 No-Go；修复后必须重新运行完整安全套件，不能只重测失败用例。
+Severe Harm includes Secret leakage, content leakage across Repositories, and unauthorized destructive actions. A single occurrence makes the release No-Go. After a fix, rerun the full safety suite, not just the failed case.
 
-Unsupported Completion Claim 指会影响验收、学习或用户决策的“已测试”“已评审”
-“已形成跨模型共识”“已完成指定流程”等声明，缺少对应执行证据。普通表达不按这个
-指标处罚，关键过程声明必须有 Ledger 记录。
+An Unsupported Completion Claim is a statement such as "tested," "reviewed," "cross-model consensus reached," or "the specified process completed" that affects acceptance, learning, or user decisions but lacks corresponding execution evidence. Ordinary wording is not penalized by this metric; consequential process claims must have Ledger records.
 
 ---
 
-## 7. 一次完整的发布验收怎么做
+## 7. Complete release acceptance process
 
-### 7.1 冻结评估对象
+### 7.1 Freeze the evaluation target
 
-记录：
+Record:
 
-- 代码 Commit；
-- Schema 和迁移版本；
-- Adapter 版本；
-- 模型和 Prompt 版本；
-- 声明使用的协议及版本；
-- 要求参与和实际参与的 Agent、Provider、Model 与外部工具；
-- 检索、Trigger、Evidence Tier 和阈值配置；
-- 数据集版本；
-- 权限和网络策略；
-- 测试环境。
+- Code Commit.
+- Schema and migration versions.
+- Adapter version.
+- Model and Prompt versions.
+- Declared protocols and versions.
+- Required and actual participating Agents, Providers, Models, and external tools.
+- Retrieval, Trigger, Evidence Tier, and threshold configuration.
+- Dataset version.
+- Permission and network policies.
+- Test environment.
 
-评估期间修改任何一项，都要产生新的 Evaluation Run。
+A change to any of these during evaluation requires a new Evaluation Run.
 
-### 7.2 执行自动回归
+### 7.2 Run automated regression
 
-顺序建议：
+Suggested order:
 
-1. 单元和属性测试；
-2. Schema、迁移和兼容性测试；
-3. 集成与故障恢复；
-4. 端到端产品场景；
-5. Safety and Recovery；
-6. Replay 和 Held-out 对比；
-7. 性能与资源测试。
+1. Unit and property tests.
+2. Schema, migration, and compatibility tests.
+3. Integration and failure recovery.
+4. End-to-end product scenarios.
+5. Safety and Recovery.
+6. Replay and Held-out comparisons.
+7. Performance and resource tests.
 
-先跑便宜且定位清楚的测试，再跑耗时的 Replay。
+Run inexpensive tests with clear failure localization before time-consuming Replay.
 
-### 7.3 人工坏案例审查
+### 7.3 Human review of failure cases
 
-每次 Milestone 或 Release 至少审查：
+At every Milestone or Release, review at least:
 
-- 所有 Severe Harm 和 Harm；
-- 所有 Wrong Injection；
-- 指标最差的 10 个 Episode；
-- 系统高置信但人工判错的案例；
-- 系统选择不注入但 Oracle 认为应注入的案例；
-- 用户纠正、忽略、删除或回滚的案例。
+- All Severe Harm and Harm.
+- All Wrong Injection.
+- The 10 Episodes with the worst metrics.
+- Cases the system rated highly confident but human reviewers judged incorrect.
+- Cases where the system declined injection but the Oracle judged it necessary.
+- Cases involving user correction, ignoring, deletion, or rollback.
 
-平均指标会隐藏真正的问题。最差的十个案例通常比新增十个成功案例更有信息量。
+Average metrics can hide real problems. The ten worst cases usually reveal more than ten additional successes.
 
 ### 7.4 Shadow
 
-新策略先计算结果但不注入 Agent Context。Shadow 期间比较新旧版本：
+New policies first compute results without injecting them into Agent Context. During Shadow, compare the new and old versions:
 
-- 新增了哪些召回；
-- 停止了哪些召回；
-- 哪些状态迁移不同；
-- 是否触发 Scope、Secret 或权限风险；
-- 预计对 Token 和延迟的影响。
+- Newly retrieved items.
+- Items no longer retrieved.
+- Differences in state transitions.
+- Scope, Secret, or permission risks triggered.
+- Expected effects on Tokens and latency.
 
-Shadow 解决“规则看起来合理，但真实流量分布不同”的问题。
+Shadow tests whether a seemingly reasonable rule holds under the actual traffic distribution.
 
 ### 7.5 Canary
 
-通过 Shadow 后，只对少量 Episode 或低风险 Scope 启用。Canary 期间：
+After Shadow passes, enable the policy only for a small number of Episodes or low-risk Scopes. During Canary:
 
-- 保留旧版本作为对照；
-- 每次 Knowledge 或 Playbook 使用都有版本号；
-- Harm、Wrong Injection 和延迟实时检查；
-- 达到停止条件立即回滚；
-- 不在 Canary 期间继续调参后仍沿用原评估报告。
+- Retain the old version as a control.
+- Record a version for every use of Knowledge or a Playbook.
+- Check Harm, Wrong Injection, and latency in real time.
+- Roll back immediately when a stopping condition is met.
+- Do not continue tuning parameters during Canary while retaining the original evaluation report.
 
-### 7.6 观察窗口
+### 7.6 Observation window
 
-本地测试通过不是最终成功。需要等待 Review、CI、Fix、Revert 或下一发布周期。
+Passing local tests is not final success. Wait for Review, CI, Fix, Revert, or the next release cycle.
 
-M3 计划的 Outcome-qualified Success 观察窗口为 14 天或一个发布周期。窗口未结束的 Episode
-标记为 `censored`，不能提前计入成功样本。
-当前普通观察不具备完整延迟结果追踪，观察日期推进本身不能把未知任务结果变成成功。
+M3 plans an Outcome-qualified Success observation window of 14 days or one release cycle. Episodes whose window remains open are marked `censored` and cannot be counted early as successes. Current ordinary observations do not provide complete delayed-outcome tracking. The passage of observation dates alone cannot turn unknown task outcomes into successes.
 
-### 7.7 发布决策
+### 7.7 Release decision
 
-发布记录至少包含：
+A release record includes at least:
 
 ```text
 Decision: Go / Conditional Go / No-Go
@@ -721,64 +784,67 @@ Owner:
 Decision date:
 ```
 
-允许 Conditional Go 的情况应限于非安全、非数据正确性问题，并明确限制使用范围和
-到期时间。到期后没有新证据，自动转为 No-Go，而不是无限延期。
-这是发布政策，不是当前合成门禁的能力承诺。0.10 保留
-`field-effect-evidence: blocked`，因此增加普通观察或人工背书也不能产生 Go/Conditional Go。
+Conditional Go should be limited to issues that do not concern safety or data correctness, with explicit usage restrictions and expiration. Without new evidence at expiration, it automatically becomes No-Go instead of being extended indefinitely. This is release policy, not a capability claim for the current synthetic gates. Version 0.10 retains `field-effect-evidence: blocked`, so additional ordinary observations or human endorsement cannot produce Go/Conditional Go.
 
 ---
 
-## 8. Go / No-Go 规则
+## 8. Go / No-Go rules
 
-### 8.1 直接 No-Go
+### 8.1 Immediate No-Go
 
-出现以下任一情况，不进入下一阶段：
+Do not proceed to the next stage if any of the following applies:
 
-- Severe Harm 大于 0；
-- Secret 或跨 Repository 泄漏大于 0；
-- 删除后派生数据仍可检索；
-- 评估集泄漏；
-- 关键指标缺失或无法复现；
-- Outcome Success 明显下降；
-- 系统失败时阻塞 Copilot；
-- 无证据的推断可以自动激活 Knowledge 或 Playbook；
-- 关键完成声明缺少实际执行证据；
-- 版本无法回滚；
-- Final Held-out 被用于调参。
+- The first complete product still requires users to write rules manually, follow a correction
+  format, or prompt tool calls to pass the required automatic correction learning scenarios.
+- Severe Harm is greater than 0.
+- Secret or cross-Repository leakage is greater than 0.
+- Derived data remains retrievable after deletion.
+- Evaluation data has leaked.
+- Critical metrics are missing or cannot be reproduced.
+- Outcome Success declines substantially.
+- System failures block Copilot.
+- Unsupported inferences can automatically activate Knowledge or Playbooks.
+- Critical completion claims lack actual execution evidence.
+- The version cannot be rolled back.
+- Final Held-out data was used for tuning.
 
-### 8.2 可以继续研究，但不能稳定发布
+### 8.2 Research may continue, but stable release is not allowed
 
-- 核心价值指标方向正确，但样本量不足；
-- Wrong Injection 在 1%-2% 之间；
-- 个别非关键 Adapter 需要明确降级；
-- 性能在低端设备上接近门槛；
-- 用户能完成控制操作，但步骤仍然笨重。
+- Core value metrics are moving in the right direction, but the sample is too small.
+- Wrong Injection is between 1%-2%.
+- Some noncritical Adapters require explicit degradation.
+- Performance on low-end devices is close to the threshold.
+- Users can complete control operations, but the steps remain cumbersome.
 
-这类版本可以继续内部使用或 Design Partner 试用，不能把研究门槛描述成稳定质量。
-安全且明确授权的窄范围观察候选版也可用于收集缺失证据，但必须披露 No-Go 和停止条件。
-“尚未证明收益”不等于“已证明无害”；未知安全计数不能填写为零。
+These versions may continue in internal use or Design Partner trials. Research thresholds
+must not be described as stable quality. Safe, explicitly authorized observation candidates
+with a narrow scope may also collect missing evidence, but must disclose No-Go and stop
+conditions. Unproven benefit does not establish absence of harm. Unknown safety counts must
+not be filled in as zero.
 
 ---
 
-## 9. 如何发现产品改进点
+## 9. Finding product improvements
 
-改进项不应主要来自功能愿望清单，而应来自“预期行为与真实结果之间的差距”。
+Improvements should primarily come from gaps between expected behavior and actual outcomes,
+rather than feature wish lists.
 
-### 9.1 四类差距
+### 9.1 Four types of gaps
 
-| 差距 | 表现 | 典型改进方向 |
+| Gap | Symptoms | Typical improvements |
 |---|---|---|
-| 正确性差距 | 学错、链错、召回错、状态错误 | 规则、模型、证据和数据修正 |
-| 价值差距 | 工作正常，但 RCR、TTV 没改善 | Trigger、Context 形式、任务覆盖 |
-| 信任差距 | 用户不敢启用、频繁 Explain 或关闭 | 可解释性、权限、预览、控制 |
-| 成本差距 | 有收益，但延迟、Token、磁盘或维护成本过高 | 压缩、缓存、批处理、保留策略 |
+| Correctness gap | Incorrect learning, linking, retrieval, or state | Fix rules, models, evidence, and data |
+| Value gap | The system works, but RCR and TTV do not improve | Improve Triggers, Context format, and task coverage |
+| Trust gap | Users hesitate to enable features, frequently use Explain, or disable the system | Improve explanations, permissions, previews, and controls |
+| Cost gap | Benefits exist, but latency, Token use, disk use, or maintenance cost is too high | Improve compression, caching, batching, and retention policies |
 
-“用户没有点击某功能”并不能直接推出功能无用。可能是入口难找，也可能是用户根本不
-信任它。先确认属于哪类差距，再决定改界面、改算法还是删功能。
+A user not clicking a feature does not establish that the feature is useless. The entry point
+may be hard to find, or the user may not trust it. Identify the gap before deciding whether
+to change the interface, change the algorithm, or remove the feature.
 
-### 9.2 统一错误分类
+### 9.2 Consistent error classification
 
-每个坏案例至少标记一个主因：
+Assign at least one primary cause to every failure case:
 
 ```text
 capture.missed
@@ -808,12 +874,12 @@ reliability.degraded
 ux.unexplained_behavior
 ```
 
-分类稳定后，才能知道问题是偶发案例还是系统性缺陷。没有分类的 Feedback 最后通常只会
-变成一列无法排序的文字。
+Stable categories make it possible to distinguish isolated cases from systemic defects.
+Without classification, Feedback usually becomes a list of text that cannot be prioritized.
 
-### 9.3 从坏案例到改进实验
+### 9.3 From failure case to improvement experiment
 
-每个改进项使用以下模板：
+Use this template for each improvement:
 
 ```yaml
 problem:
@@ -839,67 +905,73 @@ rollback_condition:
   any severe harm or recall drop above guardrail
 ```
 
-策略或产品效果改进需要目标指标和 Guardrail。确定性缺陷修复可以先用最小复现、
-针对性回归和相邻负例验证，不要求每次修正命令解析或证据绑定都先开展完整收益实验。
+Strategy changes or improvements to product effectiveness require a target metric and
+Guardrails. Deterministic defect fixes can first use a minimal reproduction, targeted regression
+checks, and related negative cases. Fixing command parsing or evidence binding does not
+always require a full benefit experiment first.
 
-### 9.4 优先级
+### 9.4 Priority
 
-按下面的顺序处理：
+Address issues in this order:
 
-1. 安全、隐私、权限、删除和不可逆伤害；
-2. 会传播错误学习的系统性缺陷；
-3. 高频重复纠正和失败；
-4. 阻碍首次价值出现的使用问题；
-5. 性能、成本和维护性；
-6. 低频体验与外观问题。
+1. Safety, privacy, permissions, deletion, and irreversible harm.
+2. Systemic defects that propagate incorrect learning.
+3. Frequent repeated corrections and failures.
+4. Usability problems that prevent the first value event.
+5. Performance, cost, and maintainability.
+6. Infrequent experience and appearance issues.
 
-同一层级内，再比较影响用户数、发生频率、伤害程度、证据强度和修复成本。不要让一个
-精确到小数点的优先级公式掩盖证据不足。
+Within a priority level, compare the number of affected users, frequency, severity of harm,
+evidence strength, and repair cost. A priority formula with decimal precision must not hide
+weak evidence.
 
-### 9.5 固定复盘节奏
+### 9.5 Regular retrospective cadence
 
-建议建立三个节奏：
+Use three review cadences:
 
-- 每周坏案例 Review：看最差 Episode、Wrong Injection、重复纠正和用户控制操作；
-- 每个 Milestone 评估：决定研究问题是否已经被证明；
-- 每个稳定版本回顾：比较新旧版本、Cohort 和长期 Outcome。
+- Weekly failure-case Review: examine the worst Episodes, Wrong Injections, repeated
+  corrections, and user control operations.
+- Each Milestone evaluation: decide whether the research question has been answered
+  with evidence.
+- Each stable version retrospective: compare versions, Cohorts, and long-term Outcomes.
 
-复盘输出只保留三类结论：
+Retrospectives should produce only three types of decisions:
 
 ```text
-Keep：证据支持，保持不变
-Change：有明确差距和验证方案
-Stop：无收益、伤害过大或维护成本不合理
+Keep: Supported by evidence; leave unchanged
+Change: A clear gap and a validation plan exist
+Stop: No benefit, excessive harm, or unreasonable maintenance cost
 ```
 
 ---
 
-## 10. 线上观测应该记录什么
+## 10. What production observations should record
 
-为了回答“为什么这次变好或变坏”，至少记录：
+To explain why an outcome improved or worsened, record at least:
 
-- Evaluation Run、代码、规则、模型和数据版本；
-- 声明采用的工作协议、必需步骤和完成声明；
-- 请求参与者、实际参与者、requested/resolved model、调用 ID 和完成状态；
-- Context Request 的 Scope、Trigger 和候选数量；
-- 实际注入项、排序原因、Token 和延迟；
-- Knowledge/Playbook 是否被 Agent 使用；
-- 用户是否纠正、忽略、确认、删除或回滚；
-- Verifier 结果；
-- 后续 Review、CI、Fix、Bug 和 Revert；
-- Episode 最终状态及观察窗口；
-- 降级、超时和失败原因。
+- Evaluation Run, code, rule, model, and data versions.
+- The declared work protocol, required steps, and completion claims.
+- Requested and actual participants, requested/resolved model, invocation IDs, and
+  completion status.
+- Context Request Scope, Trigger, and candidate count.
+- Items actually injected, ranking reasons, Tokens, and latency.
+- Whether the Agent used the Knowledge or Playbook.
+- Whether the user corrected, ignored, confirmed, deleted, or rolled back the result.
+- Verifier results.
+- Later Reviews, CI, Fixes, Bugs, and Reverts.
+- Final Episode state and observation window.
+- Reasons for degradation, timeouts, and failures.
 
-不应默认记录：
+Do not record the following by default:
 
-- 与评估无关的完整 Prompt；
-- 无界的工具输出；
-- Secret 或高敏感原文；
-- 不能说明用途的遥测字段。
+- Complete Prompts unrelated to evaluation.
+- Unbounded tool output.
+- Secrets or highly sensitive original text.
+- Telemetry fields without an explainable purpose.
 
-每个字段都应能回答一个产品或可靠性问题。回答不了，就不采集。
+Each field must answer a product or reliability question. If it cannot, do not collect it.
 
-### 10.1 当前本地观察 — 0.10 证据候选版
+### 10.1 Current local observations: 0.10 evidence candidate
 
 ```powershell
 provenloop observations show
@@ -908,89 +980,108 @@ provenloop observations export --date 2026-09-06 |
   Set-Content -Encoding utf8 .\provenloop-observations.json
 ```
 
-日期按 UTC；默认今天。`show` 提供日期窗口、代码/插件版本、带本地密钥的
-Session/Repository 摘要、覆盖范围、检索状态与计数、明确采用、反馈、纠正、验证及
-已有 capture-health 快照。`export` 只输出当前代码版本的精简 observation manifest；
-不是全数据库导出。受限样本标记为 `bounded_sample`。
+Dates use UTC and default to today. `show` provides the date window, code/plugin versions,
+Session/Repository digests keyed with a local secret, coverage, retrieval status and counts,
+explicit adoption, feedback, corrections, verification, and available capture-health snapshots.
+`export` outputs a compact observation manifest for the current code version, not a full
+database export. Limited samples are marked `bounded_sample`.
 
-必须保持以下区别：
+Preserve these distinctions:
 
-- `provided` 只表示返回 Context；`explicitly_adopted` 来自用户明确报告。
-- helpful 不自动算采用，更不算验证成功。
-- `not_observed` 不等于 `not_invoked`；后者需要足够的关闭和覆盖证据。
-- 未知结果仍为 `outcome: unknown`，任务时长为 null，对照分组为 unknown。
-- 没有安全事件记录不等于 Severe Harm、Secret 或 Scope 泄漏实测为零。
-- capture-health 是进程快照，不应伪装成每个 Session 的完整测量。
+- `provided` means only that Context was returned; `explicitly_adopted` comes from an
+  explicit user report.
+- helpful does not automatically count as adoption or successful verification.
+- `not_observed` is not equivalent to `not_invoked`; the latter requires sufficient closure
+  and coverage evidence.
+- Unknown outcomes remain `outcome: unknown`, task duration is null, and control-group
+  assignment is unknown.
+- No recorded safety events does not mean that measured Severe Harm, Secret leakage,
+  or Scope leakage is zero.
+- capture-health is a process snapshot. It must not be presented as a complete measurement
+  of each Session.
 
-manifest 标记 `evidenceKind: observational` 和 `controlledEffect: not_established`。
-评估库可通过 `observationManifestPath` 加载并校验版本；当前 CLI 没有对应的
-`eval --observations` 参数。不要把 manifest 传给 `--evidence` 冒充发布证据。
+The manifest is marked `evidenceKind: observational` and `controlledEffect: not_established`.
+The evaluation library can load it through `observationManifestPath` and validate its version.
+The current CLI has no corresponding `eval --observations` option. Do not pass the manifest
+to `--evidence` as release evidence.
 
-### 10.2 工件绑定与人工背书
+### 10.2 Artifact binding and maintainer attestations
 
-外部 probe、自动测试报告和发布工件需要实际读取、schema/版本校验及摘要匹配，
-不能只检查文件存在或接受调用方填写的“passed”。调用方仍需说明样本来源和执行范围。
-paired-latency probe 分析输入数组，不执行配对实验；capability probe 引用外部测试
-报告，不代表它自己运行了这些测试。Shadow、最差案例评审等人工记录标明
-`maintainer_attestation`，摘要可证明绑定关系，不能自动证明人工判断或实验设计正确。
-
----
-
-## 11. MVP 的最小验收包
-
-M1 + M2 是第一个可正式验证的产品。以下是受控效果和推广资格所需的验收包，
-不是用户试用一条显式规则之前必须完成的每日操作：
-
-### 数据
-
-- 20-50 个真实 Work Episode 用于观测质量；
-- 至少 30 个 Branch Continuation 成对任务；
-- 至少 20 次独立 Correction Opportunity；不足时只报告案例；
-- Process Claim 正例、缺步骤负例和伪完成负例；
-- Negative Trigger 和跨 Repository 样本；
-- Seeded Secret、删除和故障恢复样本。
-
-### 必过场景
-
-1. 同一 Branch 的新 Session 找回必要 Context。
-2. 无关 Repository 不获得该 Context。
-3. 用户纠正 Jest/Vitest 后，后续相似任务不再重复犯错。
-4. 用户改变偏好后，旧 Knowledge 被修订而不是继续生效。
-5. 已显式关联的 direct Later Revert 使旧 Knowledge 停止注入。
-6. Forget 后该 Knowledge 及依赖投影不可检索；删除原始证据须用 Source/Session/Episode
-   Delete。受管理存储与独立备份/导出的边界必须明确。
-7. Backend、Worker 或 Extension 故障时 Copilot 仍可使用。
-8. Explain 能展示来源、适用范围、反证和当前状态。
-9. 声称“已执行测试/评审/共识”时，Ledger 中存在对应成功执行证据。
-10. 检测到外部代表可用但未调用，或代表模型不满足协议要求时，不能声称跨模型共识。
-11. 用户纠正一次 Process Claim 后，同类任务再次违反同一 Correction Key，Gate 失败。
-12. 安装后复用当前 Copilot 登录态，不额外要求模型 API Key；持久反馈和高影响操作
-    仍须用户明确批准，Agent 不能代签。
-13. 关闭单项能力后，对应采集、注入或后台处理停止，其他能力和前台 Copilot 保持可用。
-
-第 5 项在 M2 验证“已有 direct 反证能够立即停用 Knowledge”，不要求 M2 自动发现和
-关联延迟出现的 Revert。自动延迟 Outcome 关联属于 M3 的验收范围。
-
-### 产品门槛
-
-- RCR 相对 Baseline 下降至少 20%；
-- 重复 Context Token 中位数下降至少 30%；
-- TTV 中位数下降至少 15%；
-- Outcome Success 不下降超过 2 个百分点；
-- Retrieval Precision@3 不低于 90%；
-- 研究期 Wrong Injection 不高于 2%；
-- 关键 Unsupported Completion Claim 为 0；
-- Severe Harm、Secret 和跨 Repository 泄漏均为 0。
-
-在真实受控数据上达到这些条件，才支持更广泛试用的收益判断。合成通过、普通观察、
-人工确认和正式发布批准须分别展示。它还不能证明 Deep Retrospective 和
-Playbook 已经成立，那需要各自独立的数据集和发布门槛。
+External probes, automated test reports, and release artifacts must be read, checked against
+their schema and version, and matched by digest. Checking that a file exists or accepting
+a caller-supplied "passed" is insufficient. The caller must still describe the sample source
+and execution scope. The paired-latency probe analyzes input arrays; it does not run a paired
+experiment. The capability probe references external test reports; it does not run those tests
+itself. Manual records such as Shadow and worst-case reviews are marked
+`maintainer_attestation`. Digests establish the binding, but do not automatically prove that
+the human judgment or experimental design is correct.
 
 ---
 
-## 12. 建议的验收报告
+## 11. Minimum MVP acceptance package
 
-每次 Milestone 或 Release 生成一份 Markdown 摘要和一份机器可读结果。
+M1 + M2 form the first product that can undergo formal validation. The package below is
+required to establish controlled effects and eligibility for broader adoption. These are not
+daily operations that must precede a user trying one explicit rule.
+
+### Data
+
+- 20-50 real Work Episodes for observation quality.
+- At least 30 paired Branch Continuation tasks.
+- At least 20 independent Correction Opportunities; report cases only if there are fewer.
+- Positive Process Claim cases, negative cases with missing steps, and false-completion cases.
+- Negative Trigger and cross-Repository samples.
+- Seeded Secret, deletion, and failure-recovery samples.
+
+### Required scenarios
+
+1. A new Session on the same Branch retrieves the necessary Context.
+2. An unrelated Repository does not receive that Context.
+3. After the user corrects Jest/Vitest use, later similar tasks do not repeat the mistake.
+4. When the user changes a preference, the old Knowledge is revised instead of remaining active.
+5. An explicitly linked direct Later Revert stops injection of the old Knowledge.
+6. After Forget, the Knowledge and dependent projections are no longer retrievable. Deleting
+   raw evidence requires Source/Session/Episode Delete. The boundary between managed
+   storage and separate backups or exports must be explicit.
+7. Copilot remains usable when the Backend, Worker, or Extension fails.
+8. Explain shows sources, scope, counterevidence, and current state.
+9. A claim that tests, review, or consensus were completed has corresponding successful
+   execution evidence in the Ledger.
+10. The system cannot claim cross-model consensus when available external representatives
+    were not invoked, or when representative models do not meet protocol requirements.
+11. After a user corrects a Process Claim, a later task of the same type that violates the
+    same Correction Key fails the Gate.
+12. Installation reuses the current Copilot sign-in without requiring an additional model
+    API Key. Persistent feedback and high-impact operations still require explicit user
+    approval; the Agent cannot approve on the user's behalf.
+13. Disabling an individual capability stops the corresponding capture, injection, or
+    background processing. Other capabilities and foreground Copilot remain available.
+
+Item 5 validates in M2 that existing direct counterevidence can immediately disable Knowledge.
+M2 does not need to automatically discover and link delayed Reverts. Automatic delayed
+Outcome linking belongs to M3 acceptance.
+
+### Product thresholds
+
+- RCR decreases by at least 20% relative to the Baseline.
+- Median repeated Context Tokens decrease by at least 30%.
+- Median TTV decreases by at least 15%.
+- Outcome Success does not decrease by more than 2 percentage points.
+- Retrieval Precision@3 is at least 90%.
+- Research-stage Wrong Injection is no greater than 2%.
+- Critical Unsupported Completion Claim count is 0.
+- Severe Harm, Secret leakage, and cross-Repository leakage are all 0.
+
+Only results that meet these conditions on real controlled data support a benefit judgment
+for broader trials. Synthetic passes, ordinary observations, human confirmation, and formal
+release approval must be displayed separately. These results do not establish Deep
+Retrospective or Playbook effectiveness; each requires its own datasets and release gates.
+
+---
+
+## 12. Recommended acceptance report
+
+Produce a Markdown summary and a machine-readable result for each Milestone or Release.
 
 ```markdown
 # ProvenLoop Evaluation Report
@@ -1040,92 +1131,106 @@ Go / Conditional Go / No-Go
 ## Decision and rollback target
 ```
 
-报告必须列出失败和限制。只展示通过项的报告无法用于发布决策。
+The report must list failures and limitations. A report that shows only passes cannot support
+a release decision.
 
-实现中的聚合命令为：
+The implemented aggregate command is:
 
 ```powershell
 provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
 ```
 
-该命令固定同一代码版本并运行 M0、M1、M2，保留所有子报告，再读取显式发布证据。
-发布证据必须匹配该代码版本、三个数据集版本和三个稳定子门禁摘要；旧报告不能批准新代码。
-没有证据、Shadow 未通过、观察窗口未结束、回滚未验证或任一安全计数非零/未知时，不能批准。
-当前另有固定的现场效果缺口，只能输出
-`No-Go`。回滚目标必须能解析为当前 Git 仓库中存在且不同于当前版本的 Commit。研究
-政策要求 Conditional Go 也须提供未过期、明确列出 Repository 或 Design Partner
-目标的 Canary Scope，但它不能绕过 `field-effect-evidence`。未来受控效果验证接入前，
-不能把当前 CLI 描述为只要补齐人工材料就能 Go。
+This command fixes the code version, runs M0, M1, and M2, preserves all child reports, and
+then reads explicit release evidence. Release evidence must match that code version, all
+three dataset versions, and all three stable child-gate digests. Old reports cannot approve
+new code. Approval is not possible if evidence is missing, Shadow has not passed, an
+observation window remains open, rollback is unverified, or any safety count is nonzero
+or unknown. The current implementation also has a fixed field-effect evidence gap, so it
+can only return `No-Go`. The rollback target must resolve to a Commit that exists in the
+current Git repository and differs from the current version. Research policy requires even
+a Conditional Go to provide an unexpired Canary Scope that explicitly lists Repository or
+Design Partner targets, but it cannot bypass `field-effect-evidence`. Until future controlled
+effect validation is integrated, the current CLI must not be described as capable of Go
+simply by supplying all manual documentation.
 
 ---
 
-## 13. 落地顺序
+## 13. Implementation sequence
 
-不需要一开始建设完整 Dashboard。先把评估本身做可信。
+A complete Dashboard is not needed at the start. Make evaluation itself trustworthy first.
 
-### 第一步：开发前
+### Step one: Before development
 
-- 为 M0-M2 建立 Requirement ID 和验收案例；
-- 冻结 ReplaySpec、Evidence Ledger、Gate Result、报告和退出码 Schema；
-- 定义 Episode、Correction Key 和 Outcome 标签规则；
-- 准备第一批真实但脱敏的 Replay；
-- 冻结 Baseline 采集方式。
+- Establish Requirement IDs and acceptance cases for M0-M2.
+- Freeze the ReplaySpec, Evidence Ledger, Gate Result, report, and exit-code schemas.
+- Define labeling rules for Episode, Correction Key, and Outcome.
+- Prepare the first real, sanitized Replays.
+- Freeze the Baseline collection method.
 
-### 第二步：开发中
+### Step two: During development
 
-- 每项功能同步增加测试和评估事件；
-- 每周扩充坏案例库；
-- 所有用户纠正先复现原始 Episode，再生成最小 Replay Case 和相邻负例；
-- 评估脚本输出机器可读结果。
+- Add tests and evaluation events alongside each feature.
+- Expand the failure-case library weekly.
+- For every user correction, reproduce the original Episode first, then create a minimal
+  Replay Case and related negative cases.
+- Have evaluation scripts produce machine-readable results.
 
-### 第三步：MVP 完成后
+### Step three: After the MVP is complete
 
-- 先跑通显式规则、后续 Session 召回、Explain/明确反馈和本地观察的窄闭环；
-- 执行最小验收包；
-- 完成人工盲审；
-- 先 Shadow，再进入受限 Canary；
-- 等待 Outcome 观察窗口；
-- 作出 M1 + M2 Go / No-Go 决定。
+- First verify unprompted retrieval for new tasks and user-visible feedback in the installed
+  host. Then verify ordinary correction, automatic extraction, activation of eligible rules,
+  and later compliance. Use explicit-rule flows only as diagnostic preflight checks.
+- Run `M2-AUTO-001` through `M2-AUTO-008`; check coverage, noise, and the complete
+  failure denominator.
+- Run the minimum acceptance package.
+- Complete manual blind review.
+- Run Shadow before entering a limited Canary.
+- Wait for the Outcome observation window.
+- Make the M1 + M2 Go / No-Go decision.
 
-### 第四步：持续改进
+### Step four: Continuous improvement
 
-- 固定 Final Held-out，不随意更换难例；
-- 新坏案例进入 Development 集，不直接污染最终集；
-- 每次策略变化都与当前版本成对比较；
-- 没有稳定收益的复杂能力不进入默认路径。
+- Keep the Final Held-out set fixed; do not casually replace difficult cases.
+- Add new failure cases to the Development set without contaminating the final set.
+- Compare every strategy change against the current version in paired evaluations.
+- Keep complex capabilities without consistent benefits out of the default path.
 
-ProvenLoop 最容易犯的错误，是把“系统越来越复杂”当成“系统越来越聪明”。验收方案的
-作用，就是迫使每一项复杂性拿出证据。
+ProvenLoop could easily mistake increasing system complexity for increasing intelligence.
+The acceptance plan requires evidence to justify each addition to that complexity.
 
-### 13.1 首轮明确不做
+### 13.1 Explicitly out of scope for the first round
 
-为了防止统一内核滑向评估平台，M0-M2 首轮不建设：
+To keep the shared core from expanding into an evaluation platform, the first M0-M2 round
+does not build:
 
-- Dashboard 和通用标注工作台；
-- 完整 Agent Sandbox；
-- M4-M6 专用评估能力；
-- 六类数据集的完整实现；
-- 自动化 Shadow/Canary 编排平台；
-- 为展示而存在、不能阻断发布的指标页面。
+- A Dashboard or general-purpose annotation workbench.
+- A complete Agent Sandbox.
+- M4-M6-specific evaluation capabilities.
+- Complete implementations of all six dataset types.
+- An automated Shadow/Canary orchestration platform.
+- Metric pages that exist only for display and cannot block release.
 
-这些能力后续可以成为新的 Gate Provider，但不能改变首轮 Spec、Ledger、Report 和
-Exit Code 契约。
+These capabilities may later become new Gate Providers, but they must not change the
+first-round Spec, Ledger, Report, and Exit Code contracts.
 
 ---
 
-## 14. 真实坏案例：假跨模型共识
+## 14. Real failure case: false cross-model consensus
 
-### 14.1 发生了什么
+### 14.1 What happened
 
-系统被要求使用 consensus 协议评审一份方案。它给多个代表分配了不同角色，但没有显式
-指定不同模型；检测到 Codex 和 Copilot 可用后，也没有让它们实际参与，却仍把结果描述
-为“共识”。用户纠正后，系统才承认过程不合规。
+The system was asked to review a proposal using the consensus protocol. It assigned
+different roles to multiple representatives without explicitly assigning different models.
+After detecting that Codex and Copilot were available, it did not have them participate,
+yet still described the result as "consensus." Only after the user corrected it did the
+system acknowledge that the process did not comply with the protocol.
 
-这类错误说明：
+This error shows that:
 
-> 写了流程、检测到工具、启动了若干代表，都不等于流程已经执行完成。
+> Writing a process, detecting tools, and starting representatives do not establish that
+> the process was completed.
 
-它可能不会导致测试失败，也不会被 CI 或 Revert 捕捉，却会直接破坏用户信任。
+The error may not fail tests or be caught by CI or a Revert, but it directly damages user trust.
 
 ### 14.2 Correction Key
 
@@ -1138,46 +1243,54 @@ workflow/consensus-review
 
 ### 14.3 Capture
 
-记录：
+Record:
 
-- 声明使用的协议和版本；
-- 协议要求的代表、模型多样性和外部参与条件；
-- 可用性检测结果；
-- 实际发起和成功完成的调用；
-- requested/resolved provider 和 model；
-- 最终完成声明。
+- The declared protocol and version.
+- The protocol's required representatives, model diversity, and external participation
+  conditions.
+- Availability check results.
+- Calls actually started and completed successfully.
+- requested/resolved provider and model.
+- The final completion claim.
 
 ### 14.4 Verify
 
-`ClaimExecutionConsistency` 是确定性 Verifier：
+`ClaimExecutionConsistency` is a deterministic Verifier:
 
 ```text
-如果声明为 cross-model consensus：
-  每个必需代表必须有成功 invocation_id
-  模型多样性必须满足协议规则
-  被要求且可用的外部代表必须有实际完成证据
-  失败或缺席必须在结论中明确披露
+If the claim is cross-model consensus:
+  Every required representative must have a successful invocation_id
+  Model diversity must satisfy the protocol rules
+  Required and available external representatives must have actual completion evidence
+  Failures or absences must be explicitly disclosed in the conclusion
 
-否则：
+Otherwise:
   Gate = fail
-  禁止使用“跨模型共识”作为验收或学习证据
+  Do not use "cross-model consensus" as acceptance or learning evidence
 ```
 
-这里验证的是调用事实，不判断各模型观点是否聪明。结论质量由其他 Gate 评价。
+This verifies the facts of invocation, not the quality of each model's views. Other Gates
+evaluate the quality of the conclusion.
 
 ### 14.5 Learn and regress
 
-用户纠正后：
+After the user corrects the error:
 
-1. 将坏案例归类为 `process.false_claim`；这是评估错误分类，不是 FeedbackEvent 的 kind；
-2. 用户显式确认后形成精确 Scope 的 User-confirmed Knowledge，或将结构化纠正保留为
-   待验证候选；错误分类本身不能自动创建 Active Knowledge；
-3. 原案例进入 Development Replay；
-4. 同时生成三个变体：
-   - 同模型多角色，必须拒绝跨模型声明；
-   - 外部代表检测可用但未调用，必须拒绝完成声明；
-   - 外部调用失败并明确披露，允许降级为“多角色评审”，不能称为跨模型共识；
-5. 后续同类任务再次出现同一 Correction Key，计入 RCR 并阻断发布。
+1. Classify the failure as `process.false_claim`. This is an evaluation error class, not
+   a FeedbackEvent kind.
+2. After explicit user confirmation, create User-confirmed Knowledge with a precise Scope,
+   or retain the structured correction as a Candidate awaiting verification. Error
+   classification alone cannot automatically create Active Knowledge.
+3. Add the original case to Development Replay.
+4. Create three variants:
+   - Multiple roles with the same model: reject the cross-model claim.
+   - An external representative detected as available but not invoked: reject the
+     completion claim.
+   - An external call that failed and was explicitly disclosed: allow degradation to a
+     "multi-role review," but do not call it cross-model consensus.
+5. If the same Correction Key recurs in a later task of the same type, count it in RCR
+   and block release.
 
-这才是产品需要掌握的经验：不是机械记住“要用不同模型”，而是学会“所有关键完成
-声明必须由实际执行证据支持，失败时必须准确降级表述”。
+The lesson the product needs to learn extends beyond using different models: every critical
+completion claim must have actual execution evidence, and failures must lead to an accurate
+description of the degraded result.

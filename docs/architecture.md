@@ -15,6 +15,12 @@ Synthetic regression coverage is not native-host acceptance, controlled benefit
 evidence, or M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. New-version artifact validation must be retained separately.
 
+**First-product requirement update (2026-09-07):** automatic extraction from
+ordinary natural-language corrections is mandatory for the first complete M1+M2
+product. Sections 2.2 and 3.6.1-3.6.5 specify the required addition; it is not
+implemented in the published 0.11 runtime. Manual rule creation is a control and
+diagnostic path, not acceptance of automatic learning.
+
 ## 1. Architecture goals
 
 The system must:
@@ -129,7 +135,7 @@ Requirement Manifest -> Replay Spec -> Runner
 |---|---|---|
 | M0 | Copilot adapter, Extension events, queue, parser, canonical events, basic Episode builder, evaluation spine | Event identity, evidence references, deletion, Gate result |
 | M1 | Branch Context, scoped retrieval, FTS projection, Explain and Feedback | Repository/branch identity, token budget, usage records |
-| M2 | Correction Key, evidence-backed Knowledge, deterministic admission and dispute handling | Evidence tier, scope, trigger, provenance, product metrics |
+| M2 | Automatic natural-language correction extraction, Correction Key, evidence-backed Knowledge, deterministic admission and dispute handling | Evidence tier, scope, trigger, provenance, product metrics |
 | M3 | Automated delayed Outcome linking and observation-window qualification | Existing Episode and evidence relations |
 | M4 | Deep Retrospective, evidence expansion, Insight Candidate | Existing evidence, admission, and evaluation contracts |
 | M5 | Playbook evaluation, approval, Shadow, Canary, registry, rollback | Existing Knowledge, artifact, and Gate contracts |
@@ -142,10 +148,16 @@ and delayed association of Review, CI, Fix, Bug, and Revert evidence.
 
 ### 2.2 First-use product boundary
 
-The first useful interaction does not require automatic inference. A user can
-confirm a real, narrowly scoped rule or handoff, retrieve it in a later Session,
-inspect its source, and record feedback. This is `user_confirmed` Knowledge,
-not evidence that ProvenLoop independently learned or verified a rule.
+The first complete product requires automatic inference over a bounded,
+source-backed correction window. A user corrects an ordinary tool operation in
+natural language; the background runtime extracts a proposal, deterministic
+admission checks the actual recovery evidence, and a later relevant task can
+reuse qualified guidance without another instruction to remember or retrieve it.
+The originating Session need not be closed.
+
+Explicitly remembering and retrieving a rule remains useful for diagnosis and
+user control. That produces `user_confirmed` Knowledge, but does not satisfy
+the automatic-learning requirement. The 0.11 runtime still has this gap.
 
 The production acceptance path crosses the actual adapter, queue, worker,
 canonical store, MCP entry point, and subsequent Session. Constructing a
@@ -153,10 +165,11 @@ canonical store, MCP entry point, and subsequent Session. Constructing a
 tool result reaches the learner. Registering an MCP tool does not prove the
 host calls it, and returning context does not prove that it was used.
 
-Runtime repair should preserve the modular monolith and existing worker.
-Additional backends, model-assisted retrospective, and Playbooks are not
-prerequisites for this first-use path. Recovery, source isolation, and deletion
-guarantees still apply to the initial pilot.
+The addition preserves the modular monolith, existing capture path, Worker,
+canonical store, and retriever. Bounded correction extraction is an M2 consumer,
+not M4 retrospective, another local service, or a new user-invoked MCP tool.
+Recovery, source isolation, and deletion guarantees apply to model inputs,
+jobs, proposals, verification receipts, and retrieved rules.
 
 ## 3. Component responsibilities
 
@@ -332,7 +345,7 @@ changes, the remaining range is marked `contextMixed` rather than attributed
 to the first repository. Low-level constructors expose buffer/gap limits; the
 installed entry uses fixed defaults, not user-facing CLI flags. Current defaults
 and recovery budgets are listed in the
-[capture design](copilot-event-capture-design.md#52-内存缓冲区).
+[capture design](copilot-event-capture-design.md#52-memory-buffer).
 This is best-effort capture: a crash before durable enqueue can lose buffered
 events or gaps. Neither an absent gap record nor an incomplete reconciliation
 pass proves lossless archival.
@@ -451,9 +464,12 @@ interface InferenceProvider {
 Installation performs the one-time Copilot integration. Subsequent supported
 background calls reuse the user's existing Copilot sign-in without copying or
 persisting credentials, without an additional API key, and without per-call
-authentication prompts. This does not authorize persistent Knowledge changes,
-scope changes, destructive controls, or Playbook activation on the user's
-behalf. F0 must verify authentication reuse through a
+authentication prompts. Enabling automatic extraction requires a one-time
+disclosure and consent for bounded redacted snippets and model usage; capture-only
+consent in an older installation is not sufficient. It authorizes the bounded
+extraction/persistence consumer, not fabricated user confirmations, unrestricted
+Knowledge activation, scope changes, destructive controls, or Playbook execution.
+F0 must verify authentication reuse through a
 supported integration path for the declared Copilot version.
 
 If Copilot is signed out, rate-limited, incompatible, or unavailable,
@@ -543,7 +559,8 @@ also distinct from proving that the current task created that commit.
 
 The M2 correction learner:
 
-- normalizes explicit corrections into stable Correction Keys;
+- must extract candidate rules from ordinary user corrections automatically;
+- normalizes source-backed corrections into stable Correction Keys;
 - requires a verified result before qualifying correction-based Knowledge;
 - records opportunities where an existing correction could have applied;
 - separates candidate generation from deterministic state transitions;
@@ -555,6 +572,8 @@ disputed, uncertain, and scope-incompatible content is never silently injected.
 Numeric model scores may rank candidates for review but cannot activate,
 supersede, or broaden Knowledge.
 
+The following is the shipped command-verification path. The proposed extraction
+and typed MCP-recovery additions below must preserve, not bypass, its guarantees.
 Correction Knowledge admission is deterministic and fail closed. The policy
 requires the user-trusted correction, a later successful `tool` or `system`
 test/build/verification event bound to that correction and its operation,
@@ -582,6 +601,164 @@ ordinary confirmation does not erase unreviewed or later counterevidence.
 Missing repository identity
 means the scope is unresolved, not that repository content becomes personal
 Knowledge. A personal scope requires an explicit user choice.
+
+#### 3.6.1 Automatic extraction in the existing worker
+
+**Required design, not yet implemented.** The Extension callback remains a bounded
+event copier. After durable ingestion, a `LearningCoordinator` in `host` creates
+versioned learning windows from trusted user turns and their causally related
+operations. Tool completion/failure and idle events advance a window; shutdown
+is only a final bounded scheduling/drain opportunity, not the primary trigger.
+Missing English labels or correction keywords must not prevent analysis of an
+otherwise eligible window.
+
+```text
+SDK events -> durable queue -> canonical events / Work Episodes
+                                      |
+                                      v
+                          LearningWindow + durable LearningJob
+                                      |
+                                      v
+                       bounded Copilot InferenceProvider call
+                                      |
+                                      v
+                          immutable RuleProposal + source spans
+                                      |
+                                      v
+                     deterministic verification / admission
+                                      |
+                                      v
+                         Knowledge lifecycle -> FTS -> Context
+```
+
+The existing Extension background loop dispatches this consumer after canonical
+ingestion. It must not await a model while holding the ingestion, projection,
+maintenance, or deletion lease. Model work uses a separate OS-owned per-data-root
+lease; committing a result reacquires the appropriate short-lived lease and
+rechecks source existence/digests, consent, capability state, scope, cancellation,
+and current counterevidence. Slow inference cannot stop event ingestion.
+
+Responsibilities remain in current packages:
+
+| Package | Required addition |
+|---|---|
+| `contracts` | Versioned window, job, proposal, source-span and typed-verification contracts |
+| `copilot-adapter` | Native MCP call provenance and a bounded `CopilotInferenceProvider` |
+| `host` | Window scheduling, deduplication, job lifecycle, result validation and projection coordination |
+| `domain` | Pure proposal validation, Correction Key normalization and evidence-specific admission |
+| `storage-sqlite` | Canonical jobs/proposals/receipts, compare-and-set transitions and deletion dependencies |
+| `cli` | Installed-loop dispatch, learning controls and diagnostics |
+| `retrieval` | Existing scoped canonical recheck and Explain, extended for the new proof types |
+| `evaluation` | Real-trigger replay, provider-bound extraction evaluation and native installed acceptance |
+
+The current joined-session abstraction only exposes event subscription and
+disconnect; no model-request method is implemented there. The reusable mechanism
+is the existing bounded Copilot CLI provider probe, not an invented SDK method.
+The new provider must use a supported no-tools invocation, isolated working
+directory, disabled custom instructions, existing sign-in, and
+`PROVENLOOP_INTERNAL=1`. It must prove that plugins/MCP tools cannot execute and
+that inference Sessions cannot enter capture, reconciliation, observations or
+learning. Merely setting one environment variable is not the acceptance test.
+
+Input is a redacted data document, not executable instructions from a captured
+message. Do not send the repository, full Session history, credential files,
+unrelated events or recalled Knowledge as fresh evidence. Output is schema-
+validated JSON containing zero or more proposals; malformed/truncated output,
+unknown source IDs or mismatched source quotations are explicit failures.
+Model self-ratings do not confer evidence or lifecycle authority.
+
+Initial implementation budgets are proposed defaults, not existing CLI flags:
+one inference request in flight per data root, at most 32 events / 32 KiB after
+redaction per request, at most three proposals / 16 KiB per response, a 60-second
+request deadline, at most three attempts per window, and a configurable default
+of 200 attempted requests per UTC day. Failed attempts consume budget. Related
+events are debounced and unchanged windows are not resubmitted. A small budget
+is not a correctness shortcut: excess work remains visibly pending/paused rather
+than silently lost, and the user can raise the configured daily limit.
+
+#### 3.6.2 Provenance and recoverable state
+
+A `LearningWindow` identifies the actual Session/repository/worktree, exact source
+event IDs and digests, source order, capture completeness, and window revision.
+A `LearningJob` binds that revision to code, prompt, schema and extractor versions,
+provider/model identity, attempt count, lease/deadline, usage and error state.
+A `RuleProposal` carries the inferred rule, applicability/non-applicability,
+quoted user-source spans, relevant failed/retried operations and verification
+references. These are new derived artifacts, not rewritten `RawEvent` records.
+
+The model cannot mint a `user.corrected` event with `trust: user`, a verification
+event, a confirmation code or `user_confirmed` evidence. Original ordinary user
+messages remain ordinary source events. Extending admission to proposals must
+validate their original user sources and derived provenance explicitly, instead
+of converting an inference into supposedly native evidence.
+
+Persist a state machine such as `pending -> running -> extracted -> evaluated`,
+with explicit `waiting_evidence`, `paused`, `failed` and `cancelled` dispositions.
+Zero proposals is a successful analysis with no rule, not a provider failure.
+Extraction success is not activation. Lease expiry permits bounded retry after
+a crash; the same window revision cannot create duplicate rules or independent
+support. New verification may reevaluate a stored proposal without a new model call.
+
+Canonical migrations, source dependency indexes, crash recovery, and purge/
+source/session/Knowledge deletion must include these artifacts before rollout.
+A deleted or revoked source cannot be resurrected by an in-flight model result,
+queue replay, prompt-version change or projection rebuild. Keep only bounded
+redacted inputs/results needed for provenance; diagnostic exports must not include
+raw model prompts, source text or tool payloads.
+
+#### 3.6.3 Typed verification for MCP recovery
+
+Preserve MCP server/tool identity, call IDs, complete relevant argument fields,
+structured failure, response error indicators and causal parent ordering from
+the native event source. An MCP tool named `powershell` is still an MCP tool;
+it must never gain built-in shell verification authority.
+
+Add a typed MCP recovery receipt rather than fabricating `test.completed` or a
+shell exit code. The receipt must bind the original failure, real user correction,
+actual retry, exact changed parameter/operation and an independently checkable
+postcondition. Validators declare what they prove, such as conformance to the
+tool's input schema or an absolute-path argument requirement. A recovered
+invocation contract does not prove the semantic truth of the returned data.
+
+Automatic activation supports a finite set of typed rule predicates. Bind any
+tool contract to an adapter-supplied identity/version/digest; the model cannot
+supply its own authoritative schema. The operative guidance must be rendered
+from the validated predicate and exact applicability, not from unchecked model
+prose. For example, a successful absolute-path retry may support a narrowly
+scoped preferred argument form, not a claim that every relative path is invalid.
+Unrepresentable generalizations remain candidates.
+
+Tool-transport success, `success: true`, a plausible response body or a model's
+claim that the retry worked is insufficient by itself. Missing provenance,
+truncation, ambiguous retry pairing, conflicting error indicators or an unsupported
+postcondition leaves a proposal waiting for evidence. Generic MCP conversations
+can still produce reviewable candidates without being labeled externally verified.
+
+Qualified low-risk repository/tool-scoped rules can activate without another
+user confirmation when the deterministic evidence policy passes. Inferred-only,
+high-impact, disputed or scope-expanding proposals do not. Natural-language
+extraction never weakens existing secret, deletion, counterevidence or scope checks.
+
+#### 3.6.4 Reuse and first-product acceptance
+
+Use the current Context/Explain surfaces; do not require a new user-driven
+extraction tool. Source-to-proposal, proposal-to-admission and admission-to-
+retrieval links must be visible, including why a rule is still not usable.
+
+The shipped task-start mechanism is MCP instructions plus the plugin Skill.
+It is not a guaranteed host hook. Native acceptance must therefore observe an
+actual later task retrieving and receiving the newly qualified rule without a
+user instruction to call a ProvenLoop tool. If the supported host cannot do this
+reliably, that remains a release blocker; a declared SDK API or registered Skill
+alone cannot satisfy it. Providing context and the Agent following it are separate
+observations, and neither establishes controlled benefit.
+
+The automatic-learning acceptance trace must include an open original Session,
+an ordinary correction without labels, actual model extraction, native operation
+recovery, durable qualification, and a later relevant task. It must not preseed
+Knowledge, call `remember`, manually fabricate correction/verification events,
+or ask the user to start a learner. Unsupported evidence and negative scenarios
+must remain candidates or no-match rather than being forced through the positive gate.
 
 Context retrieval records the trusted Session immediately. The deterministic
 Work Episode projection subsequently associates each context-use record only
@@ -635,6 +812,46 @@ The output and evidence locations must be outside the repository or ignored by
 Git. Provenance is recomputed after the subgates and immediately before atomic
 publication; a concurrent worktree mutation invalidates the run with
 infrastructure exit code 3.
+
+#### 3.6.5 Learning coverage and noise control
+
+This is required first-product work. Discovery, admission and delivery have
+separate decisions and evaluation denominators. Extraction should find reusable
+corrections across ordinary wording; it may return no proposal for temporary
+requests, questions, quotations or generic advice with no concrete behavior change.
+Record rejection reasons without creating permanent Knowledge for every message.
+Source text expressing a continuing constraint is evidence of intent, not approval
+of the model's paraphrase. Existing admission and confirmation rules still apply.
+
+Proposals must describe a trigger, a concrete change in behavior, exclusions and
+sources. Use existing topic keys and compare scope, tool/contract version, trigger
+and operation semantics before merging. Model similarity is only a merge proposal.
+Equivalent evidence can attach to one rule; overlapping but incompatible rules
+retain the conflict and enter the current dispute policy. Merging cannot broaden
+scope or resolve counterevidence. Replays, window revisions and retries in the
+same causal operation chain do not create independent support.
+
+Persist candidate expiry and its supporting source identity. The proposed default
+is 30 days after the latest independent supporting evidence, or creation when
+there is no later support. Expiry archives an inactive candidate and stops automatic
+analysis and review reminders. Model retries and prompt changes cannot extend it.
+New independent evidence or an explicit user action can request reevaluation;
+revocation, deletion, current evidence and capability checks still apply. This is
+logical archival, not physical deletion or a change to active-rule expiry.
+
+Ordinary Context excludes candidates and inferred-only guidance. Check exact
+scope, tool/version and applicability before ranking, and preserve current Top-k
+and token bounds. Suppress equivalent guidance already supplied for the task or
+known to be present in project instructions. A material task/workspace change
+permits fresh retrieval with new applicability checks. Host visibility into current
+instructions/context must be declared; missing visibility cannot be reported as
+successful duplicate suppression.
+
+Native-host checks must exercise task-start delivery before expanding extraction
+coverage. Use one native-command recovery and one MCP recovery through the full
+installed path, plus temporary requests, duplicates, conflicts and unrelated tasks.
+Report discovery misses, eligible rules left inactive, missed delivery and wrong
+delivery separately under `M2-AUTO-007`; user-visible feedback is `M2-AUTO-008`.
 
 ### 3.7 Outcome linker
 
@@ -1451,7 +1668,7 @@ probe contention returns unavailable context rather than trusting a stale
 producer. See the capture design for the installed freshness and size bounds.
 
 Every persistent MCP feedback proposal requires the real user's exact
-`confirm PL-<code>` (or `确认 PL-<code>`) message, captured through the trusted
+`confirm PL-<code>` message (or its supported Chinese equivalent), captured through the trusted
 Session. Approval lasts at most five minutes and is bound to the action,
 target kind/ID, request, scope, reason, resolution IDs, adoption flag, Session,
 and workspace version. The unchanged retry is idempotent; changed parameters
@@ -1622,10 +1839,11 @@ Implemented runtime bounds:
 - progressive disclosure through explanation calls;
 - stale and unused guidance loses rank.
 
-Episode compaction, configurable raw-event retention, automatic candidate
-cleanup, and periodic Knowledge consolidation are future policies, not default
-storage guarantees. Projection expiry suppresses retrieval; it is not physical
-deletion. Acknowledged queue cleanup is separate from canonical raw retention.
+Candidate expiry and logical archival in section 3.6.5 are required additions
+for automatic learning. Episode compaction, configurable raw-event retention,
+physical candidate cleanup and periodic Knowledge consolidation remain future
+policies. Archival and projection expiry do not guarantee physical deletion.
+Acknowledged queue cleanup is separate from canonical raw retention.
 
 ## 12. Observability
 
@@ -1652,7 +1870,8 @@ metrics remain future requirements, not automatically populated telemetry:
 - deletion operations and propagation Gate results;
 - secret and scope-policy violations.
 
-The MVP needs CLI diagnostics, not a full dashboard.
+The MVP needs CLI diagnostics and the bounded learning feedback below; it does
+not require a full dashboard.
 
 Ordinary preview use produces privacy-minimized local observation summaries
 without requiring a daily acceptance start/stop ritual. Explicit acceptance windows
@@ -1669,6 +1888,37 @@ remain unknown; `not_observed` is not `not_invoked`. Task duration and baseline
 assignment are unavailable and task outcome stays unknown.
 `observations export` prints a bounded current-code-version manifest to stdout;
 it does not export raw evidence or confer release approval.
+
+The automatic-learning addition must expose window/job/proposal counts, last
+attempt and result, provider availability, quota/retry state, inference usage,
+proposal/activation reason, source-to-rule latency, and later retrieval linkage.
+Distinguish `not_scheduled`, `analysing`, `no_rule`, `waiting_evidence`, `active`,
+`paused` and `failed`. These are required new diagnostics, not fields already
+present in 0.11 `observations show`. Users must be able to distinguish no trigger,
+no useful proposal, insufficient evidence and no later retrieval.
+
+Track reusable-opportunity coverage, duplicate merges, exclusion reasons, expired
+candidates and affected-task wrong delivery counts. Evaluation labels define
+opportunity denominators; the learner's own proposals cannot define its recall.
+Missing field labels remain unknown. Counts of candidates and model calls are
+operational data and must not be displayed as improvement.
+
+The host adapter must support a user-visible notice surface for committed
+activation and actual Context delivery. Default to at most one learning-change
+summary and one delivery notice per task; merge changes and deduplicate by
+rule/version for activation, and by task, rule/version and notice kind for
+delivery. An activation change must not be announced again in a later task.
+Candidate creation, repeated evidence and
+`no_rule` produce no proactive notice. Waiting candidates stay in an on-demand
+status view; persistent pauses may update one status indicator without repeated
+alerts. A notification preference is separate from learning/retrieval capabilities.
+
+Activation notices identify the concrete rule, scope and source/control entry.
+Delivery notices require a recorded delivery and cannot claim adoption or benefit.
+Recheck the rule and deletion state before showing a pending notice, and include
+notice dependencies in deletion handling. An adapter that only writes diagnostics
+or returns hidden tool output has not passed `M2-AUTO-008`; acceptance must
+observe the notice on the actual user surface.
 
 ## 13. Architectural decisions
 

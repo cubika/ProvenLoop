@@ -286,6 +286,10 @@ It classifies the provider as `available`, `signed_out`, `rate_limited`,
 
 ## First useful use
 
+This is the current 0.11 manual diagnostic path. Automatic extraction from
+ordinary corrections is a required first-product addition, not an implemented
+feature of this release; see the [design](product-design.md#721-initial-automatic-extraction-and-activation).
+
 Start with an explicitly chosen, narrowly scoped rule rather than waiting for
 automatic learning:
 

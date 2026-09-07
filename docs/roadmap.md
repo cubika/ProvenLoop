@@ -7,10 +7,11 @@
 ## 1. Delivery strategy
 
 Build the learning loop in evidence order. Do not begin with automatic Skill
-generation. First deliver a narrow useful path: an explicitly confirmed scoped
-rule, retrieval in a later Session, explanation, explicit feedback, and local
-observations. Safe capture and strict evidence qualification support that
-path; automated delayed outcome discovery is not a prerequisite.
+generation. The first complete product must automatically extract a rule proposal
+from an ordinary correction, qualify it using actual related evidence, and reuse
+eligible guidance in a later task without a manual remember/retrieve ritual.
+Explicit rule controls and observations remain necessary, but are not a substitute
+for rule production. Delayed outcome discovery is not a prerequisite.
 
 The `0.1.0-alpha.0.11` Windows Design Partner Preview evidence candidate includes
 M0-M2 repairs, Knowledge review, trusted feedback, local observations, and
@@ -84,14 +85,19 @@ Acceptance:
 Deliver:
 
 - explicit Correction Keys and predeclared Correction Opportunities;
+- automatic natural-language extraction through an authorized, bounded Copilot
+  provider, with durable jobs and source-backed proposals;
 - supported native event normalization through the production capture path;
 - trusted correction/operation/verification binding with complete parent evidence;
+- typed MCP invocation-recovery evidence without treating generic success as proof;
 - evidence tiers, deterministic admission, and explainable supersession;
 - direct linked counterevidence and current explicit user resolution;
 - synthetic recurrence regressions and separate real-use observation.
 
 Acceptance:
 
+- the open-Session natural correction -> automatic proposal -> qualified rule ->
+  unprompted later-task reuse trace passes on the installed host;
 - unrelated tests, incomplete targets, and unknown workspace identity cannot verify a rule;
 - old user confirmation cannot resolve new counterevidence;
 - conflicting evidence pauses automatic retrieval;
@@ -176,7 +182,13 @@ None of these is required to validate the core product.
 The recommended first demonstrable product includes:
 
 ```text
-explicitly user-confirmed scoped rule
+ordinary user correction + actual operation recovery
+          |
+          v
+automatic background extraction with source references
+          |
+          v
+deterministic evidence and scope admission
           |
           v
 canonical Knowledge + Explain
@@ -201,6 +213,7 @@ Must-have:
 - repository and branch identity;
 - safe cross-session identity and Work Episode projection;
 - correction and test recognition with strict operation proof;
+- automatic proposal extraction and supported MCP recovery verification;
 - scoped Knowledge Card;
 - MCP retrieval and explanation;
 - feedback and deletion;
@@ -215,21 +228,22 @@ Not required for the first useful demonstration:
 
 ## 9. Demonstration scenario
 
-1. In the repository, explicitly remember “inspect package scripts and use the
-   targeted test” with a narrow applicability condition.
-2. Review the rule, source, scope, and current digest. Correct, replace, revoke,
-   or forget it if needed.
-3. In a later Copilot Session, request relevant Context and Explain. Absence of
-   a match or trusted identity is reported honestly.
-4. After trying the rule, approve the exact feedback proposal yourself. Report
-   adoption separately from helpfulness.
-5. Inspect local observations. They show recorded use, not a counterfactual
-   claim of fewer errors or time saved.
+1. In a repository task, correct a real MCP argument error or an incorrect test
+   operation using ordinary language, without a prescribed field format.
+2. The Agent retries the relevant operation. Keep the Session open; the runtime
+   automatically extracts a proposal and checks the supported recovery evidence.
+3. Inspect the resulting rule and source. Unsupported evidence must remain
+   visibly pending, not be promoted for the sake of the demonstration.
+4. Start a later relevant task without restating the rule or asking for a
+   ProvenLoop tool call. Observe actual retrieval and the Agent's operation.
+5. Verify an unrelated repository does not receive the rule, then exercise
+   correction, revocation and deletion without resurrecting it.
 
-See the [executable workflow](../README.md#first-useful-workflow). An optional
-automatic-learning demonstration must capture the real user correction,
-trusted operation, parent chain, and successful bound verification through the
-installed producer path. A domain fixture or same-Episode success is insufficient.
+This automatic demonstration is required, not optional. The
+[current executable workflow](../README.md#first-useful-workflow) is still the
+0.11 manual diagnostic path; it does not satisfy the new requirement. Full trace
+replay and native-host evidence are both required; same-Episode success alone
+is insufficient.
 
 ## 10. Explicitly deferred
 

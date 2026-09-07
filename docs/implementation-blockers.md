@@ -107,6 +107,24 @@ Exit conditions:
 - verify the runtime-switch and database-recovery boundaries separately;
   an older package is not automatically compatible with a newer schema.
 
+## M2-AUTO: Automatic natural-language rule production
+
+**Owner:** M2 learner, Copilot adapter and installed-runtime work packages
+**State:** First-product blocker; not implemented in 0.11
+
+- Replace fixed-field/manual-rule production as the normal path with automatic
+  bounded semantic extraction using the existing authorized Copilot sign-in.
+- Preserve original user/tool provenance; a model cannot approve itself or turn
+  a generic MCP success into external verification.
+- Qualify at least the supported native-command and MCP invocation-contract
+  scenarios without another user confirmation; keep unsupported cases as candidates.
+- Observe actual later-task retrieval and use without a manual tool reminder.
+- Implement durable job state, budgets, diagnostics, counterevidence and deletion
+  propagation before enabling the consumer for existing installations.
+- Meet `M2-AUTO-001` through `M2-AUTO-008`, including coverage, noise control
+  and bounded user-visible feedback; manual `remember` demonstrations and
+  synthetic construction of downstream events do not close this blocker.
+
 ## 0.1.0-alpha.0.11 acceptance boundary
 
 - Retain final lint, typecheck, targeted/full test, build, and packed-artifact

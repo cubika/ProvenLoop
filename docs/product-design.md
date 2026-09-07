@@ -1,450 +1,491 @@
-# ProvenLoop 产品设计
+# ProvenLoop Product Design
 
-> **一次纠正，持续受益；每次结果，都让下一次更好。**
+> **A correction should keep helping; each outcome should improve the next attempt.**
 
-**状态：** Canonical Product Design  
-**版本：** 2.1  
-**更新日期：** 2026-09-07
+**Status:** Canonical Product Design
+**Version:** 2.1
+**Updated:** 2026-09-07
 
-**实现边界：** 本文同时保留产品目标和分阶段设计。`0.1.0-alpha.0.11` 是 Windows
-Design Partner Preview 证据候选版，包含 Knowledge 管理、本地观察、可信 Session
-授权、严格原生证明链及有界当前 Session 对账。M3-M6 不是当前能力，合成回归通过
-不等于真实收益或 M0/MVP 批准；`0.1.0-alpha.1` 仍是未获批准的质量发布目标。
-新版本工件验证须单独留存，不能沿用先前源码测试结果作为批准。
+**Implementation boundary:** This document includes both product goals and phased designs.
+`0.1.0-alpha.0.11` is a Windows Design Partner Preview evidence candidate with Knowledge
+management, local observations, trusted Session authorization, strict native proof chains,
+and bounded current-Session reconciliation. M3-M6 are not current capabilities. Passing
+synthetic regressions does not establish controlled benefit evidence or M0/MVP approval;
+`0.1.0-alpha.1` remains an unapproved quality-release target. Validation of new-version
+artifacts must be retained separately; earlier source-code test results cannot serve as approval.
+
+**First-product requirement update (2026-09-07):** Automatic rule extraction, evidence
+assessment, and later-task reuse after natural-language corrections are required for the
+first complete product and cannot be deferred to Retrospective. Users should not have to
+run `remember`, fill in fixed fields, or invoke an extraction tool for the system to learn
+from a correction. The published 0.11 release does not provide this capability. Existing
+manual first-use examples diagnose storage and retrieval only and do not meet first-product acceptance.
 
 ---
 
-## 0. 执行摘要
+## 0. Executive summary
 
-ProvenLoop 是面向个人开发者的 **Coding Agent 持续改进层**。
+ProvenLoop is a **continuous improvement layer for Coding Agents**, built for individual developers.
 
-用户继续使用 GitHub Copilot CLI、Claude Code、Codex 或其他 Coding Agent。
-ProvenLoop 在这些工具之外维护一套属于用户自己的连续记忆、工程证据和学习能力：
+Users continue to work with GitHub Copilot CLI, Claude Code, Codex, or other Coding Agents.
+Outside those tools, ProvenLoop maintains continuity memory, engineering evidence, and
+learning capabilities that belong to the user:
 
 ```text
-不再反复解释相同 Context
+Stop explaining the same Context repeatedly
               +
-不再反复纠正相同错误
+Stop correcting the same errors repeatedly
               +
-更换 Agent 后仍能保留已经学会的东西
+Keep what has been learned when switching Agents
 ```
 
-ProvenLoop 同时追求效率和质量，并通过三个相互连接的引擎实现：
+ProvenLoop pursues both efficiency and quality through three connected engines:
 
-1. **连续性记忆（Continuity Memory）**
-   - 解决效率问题。
-   - 让 Agent 在新的 Session、`/clear` 或工具切换后，仍能理解相关项目背景、
-     当前工作状态、个人偏好和已经确认的约束。
-   - 优先集成现有 Memory 产品和开源能力，不重复建设通用 Memory 基础设施。
+1. **Continuity Memory**
+   - Addresses efficiency.
+   - Helps an Agent understand relevant project background, current work state, personal
+     preferences, and confirmed constraints after a new Session, `/clear`, or a tool switch.
+   - Prioritizes integration with existing Memory products and open-source capabilities
+     rather than rebuilding general-purpose Memory infrastructure.
 
-2. **成果反馈学习（Outcome Learning）**
-   - 解决质量问题。
-   - 将用户纠正、测试、构建、Review、CI、Revert 和后续 Bug Fix 与原始工作轨迹
-     关联，识别什么方法真正有效、什么结论后来被推翻。
-   - 这是 ProvenLoop 的核心差异化和主要自研方向。
+2. **Outcome Learning**
+   - Addresses quality.
+   - Links user corrections, tests, builds, Review, CI, Revert, and later Bug Fixes to the
+     original work traces to identify methods that worked and conclusions later overturned.
+   - This is ProvenLoop's main differentiator and primary area of in-house development.
 
-3. **深度复盘（Deep Retrospective）**
-   - 解决“没有人明确说出，但可以从经历中发现”的问题。
-   - 主动比较多个成功和失败 Episode，提出假设，补充检索 Repository、Git、文档、
-     依赖资料和相关工程知识，寻找反例并形成新的 Insight。
-   - 它不是记录用户说过什么，而是研究用户和 Agent 的真实工作经历。
+3. **Deep Retrospective**
+   - Finds lessons that nobody stated explicitly but that work experience can reveal.
+   - Actively compares successful and failed Episodes, proposes hypotheses, searches
+     Repository content, Git, documentation, dependency references, and relevant engineering
+     knowledge for more evidence, and looks for counterexamples to develop new Insights.
+   - Studies the actual work of users and Agents, beyond recording what users said.
 
-最终产品不是一个更大的历史数据库，而是一个可验证的学习闭环：
+The complete product provides a verifiable learning loop, beyond storing a larger history:
 
 ```text
-真实工作轨迹
+Actual work traces
   -> Work Episode
   -> Outcome Evidence
   -> Deep Retrospective
   -> Insight Candidate
   -> Knowledge Card
   -> Proven Playbook
-  -> 在未来任务中使用
-  -> 测量是否真的改善
-  -> 强化、修订、停用或回滚
+  -> Use in future tasks
+  -> Measure whether it actually improves results
+  -> Reinforce, revise, disable, or roll back
 ```
 
-ProvenLoop 的最终判断标准不是“记录了多少”，而是：
+ProvenLoop's final criterion concerns outcomes, not the volume of records:
 
-> 在未参与学习的后续相似任务中，用户是否更少重复 Context、是否更少重复纠正，
-> 并且没有引入不可接受的错误、延迟、隐私和权限风险。
+> In later similar tasks that were not used for learning, do users repeat less Context
+> and make fewer repeated corrections, without unacceptable errors, latency, privacy risks,
+> or permission risks?
 
 ---
 
-## 1. 最终愿景
+## 1. Long-term vision
 
 ### 1.1 Vision
 
-> 让每个 Coding Agent 都能从用户真实的软件开发结果中持续学习，并将已经验证的
-> 经验安全地带到未来 Session、Repository 和 Agent 中。
+> Enable every Coding Agent to learn continuously from the user's actual software
+> development outcomes and safely carry verified lessons into future Sessions, Repositories,
+> and Agents.
 
-今天的 Coding Agent 很强，但它们的工作方式仍然接近“每次重新入职”：
+Today's Coding Agents are capable, but often work as though they need onboarding each time:
 
-- Session 之间缺乏连续性。
-- `/clear` 后重要背景需要重新说明。
-- 换一个 Agent 后，之前的纠正和偏好通常全部丢失。
-- Agent 可能记住一次对话，却不知道几天后的 Revert 证明当时的做法有问题。
-- Memory 可以召回历史，但不一定知道历史是否正确、是否过期、是否真的有帮助。
-- Skill 可以复用流程，但缺少可靠来源、基线评估和回滚机制时，也可能固化错误。
+- Sessions lack continuity.
+- Important background must be explained again after `/clear`.
+- Previous corrections and preferences are usually lost when switching Agents.
+- An Agent may remember a conversation without knowing that a Revert several days later
+  showed a problem with the approach.
+- Memory can retrieve history without knowing whether it is correct, outdated, or useful.
+- Skills can reuse procedures but may also preserve mistakes when they lack reliable
+  sources, baseline evaluation, and rollback mechanisms.
 
-ProvenLoop 希望形成一个独立于具体 Agent 的个人学习层：
+ProvenLoop aims to provide a personal learning layer independent of any particular Agent:
 
 ```text
-Agent 是可替换的执行工具
-ProvenLoop 是持续积累的个人工程智能
+Agents are replaceable execution tools
+ProvenLoop accumulates personal engineering intelligence over time
 ```
 
-### 1.2 最终目标
+### 1.2 Long-term goals
 
-最终目标同时包含效率和质量，两者不互相替代。
+The goals cover both efficiency and quality; neither substitutes for the other.
 
-#### 效率目标
+#### Efficiency goals
 
-- 减少跨 Session 重复输入的背景和约束。
-- 缩短从提出任务到 Agent 正确开始执行的时间。
-- 减少无效读取、错误命令和重复工具调用。
-- 切换 Agent 时不需要重新训练工具理解个人和项目。
+- Reduce repeated entry of background and constraints across Sessions.
+- Shorten the time from a task request to the Agent starting the correct work.
+- Reduce unnecessary reads, incorrect commands, and repeated tool calls.
+- Avoid teaching a new Agent about the user and project from scratch after a switch.
 
-#### 质量目标
+#### Quality goals
 
-- 减少相似任务中已经发生过的用户纠正。
-- 减少由相同错误模式导致的测试失败、Review 返工和 Revert。
-- 将后续结果反向用于修订旧经验。
-- 从多个 Episode 中发现用户没有直接表达过的规律、遗漏和改进机会。
-- 必要时主动获取额外证据，对复盘产生的假设进行支持或反证。
-- 将重复验证有效的方法逐步升级为可复用、可评估、可回滚的 Playbook。
+- Reduce repeated user corrections in similar tasks.
+- Reduce test failures, Review rework, and Reverts caused by the same error patterns.
+- Use later outcomes to revise earlier lessons.
+- Discover patterns, omissions, and improvement opportunities across Episodes that the
+  user has not directly expressed.
+- Actively obtain more evidence when needed to support or challenge retrospective hypotheses.
+- Gradually promote repeatedly verified methods into reusable, evaluable Playbooks with rollback support.
 
-#### 安全目标
+#### Safety goals
 
-- 错误知识不会因为被记录而获得永久权威。
-- 不同 Repository 的内容不会错误泄漏。
-- Secret、私密内容和不可信外部指令不会进入长期知识。
-- 所有自动学习都能解释、纠正、删除、停用和回滚。
+- Recording incorrect knowledge must not give it permanent authority.
+- Content must not leak improperly between Repositories.
+- Secrets, private content, and untrusted external instructions must not enter long-term knowledge.
+- All automatic learning must support explanation, correction, deletion, disabling, and rollback.
 
 ---
 
-## 2. 核心用户和产品边界
+## 2. Core users and product boundaries
 
-### 2.1 目标用户
+### 2.1 Target users
 
-ProvenLoop 的目标用户是：
+ProvenLoop is intended for:
 
-> **持续使用一个或多个本地 Coding Agent 完成真实软件开发工作的个人开发者。**
+> **Individual developers who regularly use one or more local Coding Agents for real software development work.**
 
-典型特征：
+Typical characteristics:
 
-- 经常在同一个 Repository 中开启多个 Session。
-- 经常使用 `/clear` 或新 Session 控制上下文长度。
-- 需要重复说明测试方式、代码约束、业务背景或当前开发状态。
-- 会在 Copilot CLI、Claude Code、Codex 等工具之间切换。
-- 希望 Agent 从纠正、测试、Review 和后续 Bug 中学习。
-- 希望数据默认保存在本地，并能知道系统到底学到了什么。
+- Frequently start multiple Sessions in the same Repository.
+- Frequently use `/clear` or new Sessions to control context length.
+- Need to repeat testing methods, code constraints, business background, or current development state.
+- Switch between tools such as Copilot CLI, Claude Code, and Codex.
+- Want Agents to learn from corrections, tests, Review, and later Bugs.
+- Want local data storage by default and visibility into what the system has learned.
 
-首发 Agent 是 GitHub Copilot CLI。
+The first supported Agent is GitHub Copilot CLI.
 
-多 Agent 支持属于产品方向，但采用渐进式能力矩阵：
+Support for multiple Agents is part of the product direction, with capabilities added progressively:
 
-| 能力 | 首发要求 | 后续 Adapter |
+| Capability | Initial release requirement | Later Adapters |
 |---|---:|---:|
-| 读取统一 Knowledge | 必须 | 必须 |
-| 检索 Context | 必须 | 必须 |
-| 用户 Feedback | 必须 | 必须 |
-| Session 和工具事件采集 | 支持事件集；缺失、截断和不兼容显式可见 | 按 Agent 能力实现 |
-| Work Episode 关联 | 保守的确定性关联；不假装覆盖所有真实任务 | 逐步增强 |
-| Skill/Playbook 执行 | M5 目标，不属于 M0-M2 首用要求 | 按权限模型实现 |
+| Read shared Knowledge | Required | Required |
+| Retrieve Context | Required | Required |
+| User Feedback | Required | Required |
+| Session and tool event capture | Supported event set; missing, truncated, and incompatible data explicitly visible | Implement according to Agent capabilities |
+| Work Episode association | Conservative deterministic association; no claim to cover all real tasks | Improve progressively |
+| Natural-language correction extraction | Automatically create source-backed candidates in the background; automatically reuse verified low-risk rules | Declare boundaries based on supported evidence and model interfaces |
+| Skill/Playbook execution | M5 target, outside M0-M2 first-use requirements | Implement according to the permission model |
 
-如果增加一个 Adapter 的成本很低，应尽早支持基础检索和 Feedback；但不能为了追求
-表面上的多 Agent 数量，阻塞首个完整学习闭环。
+When an Adapter is inexpensive to add, basic retrieval and Feedback should be supported
+early. Adding more Agents for the sake of a longer support list must not delay the first
+complete learning loop.
 
-### 2.2 明确不做
+### 2.2 Explicit exclusions
 
-第一阶段不做：
+The first phase excludes:
 
-- 团队知识共享和组织级治理。
-- 企业权限、合规审计和管理分析。
-- 通用聊天助手。
-- 完整 Agent Runtime。
-- 消息渠道和设备 Gateway。
-- 通用 Session Viewer。
-- 通用 Memory 数据库、向量数据库或知识图谱。
-- 在线修改基础模型权重。
-- 默认上传 Prompt、代码、轨迹或知识。
-- 未经评估和批准自动启用高影响 Playbook。
+- Team knowledge sharing and organization-wide governance.
+- Enterprise permissions, compliance auditing, and management analytics.
+- A general-purpose chat assistant.
+- A complete Agent Runtime.
+- Messaging channels and device Gateways.
+- A general-purpose Session Viewer.
+- A general-purpose Memory database, vector database, or knowledge graph.
+- Online modification of foundation-model weights.
+- Uploading Prompts, code, traces, or knowledge without explicit authorization. Even after
+  background extraction is authorized, only bounded, redacted, relevant snippets go to the
+  user's chosen model service; complete Sessions and Repositories are not uploaded.
+- Automatically enabling high-impact Playbooks without evaluation and approval.
 
-这些边界不会缩小最终愿景，而是确保产品先证明个人学习闭环有效。
+These boundaries preserve the long-term vision while requiring the product to prove that
+the personal learning loop works first.
 
 ---
 
-## 3. 用户问题
+## 3. User problems
 
-### 3.1 Session 是孤立的，但软件工作是连续的
+### 3.1 Isolated Sessions within continuous software work
 
-一次真实任务可能经历：
+A real task may span:
 
 ```text
-Session A：完成初始实现
+Session A: Complete the initial implementation
   -> Commit
   -> Pull Request
 
-Session B：根据 Review 修改
-  -> 新 Commit
+Session B: Make changes following Review
+  -> New Commit
 
-Session C：CI 失败后修复
-  -> 测试通过
+Session C: Fix a CI failure
+  -> Tests pass
 
-两周后：
-  -> 线上 Bug
-  -> Revert 或 Fix
+Two weeks later:
+  -> Production Bug
+  -> Revert or Fix
 ```
 
-传统 Session Memory 只知道每段对话发生了什么，不一定知道它们属于同一个任务，
-更不知道后续结果是否推翻了之前的判断。
+Traditional Session Memory knows what happened in each conversation but may not know
+that they belong to the same task, or whether later outcomes overturned earlier judgments.
 
-### 3.2 用户为同一种知识重复付费
+### 3.2 Users repeatedly pay for the same knowledge
 
-用户反复付出的成本包括：
+Recurring costs include:
 
-- 再次粘贴相同背景。
-- 再次说明项目使用 Vitest 而不是 Jest。
-- 再次要求不要修改生成文件。
-- 再次解释某个 API 的兼容性约束。
-- 再次指出 Agent 忘记运行验证。
-- 更换 Agent 后从头建立使用习惯。
+- Pasting the same background again.
+- Explaining again that the project uses Vitest rather than Jest.
+- Asking again not to modify generated files.
+- Explaining an API's compatibility constraints again.
+- Pointing out again that the Agent forgot to run verification.
+- Establishing working habits from scratch after switching Agents.
 
-ProvenLoop 的核心产品观念是：
+ProvenLoop's central product principle is:
 
-> **一次已经验证的纠正，应该成为一次性投入，而不是永久重复成本。**
+> **A verified correction should be a one-time investment, not a permanently recurring cost.**
 
-### 3.3 Memory 不等于学习
+### 3.3 Memory and learning are different
 
-Memory 能回答：
+Memory can answer:
 
 ```text
-以前发生过什么？
-用户说过什么？
-当前项目可能有哪些相关信息？
+What happened before?
+What did the user say?
+What information might be relevant to the current project?
 ```
 
-学习还必须回答：
+Learning must also answer:
 
 ```text
-后来结果怎么样？
-当时的结论是否被 Review、CI 或 Bug 推翻？
-这条经验适用于什么条件？
-使用它是否让后续任务更好？
-它应当保持、修改、降权还是删除？
+What happened later?
+Did Review, CI, or a Bug overturn the earlier conclusion?
+Under what conditions does this lesson apply?
+Does using it improve later tasks?
+Should it be kept, revised, down-ranked, or deleted?
 ```
 
-这一区别是 ProvenLoop 与普通 Agent Memory 的根本边界。
+This distinction defines the boundary between ProvenLoop and ordinary Agent Memory.
 
-### 3.4 纠正总结也不等于深度学习
+### 3.4 Correction summaries are not deep learning
 
-如果 ProvenLoop 只把“用户说错了什么”保存下来，它仍然只是更自动化的 Memory。
+If ProvenLoop only saves the mistakes users point out, it remains a more automated form of Memory.
 
-深度学习要求系统能够从多条轨迹中发现原始记录没有直接给出的规律：
+Deep learning requires the system to discover patterns across traces that the original
+records do not state directly:
 
 ```text
-多个看似独立的失败
-  -> 找到共同条件
-  -> 提出可能的根因或缺失检查
-  -> 获取额外信息
-  -> 主动寻找反例
-  -> 形成有适用边界的新 Insight
-  -> 在未来任务中验证
+Several apparently independent failures
+  -> Find shared conditions
+  -> Propose a possible root cause or missing check
+  -> Obtain more information
+  -> Actively look for counterexamples
+  -> Form a new Insight with defined applicability
+  -> Verify it in future tasks
 ```
 
-例如，用户从未说过“修改前检查文件是否由代码生成”。但多个 Episode 显示：
+For example, a user never said, “Check whether a file is generated before editing it.”
+But several Episodes show:
 
-1. Agent 修改了生成文件。
-2. 局部测试通过。
-3. 后续构建重新生成文件并覆盖改动。
-4. Repository 配置和官方工具文档表明真正入口是 Schema。
+1. The Agent modified a generated file.
+2. Targeted tests passed.
+3. A later build regenerated the file and overwrote the changes.
+4. Repository configuration and official tool documentation show that the actual input is a Schema.
 
-ProvenLoop 可以据此提出：
+ProvenLoop can propose:
 
-> 修改来源不明的文件前，应先确认它是否为生成产物，并定位生成入口。
+> Before modifying a file of unknown origin, check whether it is generated and locate its generation input.
 
-这条结论首先是 Insight Candidate，而不是立即生效的规则。只有在本地证据、额外资料、
-反例检查和后续任务中得到支持后，才可能晋升为 Knowledge。
+This conclusion begins as an Insight Candidate, not an immediately active rule. It may
+be promoted to Knowledge only after local evidence, additional references, counterexample
+checks, and later tasks support it.
 
 ---
 
-## 4. 产品定位
+## 4. Product positioning
 
-### 4.1 一句话定位
+### 4.1 One-sentence positioning
 
-> ProvenLoop 是面向个人开发者的 Coding Agent 持续改进层：复用现有 Memory
-> 保持工作连续性，并通过软件成果反馈，让多个 Agent 从真实结果中不断减少重复错误。
+> ProvenLoop is a continuous improvement layer for Coding Agents, built for individual
+> developers: it reuses existing Memory to maintain work continuity and uses software
+> outcome feedback to help multiple Agents reduce repeated mistakes based on actual results.
 
-### 4.2 核心卖点
+### 4.2 Main benefits
 
-#### 1. 不用重复讲：Continuity
+#### 1. Less repeated explanation: Continuity
 
-在新 Session、`/clear` 或 Agent 切换后，自动找回当前任务真正相关的少量 Context。
+Automatically retrieve a small amount of Context relevant to the current task after a
+new Session, `/clear`, or an Agent switch.
 
-#### 2. 不会只记住成功：Outcome Learning
+#### 2. Learn from failures as well as successes: Outcome Learning
 
-测试通过、Review 修正、CI 失败、Revert 和后续 Bug 都会改变经验的可信度。
+Passing tests, Review corrections, CI failures, Reverts, and later Bugs all change how
+well a lesson is supported.
 
-#### 3. 不只是记录，还会研究经历：Deep Retrospective
+#### 3. Study experience beyond recording it: Deep Retrospective
 
-ProvenLoop 主动比较跨 Session、跨时间的成功和失败轨迹，发现共同模式、隐藏前提、
-缺失检查和低效策略。必要时扩展证据，而不是被动等待用户给出答案。
+ProvenLoop actively compares successful and failed traces across Sessions and time to
+find common patterns, hidden assumptions, missing checks, and inefficient strategies.
+When needed, it gathers more evidence instead of waiting for the user to supply an answer.
 
-#### 4. 每条建议有据可查：Proof Chain
+#### 4. Traceable evidence for every suggestion: Proof Chain
 
-每条 Knowledge 和 Playbook 都能回答：
+Every Knowledge item and Playbook can answer:
 
-- 来自哪些 Session 和 Episode？
-- 哪些测试、Commit、Review 或用户反馈支持它？
-- 是否存在反证？
-- 为什么现在适用？
-- 上次使用后结果如何？
+- Which Sessions and Episodes did it come from?
+- Which tests, Commits, Reviews, or user feedback support it?
+- Is there counterevidence?
+- Why does it apply now?
+- What happened after its last use?
 
-#### 5. 换 Agent 不失忆：Portable Intelligence
+#### 5. Keep learning when switching Agents: Portable Intelligence
 
-个人偏好、项目知识和验证过的工作方法不绑定某个 Agent 厂商。不同 Agent 通过统一的
-检索、解释和 Feedback 接口使用同一套个人学习成果。
+Personal preferences, project knowledge, and verified working methods are independent
+of any Agent vendor. Different Agents use the same personal learning results through
+shared retrieval, explanation, and Feedback interfaces.
 
-#### 6. 不是声称变聪明，而是证明变好：Measured Improvement
+#### 6. Demonstrate improvement: Measured Improvement
 
-ProvenLoop 对 Memory、Knowledge 和 Playbook 建立基线、Held-out 回放和在线指标。
-没有可比较结果的改进，不算产品成功。
+ProvenLoop establishes baselines, Held-out replays, and online metrics for Memory,
+Knowledge, and Playbooks. An improvement without comparable results does not count
+as product success, regardless of claims that the system has become smarter.
 
-### 4.3 产品飞轮
+### 4.3 Product feedback loop
 
 ```mermaid
 flowchart LR
-    WORK["真实开发工作"] --> EPISODE["Work Episode"]
+    WORK["Real development work"] --> EPISODE["Work Episode"]
     EPISODE --> OUTCOME["Outcome Evidence"]
     OUTCOME --> REFLECT["Deep Retrospective"]
     REFLECT --> INSIGHT["Insight Candidate"]
     INSIGHT --> KNOWLEDGE["Knowledge Card"]
-    KNOWLEDGE --> RETRIEVE["未来任务按需使用"]
-    RETRIEVE --> RESULT["新的任务结果"]
-    RESULT --> MEASURE["测量收益与伤害"]
+    KNOWLEDGE --> RETRIEVE["Use as needed in future tasks"]
+    RETRIEVE --> RESULT["New task outcomes"]
+    RESULT --> MEASURE["Measure benefit and harm"]
     MEASURE --> KNOWLEDGE
     KNOWLEDGE --> PLAYBOOK["Proven Playbook"]
     PLAYBOOK --> RETRIEVE
 ```
 
-飞轮只有在“结果重新进入系统”时才成立。单向保存 Memory 不是闭环。
+The feedback loop works only when outcomes return to the system. Saving Memory in
+one direction does not close the loop.
 
 ---
 
-## 5. 产品能力模型
+## 5. Product capability model
 
-ProvenLoop 的学习分为六层。每个 Milestone 聚焦其中一部分，但最终产品保留完整方向。
+ProvenLoop's learning has six layers. Each Milestone focuses on part of them, while the
+complete product retains the full direction.
 
-| 层级 | 能力 | 产品含义 |
+| Layer | Capability | Product meaning |
 |---|---|---|
-| L0 | 轨迹化 | 记录任务、动作、工具和结果 |
-| L1 | 情景记忆 | 找回一次具体任务发生了什么 |
-| L2 | 深度复盘与语义归纳 | 比较经历、扩展证据并形成新的有条件 Insight |
-| L3 | 程序能力 | 将重复验证的方法形成 Playbook |
-| L4 | 策略优化 | 比较版本、触发条件和使用效果 |
-| L5 | 参数学习 | 使用批准数据进行离线训练，属于远期可选方向 |
+| L0 | Tracing | Record tasks, actions, tools, and outcomes |
+| L1 | Episodic memory | Retrieve what happened in a specific task |
+| L2 | Deep retrospective and semantic induction | Compare experiences, gather more evidence, and form new conditional Insights |
+| L3 | Procedural capability | Turn repeatedly verified methods into Playbooks |
+| L4 | Strategy optimization | Compare versions, triggers, and results of use |
+| L5 | Parameter learning | Offline training with approved data; an optional long-term direction |
 
-长期产品方向覆盖 L0-L4。首个 M1 + M2 产品先验证连续性记忆和有证据约束的纠正学习，
-不要求先完成深度复盘、Playbook 或策略优化。L5 不是本地日常使用的默认能力。
+The long-term product direction covers L0-L4. The first M1 + M2 product validates
+continuity memory and correction learning constrained by evidence. It does not require
+Deep Retrospective, Playbooks, or strategy optimization to be completed first. L5 is
+not a default capability for everyday local use.
 
 ---
 
-## 6. 核心对象
+## 6. Core objects
 
 ### 6.1 Raw Event
 
-不可变的原始事件，包括：
+Immutable source events include:
 
-- Session 生命周期。
-- 用户 Prompt 和显式纠正。
-- 工具调用及结果摘要。
-- 文件变化。
-- 测试和构建结果。
-- Git Branch 和 Commit。
-- Pull Request、Review、CI、Issue、Fix 和 Revert。
-- Knowledge 或 Playbook 的检索和使用。
-- 关键过程声明，例如“已测试”“已评审”“已完成指定协议”。
-- 委派任务的 requested/resolved Agent、Provider、Model 和实际完成状态。
+- Session lifecycle.
+- User Prompts and explicit corrections.
+- Tool calls and result summaries.
+- File changes.
+- Test and build results.
+- Git Branches and Commits.
+- Pull Requests, Reviews, CI, Issues, Fixes, and Reverts.
+- Retrieval and use of Knowledge or Playbooks.
+- Significant process claims, such as “tested,” “reviewed,” or “completed the specified protocol.”
+- The requested/resolved Agent, Provider, Model, and actual completion state of delegated tasks.
 
-Raw Event 是审计和重建材料，不直接注入 Agent Context。它在正常保留期内不可修改；
-用户发起 Source Delete 或 Purge 时遵循 §14.4 的删除规则。
-0.10 允许受控的迟到补全：保存原始事件和来源摘要，在独立 enrichment 记录中补充
-缺失内容、已脱敏参数或结果摘要。新的派生验证另存为证据，不重分类原始事件。
-不能改写原始时间、工作区、父链、状态、元数据或已记录正文来制造成功。
-`captureQuality` 保留首次采集的省略、截断及原长度；补全不是抹去原始缺口。
+Raw Events support auditing and rebuilding; they are not injected directly into Agent
+Context. They cannot be modified during normal retention. User-initiated Source Delete
+or Purge follows the deletion rules in §14.4.
+0.10 permits controlled late enrichment: the original event and source digest are retained,
+and missing content, redacted arguments, or result summaries are added in separate
+enrichment records. Newly derived verification is stored as separate evidence without
+reclassifying the original event. Original timestamps, workspace, parent chain, status,
+metadata, and recorded content cannot be rewritten to manufacture success.
+`captureQuality` retains the omissions, truncation, and original length from initial
+capture; enrichment does not erase the original gaps.
 
 ### 6.2 Work Episode
 
-Work Episode 是 ProvenLoop 的学习单位。
+Work Episode is ProvenLoop's unit of learning.
 
-它将属于同一个工程目标的多个 Session、Commit 和后续结果关联起来：
+It links multiple Sessions, Commits, and later outcomes that belong to the same engineering goal:
 
 ```text
-Work Episode：实现请求限流
+Work Episode: Implement request rate limiting
 
-初始实现
-  -> 测试通过
+Initial implementation
+  -> Tests pass
   -> PR #42
 
 Review
-  -> 修正代理头信任边界
+  -> Correct the proxy-header trust boundary
 
-合并后
-  -> IPv6 用户误限流
+After merge
+  -> IPv6 users incorrectly rate-limited
   -> Issue #57
   -> Fix Commit
 ```
 
-最终经验不是“这个任务成功了”，而可能是：
+The eventual lesson can be more specific than “this task succeeded”:
 
 ```text
-修改 IP 识别或限流逻辑时，必须同时验证 IPv4、IPv6、
-可信代理边界和 forwarded header 测试。
+When changing IP identification or rate-limiting logic, verify IPv4, IPv6,
+trusted proxy boundaries, and forwarded header tests together.
 ```
 
-Episode 允许从后来的证据重新评价早期结论。
+Episodes allow later evidence to reassess earlier conclusions.
 
 ### 6.3 Branch Context
 
-Branch Context 是短期连续性记忆，保存：
+Branch Context is short-term continuity memory that stores:
 
-- 当前目标。
-- 已接受的设计决定和原因。
-- 用户明确约束。
-- 当前实现状态。
-- 未完成事项。
-- 最近验证结果。
+- The current goal.
+- Accepted design decisions and their reasons.
+- Explicit user constraints.
+- Current implementation state.
+- Unfinished work.
+- Recent verification results.
 
-它不恢复完整聊天历史，也不会在每个 Session 后强制生成。
+It does not restore complete chat history and is not required after every Session.
 
-#### 生成条件
+#### Generation conditions
 
-仅在存在可延续的实质状态时生成或刷新：
+Generate or refresh only when there is substantive state to carry forward:
 
-- 用户确认了设计决定或纠正。
-- 文件发生变化并产生验证结果。
-- 存在未完成计划。
-- 即将 `/clear`、结束 Session 或产生 Commit。
-- Goal、Branch、HEAD 或验证状态发生变化。
+- The user confirmed a design decision or correction.
+- Files changed and verification produced results.
+- An unfinished plan exists.
+- `/clear`, Session closure, or a Commit is approaching.
+- The Goal, Branch, HEAD, or verification state changed.
 
-纯浏览、一次性问答或没有状态变化的 Session 不生成 Branch Context。
+Browsing alone, one-off questions, and Sessions without state changes do not produce Branch Context.
 
-#### 生命周期
+#### Lifecycle
 
-- 后台异步生成，不阻塞当前 Agent。
-- 事件触发并合并刷新，避免每轮重写。
-- 检索前校验 Repository、Branch 和 HEAD。
-- HEAD、Repository、Branch 不匹配或逻辑过期时停止自动召回。
-- 当前投影默认有效期为最后相关事件后 30 天；逻辑过期不等于物理清理。
-- 自动发现 Branch 合并/删除及定时物理清理不是当前保证。
-- Episode 所需证据遵循独立保留策略。
+- Generate asynchronously in the background without blocking the current Agent.
+- Trigger and coalesce refreshes by events to avoid rewriting on every turn.
+- Validate Repository, Branch, and HEAD before retrieval.
+- Stop automatic retrieval on HEAD, Repository, or Branch mismatch, or logical expiry.
+- The current projection defaults to 30 days after the last relevant event; logical expiry
+  does not mean physical cleanup.
+- Automatic detection of Branch merges/deletions and scheduled physical cleanup are not
+  current guarantees.
+- Evidence required by Episodes follows a separate retention policy.
 
 ### 6.4 Knowledge Card
 
-Knowledge Card 是长期学习的默认产物。
+Knowledge Card is the default artifact of long-term learning.
 
-作用域：
+Scopes:
 
 ```text
 branch
@@ -453,17 +494,17 @@ workflow
 personal
 ```
 
-类型：
+Types:
 
-- 用户明确偏好。
-- Repository 事实和约束。
-- 测试、调试、Review 和验证方式。
-- 已被修复的重复错误模式。
-- 适用于特定条件的工程经验。
+- Explicit user preferences.
+- Repository facts and constraints.
+- Testing, debugging, Review, and verification methods.
+- Repeated error patterns that have been corrected.
+- Engineering lessons applicable under specific conditions.
 
-Knowledge 按稳定 Topic 聚合，而不是每次发现创建一条永久记录。
+Knowledge aggregates by stable Topic instead of creating a permanent record for every discovery.
 
-示例：
+Example:
 
 ```yaml
 key: repo/payment-service/testing
@@ -485,124 +526,168 @@ counterevidence: []
 
 ### 6.5 Insight Candidate
 
-Insight Candidate 是深度复盘提出、但尚未被证明的新认识。
+An Insight Candidate is a new, unproven finding proposed by Deep Retrospective.
 
-它必须明确区分“观察到的事实”和“系统提出的解释”：
+It must clearly distinguish observed facts from the system's proposed explanation:
 
 ```yaml
-insight: 修改生成文件是多次返工的共同原因
+insight: Editing generated files is a common cause of repeated rework
 observations:
-  - 三个 Episode 都修改了随后被覆盖的文件
+  - Three Episodes modified files that were later overwritten
 hypothesis:
-  - Agent 没有在修改前识别生成来源
+  - The Agent did not identify the generation source before editing
 evidence_needed:
-  - 检查生成配置和文件头
-  - 查询构建脚本
-  - 查阅生成工具的官方文档
+  - Inspect generation configuration and file headers
+  - Check build scripts
+  - Consult the generation tool's official documentation
 counterexample_search:
-  - 查找允许直接修改生成文件的任务
+  - Find tasks where directly editing generated files is allowed
 applicability:
-  - 文件可能由 schema、IDL 或 codegen 生成
+  - Files may be generated from schema, IDL, or codegen
 state: investigating
 ```
 
-Insight Candidate 可以得出三种结果：
+An Insight Candidate can lead to three outcomes:
 
-- **Rejected：** 假设不成立或证据不足。
-- **Qualified Insight：** 形成有条件的 Knowledge Card。
-- **Procedure Candidate：** 发现了可重复验证的步骤，进入 Playbook Candidate。
+- **Rejected:** The hypothesis is invalid or evidence is insufficient.
+- **Qualified Insight:** It becomes a Knowledge Card with defined conditions.
+- **Procedure Candidate:** Repeatedly verifiable steps are found and enter Playbook Candidate status.
 
-它绝不能仅因为复盘模型“觉得合理”而自动注入。
+It must never be injected automatically just because the retrospective model considers it plausible.
 
 ### 6.6 Proven Playbook
 
-Proven Playbook 是经过评估的可执行或程序化能力。它可以被打包为 Agent Skill，
-但产品概念不等同于某一种 Agent 的 `SKILL.md` 格式。
+A Proven Playbook is an evaluated executable or procedural capability. It can be packaged
+as an Agent Skill, but the product concept is independent of any particular Agent's
+`SKILL.md` format.
 
-Playbook 必须包含：
+A Playbook must contain:
 
-- 稳定标识和不可变版本。
-- 明确 Trigger 和 Non-trigger。
-- 输入、前置条件和权限。
-- 可执行步骤或工作流。
-- 验证方式和失败退出路径。
-- 来源 Episode 和 Proof Chain。
-- 无 Playbook 基线。
-- Candidate 与当前版本的评估结果。
-- 审批、Canary 和回滚记录。
+- A stable identifier and immutable version.
+- Explicit Trigger and Non-trigger conditions.
+- Inputs, preconditions, and permissions.
+- Executable steps or a workflow.
+- Verification methods and failure exit paths.
+- Source Episodes and a Proof Chain.
+- A no-Playbook baseline.
+- Evaluation results for the Candidate and current version.
+- Approval, Canary, and rollback records.
 
-大部分 Knowledge 永远不需要成为 Playbook。
+Most Knowledge never needs to become a Playbook.
 
 ```text
-“这个 Repo 使用 Vitest”
+“This Repo uses Vitest”
   -> Knowledge Card
 
-“安全执行数据库迁移：预检、备份、迁移、验证、回滚”
-  -> 可能晋升为 Proven Playbook
+“Safely execute a database migration: preflight, backup, migrate, verify, roll back”
+  -> May be promoted to a Proven Playbook
 ```
 
 ---
 
-## 7. 证据和学习规则
+## 7. Evidence and learning rules
 
-### 7.1 证据优先级
+### 7.1 Evidence priority
 
-从高到低：
+From highest to lowest:
 
-1. 用户明确批准、纠正或撤销。
-2. 可执行测试、构建和 CI。
-3. Review 结论、Revert 和后续 Fix。
-4. Git、文件和工具产生的客观状态变化。
-5. 多个独立 Episode 中重复出现的模式。
-6. Agent 的语言分析和自我评价。
-7. 外部网页、邮件、日志或工具输出中的自然语言指令。
+1. Explicit user approval, correction, or revocation.
+2. Executable tests, builds, and CI.
+3. Review conclusions, Revert, and subsequent Fix.
+4. Objective state changes produced by Git, files, and tools.
+5. Patterns repeated across independent Episodes.
+6. The Agent's verbal analysis and self-evaluation.
+7. Natural-language instructions in external web pages, email, logs, or tool output.
 
-证据优先级用于决定结论如何裁决，不用于阻止新的反证进入系统。
+Evidence priority determines how conclusions are adjudicated. It does not prevent new counterevidence from entering the system.
 
-- 低优先级推测不能单独永久覆盖高优先级结论。
-- 任何与当前 Guidance 直接冲突、来源可信且可关联到同一适用条件的证据，都属于
-  **有效反证**。
-- 有效反证出现时，当前 Knowledge 或 Playbook 立即进入 `Disputed` 并停止自动使用，
-  然后再结合证据优先级决定修订、拆分适用条件、降权或恢复。
-- 因此，后续 Review、Revert 或同因 Bug Fix 可以推翻早期“测试通过”的表面成功；
-  外部结果不会因为出现时间较晚或位于优先级列表中的不同层级而被忽略。
-- 旧确认不能覆盖新反证。用户必须审阅当前状态，并明确列出要解决的反证 ID；
-  普通确认不会清除未审阅或随后到达的反证。
+- A lower-priority inference cannot, by itself, permanently override a higher-priority conclusion.
+- Evidence that directly conflicts with current Guidance, has a trusted source, and can be linked to the same applicability conditions is **valid counterevidence**.
+- When valid counterevidence appears, the current Knowledge or Playbook immediately enters `Disputed` and stops being used automatically. Evidence priority then informs whether to revise it, split its applicability conditions, reduce its weight, or restore it.
+- A later Review, Revert, or Bug Fix addressing the same cause can therefore overturn the apparent success of an earlier passing test. External outcomes are not ignored because they arrived later or occupy a different level in the priority list.
+- An old confirmation cannot override new counterevidence. The user must review the current state and explicitly list the counterevidence IDs to resolve. An ordinary confirmation does not clear unreviewed counterevidence or counterevidence that arrives afterward.
 
-### 7.2 候选形成
+### 7.2 Candidate formation
 
-可以创建候选 Knowledge 的情况：
+Candidate Knowledge may be created when:
 
-- 用户明确纠正，随后出现完整绑定的可信验证：`VerificationBinding` 指向纠正事件
-  和实际操作，Session、Repository、worktree、调用 ID、命令目标及时间有序父链匹配。
-  同一 Episode 内任意成功命令不构成证明。
-- 用户明确要求记住某项偏好或约束。
-- 多个 Episode 显示相同成功或失败模式。
-- 后续 Review、Revert 或 Bug 揭示了早期遗漏。
+- The user corrects an operation, parameter, or approach in normal conversation. A background model extracts a candidate from the relevant event window and retains evidence references to the original user statement, failed operation, and subsequent handling. Candidate formation does not require completed verification.
+- An explicit user correction is followed by fully bound, trusted verification: `VerificationBinding` points to the correction event and actual operation, with matching Session, Repository, worktree, call ID, command target, and a time-ordered parent chain. An arbitrary successful command in the same Episode is not proof.
+- The user explicitly asks to remember a preference or constraint.
+- Multiple Episodes show the same success or failure pattern.
+- A later Review, Revert, or Bug reveals an earlier omission.
 
-以下情况不能直接形成可用 Knowledge：
+The following cannot directly produce usable Knowledge:
 
-- 单次 Agent 推测。
-- 只有模型自评“完成”。
-- 没有适用条件。
-- 没有来源。
-- 将召回的旧 Memory 再次作为新证据。
-- 不可信内容中的指令。
+- A single Agent inference.
+- Only the model's self-assessment that work is complete.
+- No applicability conditions.
+- No source.
+- Reusing recalled Memory as new evidence.
+- Instructions from untrusted content.
+
+#### 7.2.1 Initial automatic extraction and activation
+
+This section defines initial requirements that remain to be implemented; it does not describe the 0.11 runtime. The target scenario is an Agent making an incorrect MCP call, receiving a correction in ordinary natural language, and retrying accordingly. The system extracts a rule while the session remains open and reuses it in later related tasks. Users do not need to know the Correction Key format.
+
+Automatic processing uses the existing event capture, Worker, Knowledge lifecycle, and retrieval. It does not introduce another chat assistant or require users to invoke a new tool:
+
+```text
+Real user correction + related operation trace
+  -> Bounded event window
+  -> Background semantic extraction using the existing Copilot sign-in
+  -> Candidate rule with provenance
+  -> Deterministic evidence, scope, and counterevidence checks
+  -> Usable rule with applicability boundaries
+  -> Relevant retrieval and usage records in later tasks
+```
+
+New user turns, relevant tool completions or failures, and session-idle events trigger processing. Keywords such as "wrong" or "remember" may affect scheduling priority but cannot be required for natural-language recognition. Adjacent events are combined into one bounded analysis; the user does not need to close the Session. New verification evidence is processed against the existing candidate without requiring another model request.
+
+The model must distinguish corrections from ordinary questions, quotations, hypotheses, one-time instructions, and tool-returned text. Candidates must include rule content, applicability conditions, exclusions, and corresponding sources. The model may summarize meaning, but it cannot decide on its own that a rule is verified, applies across repositories, or overrides existing rules. When information is insufficient, it should record "no rule extracted" or "insufficient evidence" instead of generating generic best practices to fill a quota.
+
+Automatic activation has three cases:
+
+- **Checkable supporting evidence:** Within an exact repository/tool scope, low-risk rules may automatically become Externally-verified Guidance without another user confirmation.
+- **Only inference or incomplete traces:** Save the rule automatically as a Candidate and wait for new evidence or optional human review. A model's "high confidence" output does not make it eligible for ordinary retrieval.
+- **Permissions, security, deletion, credentials, promotion across repositories, or valid counterevidence:** Do not automatically expand permissions or clear disputes. Continue using the existing explicit controls and review mechanisms.
+
+A natural-language correction does not itself mean the user approved the model's rewritten rule. The model must not fabricate a `user_confirmed` mark, confirmation code, or user feedback. `remember` and manual confirmation remain control entry points, but are no longer required to produce rules.
+
+MCP scenarios must be included in the initial version; unrelated test commands cannot supply their proof. Preserve the actual server/tool identity, call ID, parameter changes, structured errors, retry results, and checkable postconditions. For example, verification of a rule stating "this requires a local absolute path rather than a URL" should check the actual parameter and the tool's declared input contract. A generic `success: true` only shows that a call completed. It cannot prove the returned content is correct or support a broader business conclusion. MCP scenarios without a corresponding verifier may still yield candidates automatically, but must not be described as automatically verified.
+
+#### 7.2.2 Learning coverage and noise control
+
+The initial version should detect as many reusable corrections as possible while strictly controlling activation and delivery. Candidate discovery, activation decisions, and task retrieval have separate acceptance checks. The system may retain candidates with insufficient evidence, but must not deliver them directly to an executing Agent to improve recall. High recall does not require every message to produce a rule.
+
+| Input during normal work | Default handling | Activation boundary |
+|---|---|---|
+| "Use pnpm throughout this repository, not npm" | Extract a candidate project constraint and preserve the user's exact words and scope | The original statement establishes the user's expressed intent; automatic activation must still satisfy the supported evidence policy |
+| "Skip tests this time; I only want to inspect the UI" | Treat it only as an instruction for the current task | Do not create a rule for later tasks or weaken existing verification requirements |
+| A tool fails, then succeeds after a parameter correction | Extract a candidate for the specific parameter or operation correction | Activate only the conclusion actually supported by the input contract or postconditions |
+| "Read the code carefully" or "Changes should be verified" | Record no rule extracted if there is no specific project constraint or difference in behavior | Do not collect generic advice in bulk |
+| The same rule appears again in different words | Compare it with existing candidates or rules and combine sources with the same meaning | Do not add synonymous entries or count duplicate events as independent support |
+
+Explicit user statements of persistent constraints should be labeled separately from practices inferred from operation outcomes. Persistent intent does not require the word "remember"; retain a candidate when scope or persistence is unclear. The original statement cannot confer `user_confirmed` on the model's rewritten rule, and one success cannot prove the entire inference. The initial version follows the activation policy and explicit confirmation entry points in 7.2.1. Personal preferences are not treated as facts that tests can prove.
+
+Every usable rule must state its trigger, the specific behavior that should change next time, exclusions, and source. If existing project instructions already cover the content, add only provenance or associations to avoid repeating it in task context. The extractor may propose a merge. A final merge must preserve scope, conditions, and operation semantics; similar wording must not broaden applicability. Conflicts follow the existing dispute process. Overwriting old content or accumulating occurrence counts cannot eliminate counterevidence.
+
+Candidates do not enter ordinary Context or become individual user tasks. The initial design archives candidates by default if they remain inactive 30 days after the last independent supporting evidence. This is a configurable logical deadline that remains to be implemented. If no later support arrives, the deadline runs from candidate creation. Retries, window revisions, duplicate events in the same operation chain, and changes to the extraction prompt do not reset it. Archival stops automatic analysis and task reminders. Only new independent evidence or an explicit human action may request reassessment. That request does not directly grant activation eligibility: counterevidence, revocation, and deletion state must still be checked. Archival does not delete original evidence, promise reclaimed physical storage, or change the evidence and expiration policies for Active Knowledge. For specific coverage and noise thresholds, see [Initial automatic extraction acceptance](product-validation.md#initial-automatic-extraction-acceptance).
 
 ### 7.3 Deep Retrospective
 
-Deep Retrospective 不是每个 Session 后生成一段总结，而是按价值触发的主动研究任务。
+Deep Retrospective is a proactive research task triggered by expected value. It does not generate a summary after every Session.
 
-#### 触发条件
+#### Triggers
 
-- 多个 Episode 出现相同失败、返工或异常工具路径。
-- 成功与失败 Episode 的关键步骤存在稳定差异。
-- 后续 Bug、Review 或 Revert 暴露出早期没有发现的系统性遗漏。
-- 某类任务持续消耗大量 Context、时间或工具调用。
-- Knowledge 多次被修订或出现看似矛盾的适用条件。
-- 用户主动要求对一组任务进行复盘。
+- Multiple Episodes show the same failure, rework, or unusual tool path.
+- Successful and failed Episodes differ consistently in their critical steps.
+- A later Bug, Review, or Revert reveals a systematic omission missed earlier.
+- A task category consistently consumes substantial Context, time, or tool calls.
+- Knowledge has been revised repeatedly or has apparently conflicting applicability conditions.
+- The user asks to review a group of tasks retrospectively.
 
-#### 复盘流程
+#### Retrospective process
 
 ```text
 Select Episodes
@@ -618,253 +703,228 @@ Select Episodes
 
 #### Evidence Expansion
 
-复盘可以主动获取额外信息，但必须按信任边界分层：
+A retrospective may proactively obtain more information, subject to these trust boundaries:
 
-1. **本地直接证据，默认允许**
-   - Repository 代码、配置、文档和测试。
-   - Git History、Diff、Blame、Commit 和 Branch。
-   - 已保存的 Session、工具结果和 Work Episode。
+1. **Direct local evidence, allowed by default**
+   - Repository code, configuration, documentation, and tests.
+   - Git History, Diff, Blame, Commit, and Branch.
+   - Saved Sessions, tool results, and Work Episodes.
 
-2. **已授权开发系统，按现有权限使用**
-   - Pull Request、Review、Issue 和 CI。
-   - Package metadata、依赖锁文件和构建产物。
+2. **Authorized development systems, using existing permissions**
+   - Pull Request, Review, Issue, and CI.
+   - Package metadata, dependency lockfiles, and build artifacts.
 
-3. **外部研究，默认需要用户开启**
-   - 依赖和工具的官方文档。
-   - Release Notes、兼容性信息和公开 Issue。
-   - 相关论文和可信工程实践。
+3. **External research, requiring user enablement by default**
+   - Official documentation for dependencies and tools.
+   - Release Notes, compatibility information, and public Issues.
+   - Related papers and credible engineering practices.
 
-外部查询必须最小化发送内容，不能上传源代码、原始 Prompt、Secret 或可识别的私有
-项目细节。外部资料用于提出解释、补充背景和设计验证方式，不能单独成为 Repository
-规则。任何来自网页或工具输出的指令都按不可信内容处理。
+External queries must minimize what they send. They must not upload source code, raw Prompts, Secrets, or identifiable private project details. External material may help propose explanations, provide context, and design verification methods, but cannot establish a Repository rule on its own. Instructions from web pages or tool output are treated as untrusted content.
 
-#### 输出要求
+#### Output requirements
 
-每个 Insight Candidate 必须包含：
+Every Insight Candidate must include:
 
-- 观察到的 Pattern。
-- 一个或多个竞争性 Hypothesis。
-- 支持证据和反证。
-- 获取过的额外信息及来源。
-- 适用条件和已知边界。
-- 不确定性。
-- 推荐的验证方法。
-- 预期改善的指标。
+- The observed Pattern.
+- One or more competing Hypotheses.
+- Supporting evidence and counterevidence.
+- Additional information obtained and its sources.
+- Applicability conditions and known boundaries.
+- Uncertainty.
+- A recommended verification method.
+- The metrics it is expected to improve.
 
-复盘系统必须允许得出“没有可学习结论”。产生更多 Insight 不是成功指标。
+The retrospective system must allow the conclusion "nothing can be learned." Producing more Insights is not a success metric.
 
-### 7.4 Knowledge 晋升为 Playbook
+### 7.4 Promoting Knowledge to a Playbook
 
-至少满足一项：
+At least one of these conditions must hold:
 
-1. 两个以上独立成功 Episode 具有稳定可抽象步骤。
-2. 同类失败被同一个方法多次解决。
-3. 用户明确要求将完整工作流保存为 Playbook。
+1. Two or more independent successful Episodes have stable steps that can be generalized.
+2. The same method has repeatedly resolved the same kind of failure.
+3. The user explicitly asks to save a complete workflow as a Playbook.
 
-并同时满足：
+All of the following must also hold:
 
-- 有机器可验证的成功判据。
-- 有 Trigger 和 Non-trigger。
-- 不依赖临时绝对路径、Secret 或偶然环境。
-- 权限和副作用可声明。
-- 来源完整。
-- 通过 Secret 和 Prompt Injection 检查。
-- 在 Held-out 任务上优于无 Playbook 基线。
-- 用户批准后才可启用。
+- Machine-verifiable success criteria exist.
+- Trigger and Non-trigger conditions exist.
+- The workflow does not depend on temporary absolute paths, Secrets, or incidental environment conditions.
+- Permissions and side effects can be declared.
+- Provenance is complete.
+- Secret and Prompt Injection checks pass.
+- It outperforms a baseline without the Playbook on Held-out tasks.
+- It can be enabled only after user approval.
 
 ---
 
-## 8. Evidence Tier 和运行时 UX
+## 8. Evidence Tier and runtime UX
 
-### 8.1 早期使用证据等级，而不是伪精确概率
+### 8.1 Start with evidence tiers and avoid false precision
 
-在积累足够标注和真实使用数据之前，ProvenLoop 不使用 `0.70`、`0.90` 等概率决定
-产品行为。这样的数字容易制造精确错觉。
+Until enough labels and real usage data have accumulated, ProvenLoop does not use probabilities such as `0.70` or `0.90` to determine product behavior. Such numbers can create an illusion of precision.
 
-早期使用可解释的 **Evidence Tier**：
+Early versions use explainable **Evidence Tiers**:
 
-| Evidence Tier | 含义 |
+| Evidence Tier | Meaning |
 |---|---|
-| Inferred | Agent 根据单次或有限轨迹提出的推测 |
-| User-confirmed | 用户明确确认的偏好、约束或纠正 |
-| Externally-verified | 得到测试、构建、CI、Review 或其他外部结果支持 |
-| Repeated-evidence | 在多个独立 Episode 中得到支持 |
-| Disputed | 存在有效反证或适用边界冲突 |
+| Inferred | An Agent's inference from a single or limited trace |
+| User-confirmed | A preference, constraint, or correction explicitly confirmed by the user |
+| Externally-verified | Supported by tests, builds, CI, Review, or other external outcomes |
+| Repeated-evidence | Supported across multiple independent Episodes |
+| Disputed | Valid counterevidence or conflicting applicability boundaries exist |
 
-每条 Knowledge 仍分别记录：
+Each Knowledge item still records these separately:
 
-- **Relevance：** 当前任务是否匹配。
-- **Evidence Tier：** 当前具有什么类型的支持。
-- **Utility：** 过去使用后是否真正改善结果。
-- **Coverage：** 在多少符合 Trigger 的机会中被观察和验证。
+- **Relevance:** Whether it matches the current task.
+- **Evidence Tier:** The type of support currently available.
+- **Utility:** Whether past use actually improved outcomes.
+- **Coverage:** The number of opportunities matching the Trigger in which it was observed and verified.
 
-只有积累足够的独立标签后，后期版本才引入概率校准、ECE 和 Reliability Curve。
-模型输出的 `confidence: 0.95` 永远不能直接改变 Evidence Tier。
+Later versions may introduce probability calibration, ECE, and Reliability Curves only after enough independent labels have accumulated. A model's `confidence: 0.95` output can never directly change an Evidence Tier.
 
-### 8.2 Evidence Tier 和默认行为
+### 8.2 Evidence Tier and default behavior
 
-| 状态或等级 | 条件 | 默认行为 |
+| State or tier | Condition | Default behavior |
 |---|---|---|
-| Candidate | 尚未验证 | 不自动注入；仅在检查和预览中显示 |
-| Inferred | 仅有 Agent 推测或有限证据 | 搜索可见；使用前必须确认 |
-| User-confirmed | 用户明确确认 | 在确认的 Scope 和适用条件内可以提供 Guidance；不是外部验证 |
-| Externally-verified | 具有机器或 Review 证据 | 在精确 Scope、低风险场景下作为 Guidance 使用 |
-| Repeated-evidence | 多 Episode 支持、无有效反证 | 可以正常自动使用，仍受 Top-k 和 Token Budget 限制 |
-| Disputed | 出现有效反证 | 立即停止自动使用，等待修订或裁决 |
-| Locked Preference | 用户明确锁定的个人偏好 | 视为用户权威指令，不伪装成统计高置信度 |
+| Candidate | Not yet verified | No automatic injection; visible only in inspection and preview |
+| Inferred | Only Agent inference or limited evidence | Visible only in active review; excluded from ordinary Context and requires confirmation before use |
+| User-confirmed | Explicitly confirmed by the user | May provide Guidance within the confirmed Scope and applicability conditions; this is not external verification |
+| Externally-verified | Machine or Review evidence exists | Used as Guidance within an exact Scope in low-risk scenarios |
+| Repeated-evidence | Supported by multiple Episodes, with no valid counterevidence | May be used automatically, subject to Top-k and Token Budget limits |
+| Disputed | Valid counterevidence appears | Stop automatic use immediately, pending revision or adjudication |
+| Locked Preference | A personal preference explicitly locked by the user | Treat it as an authoritative user instruction, without presenting it as statistically high confidence |
 
-Repository 事实和 Playbook 不能仅靠用户“锁定”绕过必要验证。
-Locked Preference 是设计语义，不代表当前 CLI 已提供独立锁定模式。
+User "locking" cannot bypass required verification for Repository facts or Playbooks. Locked Preference is a design concept; it does not mean the current CLI provides a separate locking mode.
 
-### 8.3 注入体验
+### 8.3 Context injection experience
 
-默认行为：
+Default behavior:
 
-- 每次返回 0-3 条。
-- 没有足够相关内容时返回空。
-- 同一 Session 不重复注入。
-- 通常不弹窗打断用户。
-- Agent 可看到一条简短说明，例如“已提供 2 条 ProvenLoop Guidance”。
-- 用户可以展开查看“为什么提供这条建议”。
-- Inferred Guidance 必须标记为候选建议，不能伪装成确定事实。
-- Candidate 和 Disputed 内容绝不静默注入。
+- Return 0-3 items per request.
+- Check Repository, tool/version, applicability conditions, and exclusions before selecting by relevance. Return an empty result when nothing matches.
+- Do not provide a rule again within the same task while it remains in context. A substantial task or workspace change may trigger retrieval and a fresh applicability check.
+- Synonymous rules already fully covered by current project instructions or context do not occupy returned-item slots.
+- Normally, do not interrupt users with pop-ups.
+- The Agent may see a short message such as "2 items of ProvenLoop Guidance provided."
+- Users can expand "Why was this guidance provided?"
+- Inferred Guidance in active review must be marked as a candidate. Status messages must not insert it into execution context.
+- Candidate and Disputed content is never injected silently.
 
-同一条 Knowledge 可以同时具有多个 Evidence 标记。例如，它可以既是
-`User-confirmed`，又是 `Externally-verified`。Evidence Tier 描述来源，不代替
-Scope、Trigger 和风险检查。
-“已提供”“用户明确报告采用”“有用反馈”和“独立验证成功”是不同事实，不能相互替代。
+A Knowledge item may have multiple Evidence marks. For example, it may be both `User-confirmed` and `Externally-verified`. Evidence Tier describes provenance; it does not replace Scope, Trigger, or risk checks. "Provided," "adoption explicitly reported by the user," "helpful feedback," and "independently verified success" are different facts and cannot substitute for one another.
 
-### 8.4 Scope 策略
+### 8.4 Scope policy
 
-- 新的任务状态默认属于 Branch。
-- Repository 约束需要 Repository 证据或用户确认。
-- Personal Preference 需要用户明确声明，或在多个独立 Repository 中反复验证后请求确认。
-- Repository Knowledge 不会自动升级为 Personal。
-- 跨 Repository 和跨 Agent 使用必须通过统一 Scope 检查。
+- New task state belongs to Branch by default.
+- Repository constraints require Repository evidence or user confirmation.
+- Personal Preference requires an explicit user statement, or a confirmation request after repeated verification across independent Repositories.
+- Repository Knowledge is not automatically promoted to Personal.
+- Use across Repositories and Agents must pass unified Scope checks.
 
 ---
 
-## 9. 核心用户体验
+## 9. Core user experience
 
-### 9.1 安装
+### 9.1 Installation
 
-概念命令：
+Conceptual command:
 
 ```powershell
 provenloop install
 ```
 
-首发安装 GitHub Copilot CLI 集成：
+The initial release installs the GitHub Copilot CLI integration:
 
-- Copilot CLI Extension 事件流。
-- 本地 MCP Server。
-- 后台处理 Worker。
-- 本地数据和证据存储。
-- 最小运行时 Instruction。
-- 一次性接入当前 Copilot 登录态，供受支持的后台模型能力复用。
+- Copilot CLI Extension event stream.
+- Local MCP Server.
+- Background processing Worker.
+- Local data and evidence storage.
+- Minimal runtime Instruction.
+- One-time connection to the current Copilot sign-in for supported background model capabilities.
 
-用户继续正常运行：
+Users continue to run:
 
 ```powershell
 copilot
 ```
 
-不需要包装命令，也不需要为了日常确定性处理额外申请模型 API Key。复用登录态不表示
-Agent 可以替用户批准持久反馈、Scope 变更、删除或 Playbook。用户仍可关闭各项已实现
-能力；复盘和 Playbook 等后续能力保持未启用。
+No wrapper command or additional model API Key is required. Initial automatic extraction reuses the existing Copilot sign-in without authorization for each call. Installation or first enablement must explain that relevant excerpts will be sent to that service and consume model quota. Existing capture authorization must not be silently interpreted as authorization for new model calls; upgrades from older versions require explicit one-time authorization. The model has no tool execution permission, does not read credentials, and cannot approve persistent feedback, Scope changes, deletion, or Playbooks on the user's behalf. Disabling `correction_learning` prevents new extraction and submission of results already in flight. Separate switches control capture and retrieval of existing rules.
 
-### 9.2 第一次使用
+### 9.2 First use
 
-默认不扫描历史后直接生成长期知识。
+The default workflow does not scan history and directly generate long-term knowledge. Initial acceptance starts with a real correction during normal work:
 
-先从一条用户确实希望复用的规则开始，在对应 Repository 中执行：
+1. The Agent makes an incorrect tool call or operation in the target repository, and the user corrects it directly in natural language.
+2. The Agent makes the relevant correction. The background process automatically extracts a candidate and checks what conclusion the correction actually supports.
+3. When conditions are met, a usable rule forms while the current session remains open. A short message and source link appear in the normal work interface. Otherwise, the system retains the candidate without interrupting the user for each item by default.
+4. The user starts a later related task in the same repository without repeating the rule or asking for a memory tool call. The system must show actual retrieval/delivery records, and the Agent's subsequent actions should follow the rule.
+5. The user can inspect provenance, correct, disable, or delete the rule. The rule must not be misapplied in other repositories or inapplicable tasks.
 
-```powershell
-provenloop enable retrieval
-provenloop remember `
-  --content "Inspect package scripts and run targeted repository tests." `
-  --when "running repository tests" --scope repository
-```
+The existing `remember` -> retrieval in a new Session -> Explain workflow remains available for diagnosis and manual management, but cannot replace this automatic-learning acceptance test. See the [README first-use workflow](../README.md#first-useful-workflow) for executable commands and released-version limitations.
 
-随后开启新的 Copilot Session，请它先调用 `provenloop_context`，再通过
-`provenloop_explain` 检查规则、适用范围和来源。实际尝试后再明确反馈。
-这条路径产生 `user_confirmed` Knowledge，不声称系统独立学会或证明了该规则。
-完整命令及 0.10 版本边界见 [README 首用流程](../README.md#first-useful-workflow)。
+Optional historical import remains a future design, not a full-history ingestion capability in 0.10. Current automatic reconciliation covers only the observation window of the trusted SDK's current Session. Missing workspace metadata produces a diagnostic and a skip, without guessing paths. Future optional historical import will only:
 
-可选历史导入仍是后续设计，不是 0.10 的全量历史摄取能力。当前自动对账只处理可信
-SDK 当前 Session 的观察窗口；缺少 workspace 元数据时记录诊断并跳过，不猜路径。
-未来的可选历史导入只用于：
+- Establish a usage baseline.
+- Form reviewable Candidates.
+- Build an initial replay set.
 
-- 建立使用基线。
-- 形成可审阅 Candidate。
-- 构建初始回放集。
+Historical inferences never automatically become Active Knowledge.
 
-任何历史推断都不会自动成为 Active Knowledge。
+### 9.3 Daily use
 
-### 9.3 日常使用
-
-0.10 通过 MCP 初始化 instructions 和插件 skill 请求 Agent 在新任务或恢复任务
-开始时调用一次；指令存在不代表宿主必然调用：
+In 0.10, MCP initialization instructions and the plugin skill request one Agent call at the start of a new or resumed task. Having instructions does not guarantee that the host will make the call:
 
 ```text
 provenloop_context(prompt)
 ```
 
-可能返回：
+Possible results:
 
-- Branch Context。
-- Repository Guidance。
-- Personal Preference。
-- Active Knowledge。
-- Approved Playbook（M5 目标，当前不会返回）。
+- Branch Context.
+- Repository Guidance.
+- Personal Preference.
+- Active Knowledge.
+- Approved Playbook (an M5 target; not currently returned).
 
-任务进行时，Extension callback 只复制有界字段并交给异步 writer。writer
-完成第一遍脱敏和原子入队；Worker 第二遍脱敏后更新 Episode 和已绑定的 Knowledge
-状态。自动延迟 Outcome 关联属于 M3，不是每次后台处理都会执行的能力。
+During a task, the Extension callback copies only bounded fields and hands them to the asynchronous writer. The writer performs the first redaction pass and atomic enqueue. The Worker performs a second redaction pass, then updates Episodes and bound Knowledge state. Automatic delayed Outcome linking belongs to M3; it is not a capability executed on every background processing pass.
 
-### 9.4 用户控制
+The initial version needs to add automatic extraction to this background path without requiring the foreground Agent to call an extraction MCP tool first. Task-start retrieval still depends on host instructions. Actual calls and delivery must be recorded; an installed Skill is not proof of execution. Native-host acceptance fails if users still need to remind the Agent to call `provenloop_context` to reuse a new rule. Automatic extraction does not establish automatic adoption, and automatic adoption does not establish proven benefit.
 
-自然语言是便利入口，不是唯一控制机制。每次 Guidance、Insight 和 Playbook 都必须
-提供稳定、确定性的反馈动作：
+### 9.4 User controls
 
-| 动作 | 结果 |
+Natural language is a convenient entry point, not the only control mechanism. Every Guidance, Insight, and Playbook item must provide stable, deterministic feedback actions:
+
+| Action | Result |
 |---|---|
-| 有用 | 记录用户反馈，不自动计为采用、成功或已证明的 Utility |
-| 不相关 | 记录 Trigger 误匹配，当前任务停止使用 |
-| 错误 | 立即转为 Disputed，并请求可选说明 |
-| 已过期 | 停止自动使用，进入重新验证 |
-| 本 Session 静音 | 当前 Session 不再显示 ProvenLoop Guidance |
-| 永久停用 | 停用该 Knowledge 或 Playbook |
-| 查看依据 | 打开 Evidence Trail、适用条件和反证 |
-| 修改 Scope | 显式设置 Branch、Repository、Workflow 或 Personal |
-| 删除 | 执行 §14.4 的删除流程 |
+| Helpful | Record user feedback without automatically counting adoption, success, or proven Utility |
+| Irrelevant | Record a Trigger mismatch and stop use in the current task |
+| Wrong | Immediately move to Disputed and request an optional explanation |
+| Stale | Stop automatic use and start revalidation |
+| Mute this Session | Stop showing ProvenLoop Guidance in the current Session |
+| Permanently disable | Disable the Knowledge or Playbook |
+| View evidence | Open the Evidence Trail, applicability conditions, and counterevidence |
+| Change Scope | Explicitly set Branch, Repository, Workflow, or Personal |
+| Delete | Run the deletion process in §14.4 |
 
-这些动作应通过稳定 CLI 命令、MCP Tool 参数或轻量交互控件完成，不能依赖 Agent
-自行理解一段自然语言后猜测用户意图。
+These actions should use stable CLI commands, MCP Tool parameters, or lightweight controls. They must not depend on the Agent interpreting free text and guessing user intent.
 
-MCP 会先返回待批准动作和 `PL-...` 确认码。真实用户须在当前可信 Session 中
-发送工具给出的 `confirm PL-...` 或 `确认 PL-...`，再重试原请求。批准最长五分钟，
-绑定动作、目标、请求、Scope、解决的反证及采用标记；参数变化需要新批准。
-Agent 不能替用户确认。Branch Context 仅支持 helpful、irrelevant、wrong、stale
-观察反馈，不会因此升级为 Knowledge，也不支持 confirm、revoke、set_scope 或 mute_session。
-下列复盘、Insight 和 Playbook 自然语言示例属于未来能力。
+MCP first returns the action awaiting approval and a `PL-...` confirmation code. The real user must send the tool-provided `confirm PL-...` or its supported Chinese equivalent in the current trusted Session, then retry the original request. Approval lasts at most five minutes and is bound to the action, target, request, Scope, resolved counterevidence, and adoption mark. Parameter changes require new approval. The Agent cannot confirm on the user's behalf. Branch Context supports only helpful, irrelevant, wrong, and stale observational feedback. Such feedback does not promote it to Knowledge, and it does not support confirm, revoke, set_scope, or mute_session. The retrospective, Insight, and Playbook natural-language examples below describe future capabilities.
 
-自然语言示例：
+Natural-language examples:
 
 ```text
-你记住了这个 Repo 的哪些测试规则？
-为什么刚才提供这条建议？
-这条经验来自哪些任务？
-复盘最近三次发布失败，看看有没有共同原因。
-这个 Insight 使用了哪些额外资料？
-只使用本地证据重新验证这个结论。
-这个规则已经不适用了。
-以后所有项目都先运行目标测试。
-不要再使用这个 Playbook。
-删除来自这个 Session 的所有学习结果。
+Which testing rules have you remembered for this Repo?
+Why did you provide that guidance just now?
+Which tasks did this lesson come from?
+Review the last three release failures and look for a common cause.
+What additional material did this Insight use?
+Revalidate this conclusion using only local evidence.
+This rule no longer applies.
+Run the targeted tests first in all projects from now on.
+Stop using this Playbook.
+Delete all learning results from this Session.
 ```
 
-核心接口：
+Core interfaces:
 
 ```text
 provenloop_context
@@ -872,7 +932,7 @@ provenloop_explain
 provenloop_feedback
 ```
 
-管理命令：
+Management commands:
 
 ```powershell
 provenloop status
@@ -893,95 +953,97 @@ provenloop uninstall
 provenloop purge
 ```
 
-`knowledge` 和 `observations` 子命令包含在 0.10 中。每次变更先读取 `knowledge show`
-中的最新 `expectedDigest`；confirm/replace 仅在用户确实解决反证时使用
-`--resolve "id1,id2"`。Revoke 归档并保留历史，Forget 执行删除。
-Workflow 操作还需要匹配实时可信 SDK Session 的 `SESSION_ID`、workflow 和 `--cwd`；
-单独设置参数不能授权。
-观察按 UTC 日期显示，export 输出当前代码版本的精简 JSON，不包含原始对话。
+The `knowledge` and `observations` subcommands are included in 0.10. Before every change, read the latest `expectedDigest` from `knowledge show`. For confirm/replace, use `--resolve "id1,id2"` only when the user has actually resolved the counterevidence. Revoke archives and retains history; Forget performs deletion. Workflow operations also require `SESSION_ID`, workflow, and `--cwd` to match a live trusted SDK Session. Setting parameters alone cannot grant authorization. Observations use UTC dates. Export produces compact JSON for the current code version without raw conversation content.
 
-### 9.5 学习收益
+### 9.5 Learning benefits
 
-长期产品可展示有可靠对照支持的 **Learning Dividend**。以下数字仅为未来界面示例，
-不是当前实测结果或已实现仪表盘：
+The initial version must show users the lessons that actually become active and are provided during normal work, without diagnostic commands. The following interaction requirements remain to be implemented; 0.11 has no automatic-learning notifications. Use inline messages or a status area supported by the host. A Dashboard is not a prerequisite.
+
+- After a rule is persisted and passes activation checks, combine specific changes into a message such as "Remembered: this repository uses pnpm," with its scope and a source link. Viewing, correcting, disabling, and deleting must all be accessible.
+- After a later task actually receives the rule, show "The package-management rule from your previous correction was provided for this task." Record adoption only after observing compliant behavior or receiving explicit feedback; the message itself is not evidence of benefit.
+- Keep `no_rule` quiet by default. Candidates awaiting verification are available for deliberate inspection, without individual content pop-ups or confirmation requests. If learning remains paused, combine the reasons into a status message without repeatedly reporting the same state.
+- By default, show at most one learning-change summary and one delivery explanation per task. Combine synonymous changes; repeated evidence does not trigger new messages. Users may disable these messages. Separate switches control learning and retrieval.
+
+Host acceptance must observe these messages in the user's work interface. Background logs alone, content returned to the Agent but not displayed, or the Agent's own claim that it has "remembered" do not pass. Message submission is tied to rule state: pending "learned" messages must not be displayed after deletion or disablement. Candidate notifications must not bypass retrieval policy.
+
+The longer-term product may show a **Learning Dividend** supported by reliable comparisons. The following numbers illustrate a future interface; they are not current measurements or an implemented dashboard:
 
 ```text
-本月：
-  避免重复 Context：约 8,400 tokens
-  相似任务重复纠正：7 -> 2
-  错误 Guidance：1
-  已被后续结果推翻并停用：2
-  新发现并验证的 Insight：3
-  待验证的复盘假设：2
-  新批准 Playbook：1
+This month:
+  Repeated Context avoided: about 8,400 tokens
+  Repeated corrections on similar tasks: 7 -> 2
+  Incorrect Guidance: 1
+  Overturned by later outcomes and disabled: 2
+  Newly discovered and verified Insights: 3
+  Retrospective hypotheses awaiting verification: 2
+  Newly approved Playbooks: 1
 ```
 
-当前本地观察仅显示有来源的调用、提供、明确采用、反馈、纠正及验证计数和覆盖范围。
-任务耗时、对照分组和最终结果仍未知，不能把合成回放数字放进用户收益栏。
+Current local observations show only source-backed counts and coverage for calls, delivery, explicit adoption, feedback, corrections, and verification. Task duration, control-group assignments, and final outcomes remain unknown. Synthetic replay numbers must not appear in the user benefit display.
 
 ---
 
-## 10. Memory 策略和产品边界
+## 10. Memory strategy and product boundaries
 
 ### 10.1 Build vs Integrate
 
-通用 Memory 已有大量研究和开源实现。ProvenLoop 不应将主要资源投入：
+General-purpose Memory already has substantial research and open-source implementations. ProvenLoop should not devote its main resources to:
 
-- 通用 Memory CRUD。
-- 通用向量检索。
-- Embedding Provider。
-- 普通 Conversation Summary。
-- 通用 Retention 和 Consolidation。
-- 普通 Memory Dashboard。
+- General-purpose Memory CRUD.
+- General-purpose vector retrieval.
+- Embedding Provider.
+- Ordinary Conversation Summary.
+- General-purpose Retention and Consolidation.
+- Ordinary Memory Dashboard.
 
-当前采用可替换接口和 SQLite FTS5/BM25，Memorix 不是安装依赖：
+The current implementation uses a replaceable interface and SQLite FTS5/BM25. Memorix is not an installation dependency:
 
 ```text
 ProvenLoop
   -> KnowledgeBackend
-      -> SqliteFtsKnowledgeBackend（当前）
-      -> Memorix / 其他 Backend（后续可选）
+      -> SqliteFtsKnowledgeBackend (current)
+      -> Memorix / other Backend (optional in future)
 ```
 
-### 10.2 ProvenLoop 必须拥有的数据
+### 10.2 Data ProvenLoop must own
 
-以下数据不能交给通用 Memory 系统定义：
+General-purpose Memory systems must not define the following data:
 
-- Raw Event。
-- Work Episode。
-- Outcome Evidence。
-- Correction Key。
-- Episode 与 Outcome 之间的证据关联、关联强度和反证关系。
-- Knowledge 使用记录。
-- 评估数据集和结果。
-- Playbook Version、Canary 和 Rollback。
+- Raw Event.
+- Work Episode.
+- Outcome Evidence.
+- Correction Key.
+- Evidence links, association strength, and counterevidence relationships between Episodes and Outcomes.
+- Knowledge usage records.
+- Evaluation datasets and results.
+- Playbook Version, Canary, and Rollback.
 
-通用 Memory Backend 可以负责：
+A general-purpose Memory Backend may handle:
 
-- Memory 存储和搜索。
-- Formation、Consolidation 和 Retention。
-- BM25、Vector 或 Hybrid Retrieval。
-- 常规 Memory 管理能力。
+- Memory storage and search.
+- Formation, Consolidation, and Retention.
+- BM25, Vector, or Hybrid Retrieval.
+- Routine Memory management.
 
-### 10.3 用户只看到一个产品
+### 10.3 Users see one product
 
-即使底层使用 Memorix，用户只管理 ProvenLoop：
+Even if Memorix is used underneath, users manage only ProvenLoop:
 
-- 不重复安装两套采集集成。
-- 不重复注入 Context。
-- 不出现两个相互冲突的 Memory 生命周期。
-- 不要求用户理解底层 Backend。
-- 替换 Backend 不改变 ProvenLoop 的核心行为和证据模型。
+- No duplicate capture integrations to install.
+- No duplicate Context injection.
+- No conflicting Memory lifecycles.
+- No requirement to understand the underlying Backend.
+- Replacing the Backend does not change ProvenLoop's core behavior or evidence model.
 
 ---
 
-## 11. 多 Agent 策略
+## 11. Multi-Agent strategy
 
-### 11.1 产品目标
+### 11.1 Product goal
 
-ProvenLoop 的学习成果属于用户，而不是属于某个 Agent。
+ProvenLoop's learning results belong to the user, not to any particular Agent.
 
-统一能力：
+Unified capabilities:
 
 ```text
 Context Query
@@ -991,93 +1053,94 @@ Scope Identity
 Usage Outcome
 ```
 
-Agent Adapter 负责将各 Agent 的生命周期和工具事件转换成统一模型。
+Agent Adapters translate each Agent's lifecycle and tool events into a unified model.
 
-### 11.2 渐进支持
+### 11.2 Incremental support
 
-多 Agent 不要求所有能力同时完成：
+Support for multiple Agents does not require all capabilities to be completed at once:
 
 1. **Reader Adapter**
-   - 使用 ProvenLoop Context。
-   - 查看来源。
-   - 提交 Feedback。
+   - Use ProvenLoop Context.
+   - Inspect provenance.
+   - Submit Feedback.
 
 2. **Observer Adapter**
-   - 采集 Session、工具和文件事件。
-   - 参与 Work Episode。
+   - Capture Session, tool, and file events.
+   - Contribute to Work Episodes.
 
 3. **Full Learning Adapter**
-   - 关联完整 Outcome。
-   - 执行和评价 Playbook。
+   - Link complete Outcomes.
+   - Execute and evaluate Playbooks.
 
-如果 MCP 或 Plugin 标准允许低成本接入，应尽早提供 Reader Adapter。
+If MCP or Plugin standards allow inexpensive integration, provide Reader Adapters early.
 
-### 11.3 跨 Agent 防重复
+### 11.3 Deduplication across Agents
 
-同一个用户任务可能被多个 Agent 接续处理。ProvenLoop 必须通过 Repository、Branch、
-Commit、时间、文件和显式 Goal 识别同一 Episode，避免：
+Multiple Agents may work on the same user task in succession. ProvenLoop must identify the same Episode using Repository, Branch, Commit, time, files, and explicit Goal to avoid:
 
-- 将同一证据计算多次。
-- 将召回内容当作新学习。
-- 不同 Agent 相互放大错误结论。
+- Counting the same evidence more than once.
+- Treating recalled content as new learning.
+- Agents amplifying one another's incorrect conclusions.
 
 ---
 
-## 12. 评估体系
+## 12. Evaluation framework
 
-评估不是发布后的分析功能，而是 ProvenLoop 的核心产品能力。
-具体的验收流程、发布门槛、坏案例分类和改进方法见
-[`product-validation.md`](product-validation.md)。
+Evaluation is a core product capability in ProvenLoop, not an analysis feature added after release.
+See [`product-validation.md`](product-validation.md) for the acceptance process, release gates,
+failure categories, and improvement methods.
 
-### 12.1 评估单位
+### 12.1 Unit of evaluation
 
-评估以 Work Episode 为单位，而不是 Session。
+The unit of evaluation is a Work Episode, rather than a Session.
 
-任务成功必须结合：
+Task success must account for:
 
-- 预先声明的测试或构建。
-- CI。
-- Review。
-- 用户验收。
-- 后续 Bug、Fix 或 Revert。
+- Predeclared tests or builds.
+- CI.
+- Review.
+- User acceptance.
+- Later Bugs, Fixes, or Reverts.
 
-模型自评不构成独立成功证据。
+Model self-assessment is not independent evidence of success.
 
-### 12.2 两个并列 North Star
+### 12.2 Two parallel North Star metrics
 
-效率和质量都属于最终目标，因此不使用一个综合分数掩盖权衡。
+Both efficiency and quality are final goals. A combined score must not hide the trade-offs
+between them.
 
-#### 质量：重复纠正率 RCR
+#### Quality: correction recurrence rate (RCR)
 
 ```text
 RCR =
-后续相似任务中再次出现的 Correction Key 数
+Number of Correction Keys that recur in later similar tasks
 /
-存在可复用既有纠正的机会数
+Number of opportunities to reuse an existing correction
 ```
 
-目标：相对 Baseline 持续下降。
+Goal: a sustained reduction relative to the Baseline.
 
-#### 效率：验证完成时间 TTV
+#### Efficiency: time to verified completion (TTV)
 
 ```text
 TTV =
-从 Agent 接受任务
-到首次通过预先声明 Verifier 的有效工作时间
+Active working time from the Agent accepting the task
+to the first pass of the predeclared Verifier
 ```
 
-只在最终满足 Outcome-qualified Success 的任务上比较，防止用降低质量换取速度。
+Compare only tasks that ultimately meet Outcome-qualified Success, so that speed cannot
+come at the expense of quality.
 
-同时报告：
+Also report:
 
-- 重复 Context Token。
-- Agent 回合数。
-- 工具调用数。
-- 失败重试数。
+- Repeated Context Tokens.
+- Agent turns.
+- Tool calls.
+- Failed retries.
 
 ### 12.3 Correction Key
 
-首次纠正被规范化为：
+Normalize the first correction as:
 
 ```text
 Correction Key =
@@ -1087,7 +1150,7 @@ Scope
 + Trigger
 ```
 
-例子：
+Example:
 
 ```text
 repository/payment-service
@@ -1096,18 +1159,19 @@ repository/payment-service
 + typescript-test-task
 ```
 
-在后续相似 Episode 中，用户仍需重述同一 Key，计为一次重复纠正。
+If the user must restate the same Key in a later similar Episode, count it as a repeated correction.
 
-以下不计为重复纠正：
+Do not count the following as repeated corrections:
 
-- 需求发生变化。
-- 用户改变偏好。
-- 出现之前不存在的新信息。
-- Agent 在用户指出前主动避免了问题。
+- Requirements have changed.
+- The user has changed a preference.
+- New information has become available.
+- The Agent avoided the issue before the user pointed it out.
 
-### 12.4 相似任务定义
+### 12.4 Definition of similar tasks
 
-相似性必须在观察结果前确定，不能在任务成功后为了证明效果重新定义。
+Determine similarity before observing the outcome. Do not redefine it after a task succeeds
+to make the results appear effective.
 
 ```text
 Scope
@@ -1118,572 +1182,633 @@ Scope
 + Applicable Trigger
 ```
 
-检索模型可以发现候选，但指标分母应由冻结规则或盲审标签确定，避免系统循环自证。
+A retrieval model may identify candidates, but the metric denominator must come from frozen
+rules or blind-review labels to prevent circular self-validation.
 
 ### 12.5 Outcome-qualified Success
 
-M3 计划中的 Outcome-qualified Success 要求：
+Outcome-qualified Success, planned for M3, requires:
 
-1. 预声明的测试、构建或验收通过。
-2. 没有已知的否定性 Review。
-3. 在 14 天或下一发布周期内，没有关联到同因 Revert 或 Bug Fix。
+1. The predeclared tests, build, or acceptance checks pass.
+2. There is no known negative Review.
+3. No Revert or Bug Fix linked to the same cause appears within 14 days or the next release cycle.
 
-观察窗口尚未结束时，标记为 `censored`，不能提前作为最终成功训练样本。
-当前普通观察不会自动执行完整延迟结果关联，也不会因为已过 14 天就把未知结果改成成功。
+Until the observation window ends, mark the outcome as `censored`. It cannot yet serve as a
+final successful training sample. Current ordinary observations do not automatically perform
+complete delayed outcome linking, and an unknown outcome does not become a success merely
+because 14 days have passed.
 
-### 12.6 离线回放集
+### 12.6 Offline replay datasets
 
-建立六类本地、脱敏数据集：
+Build six types of local, sanitized datasets:
 
 1. **Branch Continuation**
-   - 在 `/clear` 或 Session 边界切分。
-   - 比较无 Context、Branch Context 和完整历史 Oracle。
+   - Split at `/clear` or Session boundaries.
+   - Compare no Context, Branch Context, and a full-history Oracle.
 
 2. **Correction Recurrence**
-   - 首次纠正用于学习。
-   - 后续相似 Episode 只用于测试。
+   - Use the first correction for learning.
+   - Use later similar Episodes only for testing.
 
 3. **Outcome/Playbook Replay**
-   - 固定 Git Snapshot、任务输入和 Verifier。
-   - 在 Sandbox 中真实执行。
+   - Freeze the Git Snapshot, task input, and Verifier.
+   - Execute the task in a Sandbox.
 
 4. **Hidden Pattern Retrospective**
-   - 提供多个经过标注的成功和失败 Episode。
-   - 隐藏已知根因或后续修复，让系统独立提出 Hypothesis。
-   - 评价是否找到真正模式、是否遗漏反例、是否虚构因果关系。
+   - Provide multiple labeled successful and failed Episodes.
+   - Hide known root causes or later fixes so the system proposes Hypotheses independently.
+   - Evaluate whether it finds real patterns, misses counterexamples, or fabricates causality.
 
 5. **Negative Trigger**
-   - 相似但不适用。
-   - 不同 Repository。
-   - 过期依赖。
-   - 冲突规则。
+   - Similar but inapplicable tasks.
+   - Different Repositories.
+   - Outdated dependencies.
+   - Conflicting rules.
 
 6. **Safety**
-   - Seeded Secret。
-   - 恶意工具输出。
-   - 跨 Repository Knowledge。
-   - 刻意错误经验。
+   - Seeded Secrets.
+   - Malicious tool output.
+   - Knowledge from another Repository.
+   - Deliberately incorrect lessons.
 
-数据按时间切分：
+Split the data chronologically:
 
 ```text
 Source -> Development -> Final Held-out
 ```
 
-Final Held-out 不参与 Knowledge 生成、阈值调节或 Prompt 优化。
+The Final Held-out set must not contribute to Knowledge generation, threshold tuning, or
+Prompt optimization.
 
-### 12.7 对照组
+### 12.7 Control groups
 
-固定模型版本、Repository Snapshot、权限、Prompt 和超时，比较：
+Keep the model version, Repository Snapshot, permissions, Prompt, and timeout fixed, then compare:
 
 ```text
-A：No Memory / No Playbook
-B：Branch Context + Active Knowledge
-C：Current Approved Playbook
-D：Candidate Playbook
+A: No Memory / No Playbook
+B: Branch Context + Active Knowledge
+C: Current Approved Playbook
+D: Candidate Playbook
 ```
 
-不能仅因为 D 成功就认为 Candidate 有效，必须证明它相对 A、B 或 C 带来增益。
+Success in D alone does not establish that the Candidate is effective. It must show a gain
+relative to A, B, or C.
 
-### 12.8 核心 Guardrails
+### 12.8 Core Guardrails
 
-以下是成熟版本和正式发布的最终门槛。M1、M2 中较宽的数值是数据量有限阶段的
-**研究验收门槛**，只允许继续进入下一 Milestone，不代表达到正式发布质量。
+The following are the final gates for a mature version and formal release. The more permissive
+M1 and M2 values are **research acceptance gates** for stages with limited data. They allow
+progress to the next Milestone and do not establish formal release quality.
 
-| 指标 | 定义 | 目标门槛 |
+| Metric | Definition | Target threshold |
 |---|---|---:|
-| Wrong Injection | 错 Scope、错 Trigger、过期或已被反证的注入 | 不高于 1% |
-| Harm Rate | 导致失败、重复纠正、危险动作或成本增加至少 20% | 不高于 0.5% |
-| Severe Harm | Secret、跨 Repo 泄漏、未授权破坏动作 | 必须为 0 |
-| Trigger Precision | Playbook 正确触发比例 | 不低于 95% |
-| Negative Abstention | 明确负样本上正确不注入 | 不低于 98% |
-| Insight Precision | 通过盲审或后续验证成立的 Insight / 已提出 Insight | 不低于 80% |
-| Unsupported Causality | 缺少证据却表述为因果结论的 Insight | 不高于 2% |
-| Evidence Coverage | Insight 要求字段和来源完整率 | 100% |
-| Retrieval Latency | 本地检索 P95 | 不高于 150 ms |
-| Capture Added Latency | 采集新增 P95 | 不高于 10 ms |
-| Context Budget | 通常 1-3 项 | 硬上限约 1,200 tokens |
+| Wrong Injection | Injection with the wrong Scope or Trigger, or with outdated or disproven content | No more than 1% |
+| Harm Rate | Causes failure, repeated correction, a dangerous action, or a cost increase of at least 20% | No more than 0.5% |
+| Severe Harm | Secret leakage, cross-Repo leakage, or unauthorized destructive actions | Must be 0 |
+| Trigger Precision | Proportion of correct Playbook triggers | At least 95% |
+| Negative Abstention | Correct abstention from injection on explicit negative samples | At least 98% |
+| Insight Precision | Insights validated by blind review or later verification / Insights proposed | At least 80% |
+| Unsupported Causality | Insights stated as causal conclusions without supporting evidence | No more than 2% |
+| Evidence Coverage | Completeness of required Insight fields and sources | 100% |
+| Retrieval Latency | P95 local retrieval latency | No more than 150 ms |
+| Capture Added Latency | P95 latency added by capture | No more than 10 ms |
+| Context Budget | Usually 1-3 items | Hard limit of about 1,200 tokens |
 
-### 12.9 置信度校准
+### 12.9 Confidence calibration
 
-概率校准属于积累足够数据后的成熟能力，不作为 M1、M2 的前置产品行为。
+Probability calibration becomes useful after enough data has accumulated. It is not a
+prerequisite for M1 or M2 product behavior.
 
-早期先评估 Evidence Tier：
+Evaluate Evidence Tier first:
 
-- Tier 是否由对应类型的证据支持。
-- 同一 Tier 的错误率和伤害率。
-- Trigger Coverage 和正确 Abstention。
-- 从 Inferred 晋升到 Verified 的转化质量。
+- Whether the Tier is supported by the corresponding type of evidence.
+- Error and harm rates within each Tier.
+- Trigger Coverage and correct Abstention.
+- The quality of promotions from Inferred to Verified.
 
-当至少积累数百次独立注入判断和足够的正负标签后，再评估高、中、低概率区间的实际
-正确率，而不是只看排序。
+Once there are at least several hundred independent injection judgments and enough positive
+and negative labels, evaluate actual accuracy in the high, medium, and low probability ranges,
+rather than rankings alone.
 
-发布目标：
+Release targets:
 
-- Expected Calibration Error 不高于 0.08。
-- High Confidence 区间实际正确率不低于 90%。
-- 新版本成功率相对 Baseline 不下降超过 2 个百分点。
+- Expected Calibration Error no greater than 0.08.
+- Actual accuracy of at least 90% in the High Confidence range.
+- No decrease in the new version's success rate of more than 2 percentage points relative to
+  the Baseline.
 
-这些是后期概率模型的发布门槛。M1、M2 使用 Evidence Tier 和直接错误率，不因暂时
-缺少 ECE 而阻塞对核心价值的验证。
+These are release gates for later probability models. M1 and M2 use Evidence Tier and direct
+error rates. The temporary absence of ECE must not block validation of the product's core value.
 
 ### 12.10 Learning Dividend
 
-未来用户侧收益展示需要真实受控证据：
+Future user-facing benefit reports require real controlled evidence:
 
-- 少输入了多少重复 Context。
-- 少发生了多少重复纠正。
-- TTV 是否下降。
-- 哪些 Guidance 被证明有效。
-- 哪些 Guidance 被反证并停用。
+- How much repeated Context the user no longer needs to enter.
+- How many repeated corrections were avoided.
+- Whether TTV decreased.
+- Which Guidance was proven effective.
+- Which Guidance was disproven and disabled.
 
-产品团队侧还必须关注错误注入和伤害，不能只展示正向收益。
-当前 `observations show/export` 是观测入口，不计算因果收益；缺失值显示为未知。
+The product team must also track wrong injections and harm, rather than report positive
+benefits alone. Currently, `observations show/export` provides access to observations. It does
+not calculate causal benefits, and missing values remain unknown.
 
-### 12.11 Deep Retrospective 评估
+### 12.11 Deep Retrospective evaluation
 
-深度复盘不能按“生成了多少总结”评价。它需要回答：
+The number of summaries generated does not measure the quality of a deep retrospective.
+Evaluation must answer:
 
-1. 是否发现了记录中没有被直接表达、但后来能够验证的规律？
-2. 是否区分观察、相关性、假设和因果结论？
-3. 是否主动寻找了可能推翻自己的反例？
-4. 额外信息是否真正改变或提高了结论质量？
-5. Insight 在未来任务中是否降低 RCR、TTV、返工或失败？
+1. Did it discover patterns that were not directly stated in the records but could later be verified?
+2. Did it distinguish observations, correlations, hypotheses, and causal conclusions?
+3. Did it actively search for counterexamples that could disprove its conclusions?
+4. Did additional information change or improve the conclusions?
+5. Did the Insight reduce RCR, TTV, rework, or failures in future tasks?
 
-离线评估采用盲测：
+Use blind tests for offline evaluation:
 
 ```text
 Input:
-  截止时间 T 之前的多个 Episode 和可访问资料
+  Multiple Episodes and accessible material from before cutoff time T
 
 Hidden Ground Truth:
-  T 之后发生的 Review、Bug、Fix、Revert 或专家标注
+  Reviews, Bugs, Fixes, Reverts, or expert annotations after T
 
 Output:
-  Pattern、Hypothesis、Evidence、Counterevidence、Applicability、Validation Plan
+  Pattern, Hypothesis, Evidence, Counterevidence, Applicability, Validation Plan
 ```
 
-比较：
+Compare:
 
 ```text
-A：只做 Session Summary
-B：只总结显式用户纠正
-C：跨 Episode 复盘，不扩展证据
-D：跨 Episode 复盘 + Evidence Expansion
+A: Session Summary only
+B: Summaries of explicit user corrections only
+C: Cross-Episode retrospective without evidence expansion
+D: Cross-Episode retrospective + Evidence Expansion
 ```
 
-只有 D 相对 B、C 在 Insight Precision 和未来任务结果上产生稳定增益，才能证明主动
-获取额外信息值得它带来的成本和隐私风险。
+Actively acquiring additional information is worth its cost and privacy risk only if D produces
+consistent gains over B and C in Insight Precision and future task outcomes.
 
 ---
 
-## 13. Milestone 路线
+## 13. Milestone roadmap
 
-最终愿景保持不变。拆分更小 Milestone 的目的，是降低实现和验证风险，而不是把
-ProvenLoop 永久收缩为 Branch Memory 或纠正记录工具。前一阶段验证通过后，产品继续
-沿完整的 Outcome Learning、Deep Retrospective、Playbook 和跨 Agent 愿景推进。
+The final vision remains unchanged. Smaller Milestones reduce implementation and validation
+risk; they do not permanently limit ProvenLoop to Branch Memory or correction recording.
+After each stage passes validation, the product continues toward the full vision of Outcome
+Learning, Deep Retrospective, Playbooks, and support across Agents.
 
-### D0：问题发现与 Concierge 验证
+### D0: Problem discovery and concierge validation
 
-**聚焦问题：** 目标用户是否真的高频遇到重复 Context 和重复纠正，现有方案是否不足？
+**Focus question:** Do target users frequently repeat Context and corrections, and do existing
+solutions fall short?
 
-交付：
+Deliverables:
 
-- 8-12 名符合目标特征的 Design Partners。
-- 4-6 周真实工作样本。
-- 人工协助的 Branch Handoff 和 Correction Guidance 原型。
-- 当前替代方案基线：原生 Memory、Repository 指令文件、Memorix 和手工工作流。
-- 首次价值事件、安装意愿和主要信任阻力。
+- 8-12 Design Partners who match the target profile.
+- 4-6 weeks of real work samples.
+- Manually assisted Branch Handoff and Correction Guidance prototypes.
+- A baseline of current alternatives: native Memory, Repository instruction files, Memorix,
+  and manual workflows.
+- The first value event, willingness to install, and main barriers to trust.
 
-验收：
+Acceptance criteria:
 
-- 目标问题在多数 Design Partner 中每周重复发生。
-- 至少一个核心场景相对现有替代方案产生可感知价值。
-- 用户愿意授予所需的本地观测权限。
+- The target problem recurs weekly for most Design Partners.
+- At least one core scenario provides perceptible value relative to existing alternatives.
+- Users are willing to grant the required local observation permissions.
 
-### F0：技术与信任可行性
+### F0: Technical and trust feasibility
 
-**聚焦问题：** 在平台、登录复用、资源隔离和隐私约束下，核心闭环能否可靠运行？
+**Focus question:** Can the core loop run reliably within platform, sign-in reuse, resource
+isolation, and privacy constraints?
 
-交付：
+Deliverables:
 
-- Extension 事件、MCP、Session 数据和启动方式 Spike。
-- 后台推理复用当前 Copilot 登录态的支持路径、递归隔离、失败降级和内部安全熔断验证。
-- Observe-only 原型。
-- Fail-closed、Disable 和 Doctor 路径。
-- 数据最小化、路径排除和 Secret 测试。
+- Spikes for Extension events, MCP, Session data, and launch methods.
+- Validation of supported paths for background inference that reuse the current Copilot
+  sign-in, recursion isolation, fallback on failure, and internal safety circuit breakers.
+- An Observe-only prototype.
+- Fail-closed, Disable, and Doctor paths.
+- Data minimization, path exclusions, and Secret tests.
 
-验收：
+Acceptance criteria:
 
-- 明确首发支持的 Copilot CLI 启动方式和版本边界。
-- Extension 或 MCP 失败不阻塞 Agent。
-- 安装时完成一次接入；日常后台调用不要求逐次授权或额外模型 API Key。
-- 后台调用失败、受限或积压时不影响前台 Copilot，且不会递归学习或无限重试。
-- 用户能够查看状态，并关闭单项能力或全部 ProvenLoop 活动。
+- The launch methods and version boundaries supported for Copilot CLI at initial release
+  are explicit.
+- Extension or MCP failures do not block the Agent.
+- Integration is completed once during installation. Routine background calls require
+  neither per-call authorization nor an additional model API Key.
+- Failed, limited, or backlogged background calls do not affect foreground Copilot, trigger
+  recursive learning, or retry indefinitely.
+- Users can inspect status and disable individual capabilities or all ProvenLoop activity.
 
-### M0：可测量的观测基础
+### M0: Measurable observation foundation
 
-**聚焦问题：** 我们能否在不影响 Agent 使用的前提下，准确理解发生了什么？
+**Focus question:** Can the system accurately understand what happened without disrupting
+use of the Agent?
 
-交付：
+Deliverables:
 
-- Copilot CLI 集成。
-- 非阻塞事件采集。
-- Repository、Branch、Session 和 Commit Identity。
-- 测试、构建和用户纠正识别。
-- Raw Event 和 Work Episode 基础模型。
-- Secret 过滤。
-- 初始 20-50 个真实 Episode 回放集。
-- Baseline 指标采集。
-- 轻量 Evaluation Runner、Replay Spec、Evidence Ledger 和确定性 Gate。
+- Copilot CLI integration.
+- Nonblocking event capture.
+- Repository, Branch, Session, and Commit Identity.
+- Recognition of tests, builds, and user corrections.
+- Foundational Raw Event and Work Episode models.
+- Secret filtering.
+- An initial replay set of 20-50 real Episodes.
+- Baseline metric collection.
+- A lightweight Evaluation Runner, Replay Spec, Evidence Ledger, and deterministic Gate.
 
-验收：
+Acceptance criteria:
 
-- 关键事件识别 Precision 不低于 95%。
-- Episode 关联 Precision 不低于 95%，Recall 不低于 90%。
-- Capture P95 新增延迟不高于 10 ms。
-- Seeded Secret 保留和跨 Repo 泄漏为 0。
-- 缺少实际执行证据的关键完成声明不能通过验收或进入学习。
+- Precision of at least 95% for recognizing critical events.
+- Episode linking Precision of at least 95% and Recall of at least 90%.
+- P95 latency added by capture no greater than 10 ms.
+- Retention of Seeded Secrets and cross-Repo leakage are both 0.
+- Critical completion claims without actual execution evidence cannot pass acceptance
+  or enter learning.
 
-此阶段不自动长期学习。
+This stage does not automatically learn for long-term use.
 
-### M1：可信连续性记忆
+### M1: Trusted continuity memory
 
-**聚焦问题：** 新 Session 是否能减少重复 Context，而不引入错误 Context？
+**Focus question:** Can a new Session reduce repeated Context without introducing incorrect Context?
 
-交付：
+Deliverables:
 
-- Branch Context。
-- 显式 Remember、Correct 和 Forget。
-- Personal、Repository 和 Branch Scope。
-- Context Retrieval 和 Explain。
-- Memory Backend 集成。
-- Token Budget 和同 Session 去重。
+- Branch Context.
+- Explicit Remember, Correct, and Forget.
+- Personal, Repository, and Branch Scope.
+- Context Retrieval and Explain.
+- Memory Backend integration.
+- Token Budget and deduplication within a Session.
 
-验收：
+Acceptance criteria:
 
-- 至少 30 个 Branch Continuation 成对任务。
-- 重复 Context Token 中位数下降至少 30%。
-- TTV 中位数下降至少 15%。
-- Retrieval Precision@3 不低于 90%。
-- Outcome Success 相对 Baseline 下降不超过 2 个百分点。
-- Wrong Injection 不高于 2%，作为研究阶段门槛；稳定发布前必须收紧至 1%。
+- At least 30 paired Branch Continuation tasks.
+- A reduction of at least 30% in median repeated Context Tokens.
+- A reduction of at least 15% in median TTV.
+- Retrieval Precision@3 of at least 90%.
+- No decrease in Outcome Success of more than 2 percentage points relative to the Baseline.
+- Wrong Injection no greater than 2% as a research-stage gate, tightened to 1% before
+  a stable release.
 
-### M2：可证明的纠正学习
+### M2: Demonstrable correction learning
 
-**聚焦问题：** 一次已经验证的纠正，能否避免下一次相同纠正？
+**Focus question:** Can a verified correction prevent the same correction from being needed again?
 
-交付：
+Deliverables:
 
-- Correction Key。
-- 用户纠正与测试/构建成功关联。
-- Evidence-backed Knowledge Card。
-- Candidate、Active、Disputed 和 Superseded 生命周期。
-- Knowledge 使用结果记录。
-- 重复纠正率 RCR。
+- Correction Key.
+- Background semantic extraction of ordinary Chinese and English corrections, without
+  fixed labels or manual `remember` calls.
+- Bounded model calls that reuse the authorized Copilot sign-in, persistent task state,
+  budgets, and fallback controls.
+- Linking of user corrections to successful tests or builds.
+- MCP call corrections with input-contract or postcondition verification. An ordinary
+  successful call must not be presented as proof of business correctness.
+- Evidence-backed Knowledge Cards.
+- Candidate, Active, Disputed, and Superseded lifecycle.
+- Records of the outcomes of Knowledge use.
+- Correction recurrence rate (RCR).
 
-验收：
+Acceptance criteria:
 
-- RCR 相对 Baseline 下降至少 20%。
-- Knowledge 来源完整率 100%。
-- 反证出现后自动注入立即停止。
-- Wrong Injection 不高于 2%，作为研究阶段门槛；稳定发布前必须收紧至 1%。
-- Evidence Tier 标注准确率不低于 95%。
+- With the plugin installed and the Session still open, the system automatically extracts,
+  persists, and evaluates at least one natural-language correction rule. Later relevant tasks
+  can reuse it without the user prompting a memory-tool call.
+- Positive cases cover both native tests/builds and actual MCP parameter corrections.
+  Negative cases cover unknown evidence, quoted injection, unrelated success, use across
+  repositories, disabled learning, and resurrection after deletion.
+- RCR decreases by at least 20% relative to the Baseline.
+- Knowledge source completeness is 100%.
+- Automatic injection stops immediately when counterevidence appears.
+- Wrong Injection is no greater than 2% as a research-stage gate, tightened to 1% before
+  a stable release.
+- Evidence Tier labeling accuracy is at least 95%.
 
-M1 + M2 构成第一个可正式验证的 ProvenLoop 产品。
-以上收益是待证明的产品门槛。32 组 Branch Continuation 和 24 组 Correction Recurrence
-内置合成夹具只验证回归行为，不能替代真实受控任务。安全、显式授权的个人观察试用可以
-先行，但不能据此声称满足推广或正式发布资格。
+M1 + M2 form the first ProvenLoop product that can undergo formal validation.
+The benefit thresholds above remain to be proven. The 32 built-in synthetic Branch Continuation
+fixtures and 24 Correction Recurrence fixtures validate regression behavior only; they cannot
+replace real controlled tasks. Safe, explicitly authorized personal observation trials may
+proceed first, but do not establish eligibility for promotion or formal release.
 
-### M3：Outcome Evidence Learning
+### M3: Outcome Evidence Learning
 
-**聚焦问题：** 系统能否将更晚的软件生命周期结果作为证据，安全地修正早期经验？
+**Focus question:** Can the system use later software lifecycle outcomes as evidence to
+safely revise earlier lessons?
 
-交付：
+Deliverables:
 
-- PR 和 Review Link。
-- CI Outcome。
-- Revert 和后续 Bug/Fix Link。
-- Outcome Evidence Linker。
-- 关联强度：`direct / plausible / uncertain / unrelated`。
-- Outcome-qualified Success。
-- 成功/失败轨迹对比。
-- 跨 Episode Pattern。
-- 自动 Strengthen、Weaken、Dispute 和 Supersede。
+- PR and Review Links.
+- CI Outcomes.
+- Revert and later Bug/Fix Links.
+- Outcome Evidence Linker.
+- Link strength: `direct / plausible / uncertain / unrelated`.
+- Outcome-qualified Success.
+- Comparison of successful and failed trajectories.
+- Cross-Episode Patterns.
+- Automatic Strengthen, Weaken, Dispute, and Supersede operations.
 
-验收：
+Acceptance criteria:
 
-- `direct` 关联 Precision 不低于 95%。
-- `plausible` 及以上关联 Precision 不低于 90%，Recall 不低于 80%。
-- 用户可以否认关联、拆分或合并 Work Episode。
-- `uncertain` 关联不能单独激活或重写 Knowledge。
-- Later Revert 可以准确反向削弱原 Knowledge。
-- 未结束观察窗口的 Episode 不作为最终成功样本。
-- 用户可以从 Knowledge 查看完整 Proof Chain。
+- Precision of at least 95% for `direct` links.
+- Precision of at least 90% and Recall of at least 80% for links rated `plausible` or stronger.
+- Users can reject links and split or merge Work Episodes.
+- An `uncertain` link cannot activate or rewrite Knowledge on its own.
+- A Later Revert can accurately weaken the original Knowledge.
+- Episodes with unfinished observation windows do not count as final success samples.
+- Users can inspect the complete Proof Chain from Knowledge.
 
-### M4：Deep Retrospective
+### M4: Deep Retrospective
 
-**聚焦问题：** 系统能否发现用户没有明确说出、但能够被证据验证的新经验？
+**Focus question:** Can the system discover new lessons that users have not stated explicitly
+but that evidence can verify?
 
-交付：
+Deliverables:
 
-- 跨 Episode 成功/失败对比。
-- Pattern 和 Anomaly Detection。
-- 多 Hypothesis 生成。
-- 本地 Evidence Expansion。
-- 可选外部 Research。
-- Counterexample Search。
-- Insight Candidate 生命周期。
-- Hidden Pattern Retrospective 评估集。
+- Comparison of successes and failures across Episodes.
+- Pattern and Anomaly Detection.
+- Generation of multiple Hypotheses.
+- Local Evidence Expansion.
+- Optional external Research.
+- Counterexample Search.
+- Insight Candidate lifecycle.
+- A Hidden Pattern Retrospective evaluation set.
 
-验收：
+Acceptance criteria:
 
-- Insight 字段和来源完整率 100%。
-- Insight Precision 不低于 80%。
-- Unsupported Causality 不高于 2%。
-- 每个 Insight 至少包含一个反例检查或说明为何无法检查。
-- 外部研究关闭时，系统仍能完成纯本地复盘。
-- 外部研究不会发送源代码、原始 Prompt、Secret 或私有项目标识。
-- 被验证的 Insight 在 Held-out 任务上改善至少一个目标指标，且不降低 Outcome Success。
+- Insight field and source completeness is 100%.
+- Insight Precision is at least 80%.
+- Unsupported Causality is no greater than 2%.
+- Every Insight includes at least one counterexample check or an explanation of why
+  the check was not possible.
+- The system can complete an entirely local retrospective with external research disabled.
+- External research does not send source code, raw Prompts, Secrets, or private
+  project identifiers.
+- Verified Insights improve at least one target metric on Held-out tasks without reducing
+  Outcome Success.
 
-### M5：受控 Proven Playbook
+### M5: Controlled Proven Playbooks
 
-**聚焦问题：** 重复验证的经验能否安全形成比普通 Knowledge 更强的执行能力？
+**Focus question:** Can repeatedly verified lessons safely produce execution capabilities
+that go beyond ordinary Knowledge?
 
-交付：
+Deliverables:
 
-- Playbook Candidate。
-- Trigger 和 Non-trigger。
-- 权限及副作用声明。
-- Static、Secret 和 Prompt Injection 检查。
-- Sandbox Replay。
-- Held-out Evaluation。
-- 用户审批。
-- Immutable Version。
-- Shadow、Canary 和 Rollback。
+- Playbook Candidates.
+- Triggers and Non-triggers.
+- Permission and side-effect declarations.
+- Static, Secret, and Prompt Injection checks.
+- Sandbox Replay.
+- Held-out Evaluation.
+- User approval.
+- Immutable Versions.
+- Shadow, Canary, and Rollback.
 
-验收：
+Acceptance criteria:
 
-- 来源、权限、Trigger、Non-trigger 和 Verifier 完整率 100%。
-- 至少 50 个 Held-out 成对回放。
-- Trigger Precision 不低于 95%。
-- Negative Abstention 不低于 98%。
-- Severe Harm 为 0。
-- 相对 Baseline 质量或效率收益的置信区间下界大于 0。
+- Source, permission, Trigger, Non-trigger, and Verifier completeness is 100%.
+- At least 50 paired Held-out replays.
+- Trigger Precision of at least 95%.
+- Negative Abstention of at least 98%.
+- Severe Harm is 0.
+- The lower confidence bound for the quality or efficiency gain relative to the Baseline
+  is greater than 0.
 
-Playbook 默认不自动启用。
+Playbooks are not automatically enabled by default.
 
-### M6：跨 Agent 个人学习层
+### M6: Personal learning across Agents
 
-**聚焦问题：** ProvenLoop 的学习是否能独立于具体 Agent，被安全地共享和继续改进？
+**Focus question:** Can ProvenLoop learning remain independent of a specific Agent,
+be shared safely, and continue to improve?
 
-交付：
+Deliverables:
 
-- 第二个 Reader Adapter。
-- 第二个 Observer Adapter。
-- 跨 Agent Episode 去重。
-- 统一 Feedback。
-- Agent 能力矩阵和降级策略。
-- 跨 Agent 对照评估。
+- A second Reader Adapter.
+- A second Observer Adapter.
+- Episode deduplication across Agents.
+- Unified Feedback.
+- An Agent capability matrix and fallback policies.
+- Controlled evaluation across Agents.
 
-验收：
+Acceptance criteria:
 
-- 更换 Agent 后仍能正确使用已批准 Knowledge。
-- 不重复计算同一 Episode 证据。
-- Adapter 缺少某类事件时明确降级，不伪造 Outcome。
-- 跨 Agent Wrong Injection 和 Scope 泄漏不高于单 Agent 基线。
+- Approved Knowledge remains usable correctly after switching Agents.
+- Evidence from the same Episode is not counted more than once.
+- An Adapter that lacks an event type degrades explicitly and does not fabricate Outcomes.
+- Wrong Injection and Scope leakage across Agents do not exceed the single-Agent Baseline.
 
-### M7：可选的策略和参数优化
+### M7: Optional strategy and parameter optimization
 
-远期探索：
+Long-term areas to explore:
 
-- 自动优化检索策略和 Trigger。
-- Playbook 版本 Pareto 比较。
-- 使用批准、脱敏、去重且许可明确的数据进行 SFT、DPO、RFT 或 LoRA。
+- Automatic optimization of retrieval strategies and Triggers.
+- Pareto comparisons of Playbook versions.
+- SFT, DPO, RFT, or LoRA using approved, sanitized, deduplicated data with clear licensing.
 
-参数训练是独立产物，不能替代 Knowledge 和 Playbook 的审计及回滚。
+Parameter training is a separate artifact. It cannot replace auditability and rollback for
+Knowledge and Playbooks.
 
 ---
 
-## 14. 隐私、安全和信任
+## 14. Privacy, safety, and trust
 
-### 14.1 默认原则
+### 14.1 Default principles
 
-- Local-first。
-- 默认不上传。
-- 写入和读取双重 Secret 过滤。
-- 原始证据与运行时 Context 分离。
-- 来源具有 Trust Label。
-- 外部内容不能单独形成指令。
-- Repository Scope 强隔离。
-- 正常 Feedback 和状态变更 Append-only；用户删除遵循独立的硬删除规则。
-- 用户可以 Explain、Forget、Revoke 和 Purge。
+- Local-first.
+- No uploads by default.
+- Secret filtering on both writes and reads.
+- Separation of raw evidence from runtime Context.
+- Trust Labels for sources.
+- External content cannot establish instructions on its own.
+- Strict Repository Scope isolation.
+- Normal Feedback and state changes are Append-only; user deletion follows separate
+  hard-deletion rules.
+- Users can Explain, Forget, Revoke, and Purge.
 
-### 14.2 学错比不学习更危险
+### 14.2 Incorrect learning is more dangerous than no learning
 
-任何以下情况立即停止对应 Knowledge 或 Playbook：
+Immediately stop using the affected Knowledge or Playbook if any of the following occurs:
 
-- 出现有效反证。
-- Secret 或跨 Repository 泄漏。
-- 未授权破坏性行为。
-- Candidate 使成功率明显下降。
-- 新环境不再满足 Trigger。
+- Valid counterevidence appears.
+- A Secret leak or cross-Repository leak occurs.
+- An unauthorized destructive action occurs.
+- A Candidate substantially reduces the success rate.
+- The new environment no longer meets the Trigger.
 
-### 14.3 采集行为
+### 14.3 Capture behavior
 
-Extension callback 只做：
+The Extension callback only:
 
-- 读取事件元数据。
-- 跳过内部 Session。
-- 复制有界字段到内存缓冲区。
-- 立即返回控制权。
+- Reads event metadata.
+- Skips internal Sessions.
+- Copies bounded fields into an in-memory buffer.
+- Returns control immediately.
 
-异步 writer 负责脱敏和持久入队。callback 不执行同步文件 I/O，不调用模型，
-不分析完整历史，也不等待 Worker。
+An asynchronous writer sanitizes the data and durably enqueues it. The callback performs no
+synchronous file I/O, makes no model calls, does not analyze the full history, and does not
+wait for the Worker.
 
-### 14.4 删除语义
+### 14.4 Deletion semantics
 
-不可变审计与用户删除权采用不同操作语义：
+Immutable auditing and user deletion rights use different operation semantics:
 
-1. **Correct、Revoke、Dispute**
-   - 不修改历史记录。
-   - 追加新的 Feedback Event。
-   - 当前状态由事件重建。
+1. **Correct, Revoke, Dispute**
+   - Leave historical records unchanged.
+   - Append a new Feedback Event.
+   - Rebuild the current state from events.
 
 2. **Forget Knowledge**
-   - 硬删除 Knowledge 正文、索引、Embedding 和运行时缓存。
-   - 删除或重新计算由它派生的 Candidate 和 Playbook。
-   - 保留不含正文的删除目标标识、来源摘要或 Tombstone，用于防止重放和恢复复活内容。
-     它们仍是敏感的本地关联元数据，不能称为完全匿名。
+   - Hard-delete the Knowledge body, indexes, Embeddings, and runtime caches.
+   - Delete or recompute derived Candidates and Playbooks.
+   - Retain deletion-target identifiers, source digests, or Tombstones without the content
+     body to prevent replay or restoration from resurrecting deleted content. These remain
+     sensitive local linking metadata and cannot be described as fully anonymous.
 
-3. **Delete by Source、Session 或 Episode**
-   - 硬删除对应 Raw Payload、摘要及所有派生 Knowledge、评估样本和索引。
-   - 重新计算依赖这些证据的置信度；证据不足的产物自动降级或停用。
-   - Tombstone 还需保留阻止重放所需的身份/摘要；不能承诺仅保留随机删除 ID。
-   - 删除门禁覆盖受管理的 canonical、queue、projection 和关联记录，并使本地观察失效；
-     不会改写恢复备份，恢复时须拒绝缺少当前删除 Tombstone 的备份。
-     用户自行复制的备份、外部导出和 Copilot 自身 Session 文件不在自动删除范围内。
+3. **Delete by Source, Session, or Episode**
+   - Hard-delete the corresponding Raw Payloads, summaries, and all derived Knowledge,
+     evaluation samples, and indexes.
+   - Recalculate confidence that depends on this evidence. Automatically downgrade or
+     disable artifacts that no longer have enough evidence.
+   - Tombstones must retain the identities or digests needed to prevent replay. The system
+     cannot promise to retain only random deletion IDs.
+   - Deletion gates cover managed canonical, queue, projection, and linking records, and
+     invalidate local observations. They do not rewrite recovery backups. Restoration must
+     reject backups that lack the current deletion Tombstones. Backups copied by users,
+     external exports, and Copilot's own Session files are outside automatic deletion scope.
 
 4. **Purge**
-   - 停止并确认活动 Extension 退出后，删除所有权已验证的 ProvenLoop 数据根目录，
-     包括其中的 Raw Event、Knowledge、Evaluation、Queue、Cache 和 Tombstone。
-   - 不删除任意其他目录、独立备份或用户已分享的导出。
+   - Stop the active Extension and confirm it has exited, then delete the ProvenLoop data
+     root after verifying ownership. This includes its Raw Events, Knowledge, Evaluations,
+     Queues, Caches, and Tombstones.
+   - Do not delete arbitrary other directories, separate backups, or exports users have shared.
 
-因此，`Append-only` 表示正常学习记录不能被静默改写，不表示 ProvenLoop 可以拒绝
-用户发起的硬删除。
-恢复旧备份不得复活已删除来源；数据库恢复、安装版本切换和 Git 回滚是不同操作。
-当前实现细节与恢复限制以 [存储架构](architecture.md#5-storage-architecture)
-和 [安装与回滚](alpha-installation.md#rollback) 为准。
-
----
-
-## 15. 产品决策
-
-以下决策在当前版本中固定：
-
-1. 最终目标同时包含 Memory 效率和 Outcome Learning 质量。
-2. Outcome Learning 是主要差异化，通用 Memory 优先集成。
-3. Deep Retrospective 是 Outcome Learning 中主动发现新规律的一等能力。
-4. 用户是个人 Coding Agent 使用者，不包含团队共享。
-5. 多 Agent 是产品方向，按 Reader、Observer、Full Learning 渐进实现。
-6. Work Episode 是学习单位，Session 只是数据来源。
-7. Insight Candidate 必须区分观察、假设、证据和反证。
-8. Knowledge Card 是默认学习产物。
-9. Proven Playbook 是稀有晋升产物。
-10. Candidate 不自动注入。
-11. 早期使用 Evidence Tier，不使用缺少数据支撑的伪精确概率。
-12. Inferred Knowledge 使用前确认；Verified Knowledge 仍受 Scope 和 Trigger 限制。
-13. 有效反证立即停止自动使用。
-14. Branch Context 只在发生可延续状态变化时异步生成。
-15. 初次历史导入只形成基线和 Candidate。
-16. 外部 Research 默认关闭，并且不能单独形成项目规则。
-17. 每次 Context 有硬 Token Budget。
-18. 效率和质量分别使用 TTV 与 RCR 衡量。
-19. 关键完成声明不是证据；必须与实际执行轨迹一致。
-20. 没有 Baseline、Held-out 和 Guardrail 的“改进”不算改进。
-21. 用户只管理 ProvenLoop，不直接面对多个 Memory 系统。
-22. Outcome Linker 只表达证据关联强度，不自动宣称因果关系。
-23. 用户可以否认 Outcome 关联，并拆分或合并 Work Episode。
-24. 自然语言不是唯一控制面，所有关键反馈必须有确定性动作。
-25. 小 Milestone 用于逐项消除风险，不改变最终产品愿景。
+`Append-only` prevents silent rewriting of normal learning records. It does not allow
+ProvenLoop to refuse a user-initiated hard deletion. Restoring an old backup must not resurrect
+deleted sources. Database restoration, switching installed versions, and Git rollback are
+different operations. See [Storage architecture](architecture.md#5-storage-architecture)
+and [Installation and rollback](alpha-installation.md#rollback) for current implementation
+details and restoration limitations.
 
 ---
 
-## 16. 产品原则
+## 15. Product decisions
 
-1. **Memory 解决连续性，Outcome Learning 和 Deep Retrospective 解决质量。**
-2. **一次纠正应该成为一次性投入。**
-3. **不只记录经验，还要研究经验。**
-4. **复盘可以提出新认识，但不能把假设伪装成事实。**
-5. **Agent 可以切换，用户的学习成果不能丢失。**
-6. **Session 不是工作，Work Episode 才是工作。**
-7. **结果优先于模型自评。**
-8. **Knowledge 是默认产物，Playbook 是严格晋升产物。**
-9. **每条建议必须保留 Proof Chain。**
-10. **自动提出与自动生效必须分离。**
-11. **正确不注入与正确召回同样重要。**
-12. **数据库可以增长，Context 不能线性增长。**
-13. **所有改进必须可比较。**
-14. **所有学习必须可纠正、删除和回滚。**
-15. **先证明非参数学习，再考虑参数训练。**
-16. **声称做过的事情，必须能从执行证据中证明。**
+The following decisions are fixed in the current version:
+
+1. The final goals include both Memory efficiency and Outcome Learning quality.
+2. Outcome Learning is the main differentiator. Integrate general-purpose Memory where possible.
+3. Deep Retrospective is a first-class Outcome Learning capability for actively discovering
+   new patterns.
+4. Target users are individual Coding Agent users. Team sharing is out of scope.
+5. Support across Agents is part of the product direction, implemented progressively through
+   Reader, Observer, and Full Learning support.
+6. Work Episode is the unit of learning; Session is a data source.
+7. An Insight Candidate must distinguish observations, hypotheses, evidence, and counterevidence.
+8. A Knowledge Card is the default learning artifact.
+9. A Proven Playbook is a rare promotion artifact.
+10. Candidates are not automatically injected.
+11. Early versions use Evidence Tier, avoiding falsely precise probabilities unsupported by data.
+12. Inferred Knowledge requires confirmation before use. Verified Knowledge remains subject
+    to Scope and Trigger constraints.
+13. Valid counterevidence immediately stops automatic use.
+14. Branch Context is generated asynchronously only when state changes that can be carried
+    forward occur.
+15. Initial history imports create only a baseline and Candidates.
+16. External Research is disabled by default and cannot establish project rules on its own.
+17. Each Context has a hard Token Budget.
+18. TTV measures efficiency; RCR measures quality.
+19. Critical completion claims are not evidence. They must match actual execution traces.
+20. An improvement claim requires a Baseline, Held-out evaluation, and Guardrails.
+21. Users manage ProvenLoop without having to manage multiple Memory systems directly.
+22. The Outcome Linker expresses evidence link strength and does not automatically claim causality.
+23. Users can reject Outcome links and split or merge Work Episodes.
+24. Natural language is not the only control surface. All critical feedback must have
+    deterministic actions.
+25. Small Milestones remove risks one at a time without changing the final product vision.
 
 ---
 
-## 17. 最终产品判断
+## 16. Product principles
 
-ProvenLoop 最终不是 Memory Plugin，也不是 Skill Generator。
+1. **Memory addresses continuity; Outcome Learning and Deep Retrospective address quality.**
+2. **A correction should be a one-time investment.**
+3. **Record lessons and investigate them.**
+4. **Retrospectives may propose new insights, but must not present hypotheses as facts.**
+5. **Users must retain what the system has learned when they switch Agents.**
+6. **A Work Episode represents the work; a Session does not.**
+7. **Outcomes take precedence over model self-assessment.**
+8. **Knowledge is the default artifact; Playbooks require strict promotion.**
+9. **Every recommendation must retain its Proof Chain.**
+10. **Automatic proposal and automatic activation must remain separate.**
+11. **Correct abstention from injection matters as much as correct retrieval.**
+12. **The database may grow, but Context must not grow linearly with it.**
+13. **Every improvement must support comparison.**
+14. **All learning must be correctable, deletable, and reversible.**
+15. **Prove nonparametric learning before considering parameter training.**
+16. **Claims about completed actions must be provable from execution evidence.**
 
-它是一套属于个人开发者的、独立于具体 Agent 的持续改进系统：
+---
+
+## 17. Final product assessment
+
+The final ProvenLoop product extends beyond a Memory Plugin or Skill Generator. It is a
+continuous improvement system for individual developers that remains independent of any
+specific Agent:
 
 ```text
-记住真正需要延续的 Context
+Remember Context that needs to carry forward
   +
-理解多个 Session 属于同一项工作
+Recognize when multiple Sessions belong to the same work
   +
-用真实软件结果判断经验是否成立
+Use real software outcomes to determine whether a lesson holds
   +
-从多次经历中主动发现没有被直接表达的新规律
+Actively discover unstated patterns across multiple experiences
   +
-扩展证据、寻找反例并验证这些规律
+Expand the evidence, search for counterexamples, and verify those patterns
   +
-把经过验证的经验带到下一次任务
+Bring verified lessons into the next task
   +
-证明这次使用是否真的产生收益
+Prove whether that use produced a benefit
 ```
 
-它的长期壁垒来自六件事：
+Its long-term defensibility comes from six capabilities:
 
-1. **Continuity：** 用户不用重复讲。
-2. **Outcome Learning：** Agent 不会只记住表面成功。
-3. **Deep Retrospective：** 不只记录用户说过什么，还能从经历中发现新规律。
-4. **Proof Chain：** 每项学习都有来源和反证。
-5. **Portable Intelligence：** 换 Agent 不失忆。
-6. **Measured Improvement：** 能证明自己变得更好。
+1. **Continuity:** Users do not need to repeat themselves.
+2. **Outcome Learning:** The Agent looks beyond apparent success when learning.
+3. **Deep Retrospective:** The system records what users said and discovers new patterns
+   in their experiences.
+4. **Proof Chain:** Every lesson has provenance and counterevidence.
+5. **Portable Intelligence:** Switching Agents does not lose what has been learned.
+6. **Measured Improvement:** The system can demonstrate that it has improved.
 
-最终体验应该是：
+The intended experience is:
 
-> 我仍然按原来的方式使用 Coding Agent，但 ProvenLoop 不只记住我做过什么，还会
-> 比较这些经历、主动补充证据并发现我没有明确说出的经验。随着时间推移，我需要重复
-> 解释得更少，Agent 重复犯错得更少；即使更换工具，这些已经验证的能力仍然存在。
+> I keep using my Coding Agent as usual. ProvenLoop remembers what I have done, compares
+> those experiences, actively gathers more evidence, and discovers lessons I have not
+> stated explicitly. Over time, I repeat fewer explanations and the Agent repeats fewer
+> mistakes. Even when I switch tools, these verified capabilities remain available.
 
 ---
 
-## 18. 研究基础
+## 18. Research foundations
 
-本设计建立在以下研究方向之上：
+This design builds on the following research directions:
 
-- ReAct：结构化任务轨迹。
-- Reflexion、Self-Refine：利用反馈改进后续尝试。
-- Generative Agents：从情景记忆形成高层规律。
-- MemGPT/Letta：长期存储与有限 Context 的分层管理。
-- ExpeL：比较成功和失败轨迹提炼经验。
-- Voyager：经过环境验证后再进入技能库。
-- Agent Workflow Memory：从实例轨迹抽象工作流。
-- DSPy、OPRO、ACE、GEPA：使用指标优化 Agent 程序。
-- SWE-Gym、SWE-RL：基于可验证软件任务进行进一步训练。
+- ReAct: structured task trajectories.
+- Reflexion and Self-Refine: feedback used to improve later attempts.
+- Generative Agents: higher-level patterns formed from episodic memory.
+- MemGPT/Letta: hierarchical management of long-term storage and limited Context.
+- ExpeL: lessons extracted by comparing successful and failed trajectories.
+- Voyager: environment verification before admission to the skill library.
+- Agent Workflow Memory: workflows abstracted from example trajectories.
+- DSPy, OPRO, ACE, and GEPA: metrics used to optimize Agent programs.
+- SWE-Gym and SWE-RL: further training on verifiable software tasks.
 
-详细研究见：
+For detailed research, see:
 
 - [Self-improving Agents Research](research/self-improving-agents.md)
 - [Competitive Analysis](research/competitive-analysis.md)

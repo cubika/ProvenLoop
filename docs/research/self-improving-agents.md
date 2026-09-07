@@ -1,96 +1,96 @@
-# 从 Memory 到持续学习：Self-Improving Agent 研究与 ProvenLoop 工程方案
+# From Memory to continuous learning: Self-Improving Agent research and a ProvenLoop engineering proposal
 
-> 目标：让 Coding Agent 不只是保存历史，而是从真实工作轨迹中提炼规律、形成技能、验证效果，并在未来任务中持续减少重复错误和人工纠正。
+> Goal: Enable a Coding Agent to extract patterns from real work trajectories, form skills, validate their effects, and reduce repeated mistakes and manual corrections in future tasks, beyond simply retaining history.
 
-**研究日期：** 2026-08-27  
-**关联文档：**
+**Research date:** 2026-08-27
+**Related documents:**
 
-- `ProvenLoop-investigation-findings.md`
-- `ProvenLoop-product-design.md`
+- [Competitive research findings](competitive-analysis.md)
+- [Product design](../product-design.md)
 
 ---
 
-## 1. 结论摘要
+## 1. Summary of conclusions
 
-“Agent 随时间变得越来越聪明”可以实现，但当前最现实、安全且可工程化的路径，不是在用户机器上持续修改基础模型权重，而是构建一个非参数学习闭环：
+An Agent can become more capable over time. The most practical, safe, and implementable path today is a nonparametric learning loop, rather than continuously modifying foundation-model weights on the user's machine:
 
 ```text
-真实任务轨迹
-  -> 情景记忆
-  -> 跨轨迹规律
-  -> 可执行技能或工作流
-  -> 独立评估
-  -> 审批和版本化
-  -> 按任务条件激活
-  -> 根据新结果强化、修订或回滚
+Real task trajectories
+  -> Episodic memory
+  -> Patterns across trajectories
+  -> Executable skills or workflows
+  -> Independent evaluation
+  -> Approval and versioning
+  -> Activation based on task conditions
+  -> Strengthening, revision, or rollback based on new outcomes
 ```
 
-现有研究已经分别验证了这个闭环的主要环节：
+Existing research has validated the main parts of this loop separately:
 
-- **ReAct** 说明如何产生可检查的 Thought-Action-Observation 轨迹。
-- **Reflexion** 和 **Self-Refine** 说明语言反馈可以改善下一次尝试，而不必更新模型权重。
-- **Generative Agents** 说明情景记忆可以通过重要性、相关性和时间因素进行检索，并进一步形成高层反思。
-- **MemGPT/Letta** 说明可以像操作系统管理内存一样，在有限上下文与长期存储之间换入换出信息。
-- **ExpeL** 说明可以比较成功和失败轨迹，提炼跨任务经验。
-- **Voyager** 说明只有经环境验证成功的过程，才应进入可执行技能库。
-- **Agent Workflow Memory** 说明可以从实例轨迹中抽象出可复用工作流。
-- **ACE、DSPy、OPRO、GEPA** 说明提示、规则和 Agent 程序本身可以通过轨迹与指标持续优化。
-- **SWE-Gym、SWE-RL** 说明当任务存在可执行测试和 verifier 时，可以进一步用轨迹训练模型参数。
+- **ReAct** shows how to produce inspectable Thought-Action-Observation trajectories.
+- **Reflexion** and **Self-Refine** show that language feedback can improve the next attempt without updating model weights.
+- **Generative Agents** shows how episodic memories can be retrieved using importance, relevance, and time, then used to form higher-level reflections.
+- **MemGPT/Letta** shows how information can move between limited context and long-term storage, much as an operating system manages memory.
+- **ExpeL** shows how comparing successful and failed trajectories can yield lessons across tasks.
+- **Voyager** shows that only procedures verified as successful by the environment should enter an executable skill library.
+- **Agent Workflow Memory** shows how reusable workflows can be abstracted from example trajectories.
+- **ACE, DSPy, OPRO, and GEPA** show how prompts, rules, and Agent programs can be continuously optimized using trajectories and metrics.
+- **SWE-Gym and SWE-RL** show that trajectories can also train model parameters when tasks have executable tests and verifiers.
 
-因此，ProvenLoop 最有价值的定位不应只是 Memory，而应是：
+ProvenLoop's most useful role therefore extends beyond Memory:
 
-> **面向 Coding Agent 的软件成果反馈学习层：把 Session、Commit、PR、Review、CI、测试和后续 Bug Fix 连接为 Work Episode，再将经过验证的重复经验升级为可版本化 Skill。**
+> **A software outcome feedback learning layer for Coding Agents: connect Sessions, Commits, PRs, Reviews, CI, tests, and later Bug Fixes into Work Episodes, then promote repeatedly verified lessons into versioned Skills.**
 
 ---
 
-## 2. 什么才算“变得更聪明”
+## 2. What counts as becoming more capable
 
-需要区分六种能力，避免把“保存更多聊天”误认为学习。
+Distinguish six capabilities so that retaining more chats is not mistaken for learning.
 
-| 层级 | 能力 | 是否改变模型权重 | 典型实现 |
+| Level | Capability | Changes model weights | Typical implementations |
 |---|---|---:|---|
-| L0 轨迹化 | 记录任务、动作、观察和结果 | 否 | ReAct、SWE-agent |
-| L1 情景记忆 | 找回某次具体任务发生了什么 | 否 | Reflexion、MemGPT |
-| L2 语义归纳 | 从多次经历提炼规律和条件 | 否 | ExpeL、Generative Agents |
-| L3 程序技能 | 把规律编译成 Skill、脚本或工作流 | 否 | Voyager、AWM、Hermes |
-| L4 策略优化 | 用指标比较和优化提示、路由及流程 | 否 | DSPy、OPRO、ACE、GEPA |
-| L5 参数学习 | 用轨迹执行 SFT、DPO、RL 或持续训练 | 是 | SWE-Gym、SWE-RL |
+| L0 Trajectory recording | Record tasks, actions, observations, and outcomes | No | ReAct, SWE-agent |
+| L1 Episodic memory | Retrieve what happened in a specific task | No | Reflexion, MemGPT |
+| L2 Semantic induction | Extract patterns and conditions from multiple experiences | No | ExpeL, Generative Agents |
+| L3 Procedural skills | Compile patterns into Skills, scripts, or workflows | No | Voyager, AWM, Hermes |
+| L4 Strategy optimization | Compare and optimize prompts, routing, and processes with metrics | No | DSPy, OPRO, ACE, GEPA |
+| L5 Parameter learning | Use trajectories for SFT, DPO, RL, or continual training | Yes | SWE-Gym, SWE-RL |
 
-对本地 Copilot CLI 用户而言，最优先的是 L0-L4：
+For local Copilot CLI users, L0-L4 should come first:
 
-- 成本低。
-- 不要求额外训练基础设施。
-- 可解释。
-- 可按 repo 隔离。
-- 可以删除、修订和回滚。
-- 能在较短时间内改善真实开发体验。
+- Low cost.
+- No additional training infrastructure.
+- Explainable behavior.
+- Isolation by repo.
+- Support for deletion, revision, and rollback.
+- Improvements to real development work within a relatively short time.
 
-L5 应当是后期、离线、集中式能力，而不是每个 Session 结束后自动修改模型。
+L5 should be a later, offline, centralized capability. It should not automatically modify the model after each Session.
 
 ---
 
-## 3. 记忆类型
+## 3. Types of memory
 
-### 3.1 工作记忆
+### 3.1 Working memory
 
-当前 Session 中的目标、计划、最近工具输出和未完成步骤。
+The goals, plan, recent tool output, and unfinished steps in the current Session.
 
-它适合进入模型上下文，但不适合永久保存。
+This belongs in model context but should not be retained permanently.
 
-### 3.2 情景记忆
+### 3.2 Episodic memory
 
-一次具体经历：
+A specific experience:
 
 ```yaml
-task: 修复 Windows 上 better-sqlite3 安装失败
+task: Fix a better-sqlite3 installation failure on Windows
 context:
   repo: owner/project
   branch: feature/memory
   platform: Windows
 actions:
-  - 检查 Node ABI
-  - 检查预编译二进制
-  - 初始化 MSVC 环境
+  - Check the Node ABI
+  - Check for prebuilt binaries
+  - Initialize the MSVC environment
 outcome:
   tests_passed: true
   exit_code: 0
@@ -100,22 +100,23 @@ evidence:
   - test-run-id
 ```
 
-情景记忆回答“上一次发生了什么”。
+Episodic memory answers what happened last time.
 
-### 3.3 语义记忆
+### 3.3 Semantic memory
 
-从多次经历中归纳出的稳定事实或规律：
+Stable facts or patterns inferred from multiple experiences:
 
 ```text
-在 Windows 上构建 Node 原生模块时，Node ABI 与预编译二进制不匹配
-是高频失败原因。只有在没有可用预编译包时才应进入 MSVC 编译路径。
+When building native Node modules on Windows, a mismatch between the Node ABI
+and prebuilt binaries is a frequent cause of failure. Use the MSVC compilation
+path only when no suitable prebuilt package is available.
 ```
 
-语义记忆回答“通常为什么会发生”。
+Semantic memory answers why something usually happens.
 
-### 3.4 程序记忆
+### 3.4 Procedural memory
 
-可直接执行或遵循的过程：
+A procedure that can be executed or followed directly:
 
 ```markdown
 ---
@@ -123,198 +124,198 @@ name: windows-native-node-build
 description: Use when a Node native dependency fails to install on Windows.
 ---
 
-1. 检查 Node、npm、Python 和目标架构。
-2. 确认依赖是否提供当前 ABI 的预编译包。
-3. 仅在必要时检查 Visual Studio Build Tools。
-4. 在同一个 cmd.exe 进程中加载 vcvars64.bat 并执行构建。
-5. 运行最小 smoke test。
+1. Check Node, npm, Python, and the target architecture.
+2. Confirm whether the dependency provides a prebuilt package for the current ABI.
+3. Check Visual Studio Build Tools only when necessary.
+4. Load vcvars64.bat and run the build in the same cmd.exe process.
+5. Run a minimal smoke test.
 ```
 
-程序记忆回答“下一次应该怎么做”。
+Procedural memory answers what to do next time.
 
 ---
 
-## 4. 论文脉络
+## 4. Research development
 
-## 4.1 ReAct：轨迹是学习的原材料
+## 4.1 ReAct: trajectories as learning material
 
-**ReAct: Synergizing Reasoning and Acting in Language Models** 将推理、动作和环境观察组织为循环：
+**ReAct: Synergizing Reasoning and Acting in Language Models** organizes reasoning, actions, and environmental observations into a loop:
 
 ```text
 Thought -> Action -> Observation -> Thought
 ```
 
-它本身不提供跨 Session 学习，但产生了后续学习系统需要的结构化轨迹。
+It does not itself provide learning across Sessions, but produces the structured trajectories that later learning systems need.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- 必须保存可重放的动作和结果，而不只是最终摘要。
-- 工具失败、测试输出、文件变化和用户纠正都需要关联到同一 Work Episode。
-- 不应默认保存完整隐藏推理；可保存动作、观察、显式理由和结果。
+- Preserve replayable actions and outcomes, not just final summaries.
+- Link tool failures, test output, file changes, and user corrections to the same Work Episode.
+- Do not retain full hidden reasoning by default. Actions, observations, explicit reasons, and outcomes can be retained.
 
-来源：[ReAct](https://arxiv.org/abs/2210.03629)
+Source: [ReAct](https://arxiv.org/abs/2210.03629)
 
-## 4.2 Reflexion 与 Self-Refine：文字反馈也是学习
+## 4.2 Reflexion and Self-Refine: learning through language feedback
 
-**Reflexion** 将失败、环境反馈或编译错误转成语言反思，并在下一次尝试中注入。论文称其为 verbal reinforcement learning，但不更新模型权重。
+**Reflexion** converts failures, environmental feedback, or compilation errors into language reflections and injects them into the next attempt. The paper calls this verbal reinforcement learning, but it does not update model weights.
 
-**Self-Refine** 使用同一个模型循环执行：
+**Self-Refine** uses the same model in a repeated cycle:
 
 ```text
-生成 -> 反馈 -> 修订
+Generate -> Feedback -> Revise
 ```
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- 用户纠正应成为高价值 Outcome Signal。
-- “失败原因”需要与下一次成功修复建立关联。
-- 反思必须接受外部验证；模型自己的批评不能直接成为永久规则。
+- User corrections should be high-value Outcome Signals.
+- Link a failure's cause to the next successful fix.
+- Reflections require external verification. The model's own criticism cannot directly become a permanent rule.
 
-来源：
+Sources:
 
 - [Reflexion](https://arxiv.org/abs/2303.11366)
 - [Self-Refine](https://arxiv.org/abs/2303.17651)
 
-## 4.3 Generative Agents：从事件形成高层规律
+## 4.3 Generative Agents: higher-level patterns from events
 
-Generative Agents 的 Memory Stream 为每个事件记录时间、重要性、相关性和嵌入。检索综合：
+The Memory Stream in Generative Agents records time, importance, relevance, and an embedding for each event. Retrieval combines:
 
 ```text
 recency + relevance + importance
 ```
 
-当重要性累积到阈值时，系统会从多条底层事件形成高层 reflection。
+When accumulated importance reaches a threshold, the system forms higher-level reflections from multiple underlying events.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- 不应把所有历史同等对待。
-- 规律应引用支持它的原始 Episode。
-- 高频、重要、反复被验证的内容才值得升级。
-- 反思不是永久真理，应保留来源、时间和置信度。
+- Do not treat all history equally.
+- Patterns should cite the original Episodes that support them.
+- Frequent, important, repeatedly verified content is worth promoting.
+- Reflections are not permanent truths. Retain their sources, timestamps, and confidence.
 
-来源：[Generative Agents](https://arxiv.org/abs/2304.03442)
+Source: [Generative Agents](https://arxiv.org/abs/2304.03442)
 
-## 4.4 MemGPT/Letta：上下文是缓存，不是数据库
+## 4.4 MemGPT/Letta: context as a cache, not a database
 
-MemGPT 将有限模型上下文类比为主存，将外部记忆视为持久存储，通过工具进行换入换出。
+MemGPT treats limited model context as main memory and external memory as persistent storage, using tools to move information between them.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
 ```text
-磁盘历史规模 != 每次请求的 Context 规模
+History size on disk != Context size for each request
 ```
 
-- 原始事件、Memory 和 Skills 应存在外部数据库。
-- 每次请求只注入与当前任务相关的少量 Brief。
-- Detail 和完整轨迹只在明确需要时展开。
-- Context 必须有严格 token budget。
+- Raw events, Memory, and Skills should live in an external database.
+- Inject only a small number of Briefs relevant to the current task into each request.
+- Expand Details and full trajectories only when specifically needed.
+- Context must have a strict token budget.
 
-来源：[MemGPT](https://arxiv.org/abs/2310.08560)
+Source: [MemGPT](https://arxiv.org/abs/2310.08560)
 
-## 4.5 ExpeL：比较成功与失败，而不是只总结成功
+## 4.5 ExpeL: comparing success and failure
 
-ExpeL 收集任务轨迹，比较成功和失败案例，再提炼自然语言 insight；推理时同时检索经验和规律。
+ExpeL collects task trajectories, compares successful and failed cases, and extracts natural-language insights. At inference time, it retrieves both experiences and patterns.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- 单个成功案例不足以形成通用 Skill。
-- 失败轨迹可以说明哪些步骤不应重复。
-- 最有价值的是成功与失败之间的差异。
-- 规则必须描述适用条件，而不是无条件命令。
+- A single successful case is insufficient to establish a general Skill.
+- Failed trajectories can identify steps that should not be repeated.
+- The differences between success and failure are the most useful information.
+- Rules must state applicability conditions instead of issuing unconditional commands.
 
-来源：[ExpeL](https://arxiv.org/abs/2308.10144)
+Source: [ExpeL](https://arxiv.org/abs/2308.10144)
 
-## 4.6 Voyager：只有验证成功的过程才能进入技能库
+## 4.6 Voyager: verification before admission to the skill library
 
-Voyager 在 Minecraft 环境中：
+In the Minecraft environment, Voyager:
 
-1. 自动选择课程目标。
-2. 生成可执行代码。
-3. 根据环境错误持续修订。
-4. 由 critic 判断任务是否完成。
-5. 只有成功程序才进入向量技能库。
+1. Automatically selects curriculum goals.
+2. Generates executable code.
+3. Continuously revises it in response to environmental errors.
+4. Uses a critic to judge whether the task is complete.
+5. Adds only successful programs to the vector skill library.
 
-这最接近 ProvenLoop 所需要的 Skill Promotion：
+This is the closest match to the Skill Promotion that ProvenLoop needs:
 
 ```text
 Episode -> Candidate Skill -> Execute -> Verify -> Promote
 ```
 
-对 Coding Agent 而言，critic 应优先使用：
+For a Coding Agent, the critic should prefer:
 
-- 单元测试。
-- 构建结果。
-- 静态检查。
-- CI。
-- 用户明确验收。
-- 后续没有发生回滚或修复。
+- Unit tests.
+- Build results.
+- Static checks.
+- CI.
+- Explicit user acceptance.
+- The absence of later rollbacks or fixes.
 
-模型自评只能作为辅助信号。
+Model self-assessment can only be a supporting signal.
 
-来源：[Voyager](https://arxiv.org/abs/2305.16291)
+Source: [Voyager](https://arxiv.org/abs/2305.16291)
 
-## 4.7 Agent Workflow Memory：从实例中抽象工作流
+## 4.7 Agent Workflow Memory: abstracting workflows from examples
 
-Agent Workflow Memory 将具体轨迹中的实例参数移除，形成可复用 workflow。
+Agent Workflow Memory removes instance-specific parameters from concrete trajectories to form reusable workflows.
 
-例如：
+For example:
 
 ```text
-具体经历：
-在 repo-a 中修改 auth.ts，运行 npm test -- auth
+Specific experience:
+Modify auth.ts in repo-a and run npm test -- auth
 
-抽象工作流：
-定位认证入口 -> 修改最小范围 -> 运行认证相关测试 -> 检查回归
+Abstract workflow:
+Locate the authentication entry point -> Make the smallest necessary change -> Run authentication tests -> Check for regressions
 ```
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- Skill 形成需要参数抽象。
-- 绝对路径、临时分支名、具体 token 和一次性命令不应进入通用 Skill。
-- Workflow 应保留触发条件、输入、验证方式和失败降级路径。
+- Forming a Skill requires parameter abstraction.
+- Absolute paths, temporary branch names, specific tokens, and one-off commands should not enter a general Skill.
+- Workflows should retain triggers, inputs, verification methods, and fallback paths.
 
-来源：[Agent Workflow Memory](https://arxiv.org/abs/2409.07429)
+Source: [Agent Workflow Memory](https://arxiv.org/abs/2409.07429)
 
-## 4.8 DSPy、OPRO、ACE 与 GEPA：Agent 程序也可以优化
+## 4.8 DSPy, OPRO, ACE, and GEPA: optimizing Agent programs
 
-这些工作把提示、规则、示例和多步骤程序视为可优化对象：
+These works treat prompts, rules, examples, and multistep programs as objects of optimization:
 
-- **DSPy**：根据任务 metric 筛选成功 trace，并编译 demonstrations 或 prompt。
-- **OPRO**：把已有候选和分数放入 meta-prompt，让模型提出更优候选。
-- **ACE**：Generator 产生轨迹，Reflector 分析成功和失败，Curator 增量更新 playbook。
-- **GEPA**：根据完整轨迹和语言反馈演化 Agent 程序，并保留 Pareto 候选。
+- **DSPy** selects successful traces using task metrics and compiles demonstrations or prompts.
+- **OPRO** places existing candidates and scores in a meta-prompt so the model can propose better candidates.
+- **ACE** uses a Generator to produce trajectories, a Reflector to analyze successes and failures, and a Curator to update a playbook incrementally.
+- **GEPA** evolves Agent programs using full trajectories and language feedback, retaining Pareto candidates.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- Skill 不应只有“存在/不存在”，而应具有版本和评分。
-- 新版本必须与旧版本及无 Skill 基线比较。
-- 不能只在生成该 Skill 的任务上评估。
-- 应保留多个候选，而不是每次覆盖当前最佳版本。
+- Skills need versions and scores, rather than a binary state of existing or not existing.
+- Compare new versions with old versions and a baseline without the Skill.
+- Do not evaluate a Skill only on the tasks that produced it.
+- Retain multiple candidates instead of overwriting the current best version each time.
 
-来源：
+Sources:
 
 - [DSPy](https://arxiv.org/abs/2310.03714)
 - [OPRO](https://arxiv.org/abs/2309.03409)
 - [ACE](https://arxiv.org/abs/2510.04618)
 - [GEPA](https://arxiv.org/abs/2507.19457)
 
-## 4.9 从外部学习到模型参数学习
+## 4.9 From external learning to model parameter learning
 
-SWE-agent 主要改善 Agent-Computer Interface，本身不是持续学习系统。
+SWE-agent primarily improves the Agent-Computer Interface. It is not itself a continual learning system.
 
-真正使用软件工程轨迹训练模型的代表包括：
+Examples that use software engineering trajectories to train models include:
 
-- **SWE-Gym**：用可执行软件任务生成轨迹，对 Agent 和 verifier 进行训练。
-- **SWE-smith**：从代码库合成任务和轨迹，用于训练软件工程模型。
-- **SWE-RL**：使用真实软件演化和可验证奖励进行强化学习。
+- **SWE-Gym** generates trajectories from executable software tasks to train Agents and verifiers.
+- **SWE-smith** synthesizes tasks and trajectories from codebases to train software engineering models.
+- **SWE-RL** uses real software evolution and verifiable rewards for reinforcement learning.
 
-对 ProvenLoop 的启示：
+Implications for ProvenLoop:
 
-- MVP 不应包含本地在线微调。
-- 批准后的轨迹未来可以成为脱敏训练集。
-- 参数训练必须拥有独立数据许可、去重、评估和模型回滚流程。
+- The MVP should not include local online fine-tuning.
+- Approved trajectories could become sanitized training datasets in the future.
+- Parameter training needs separate data licensing, deduplication, evaluation, and model rollback processes.
 
-来源：
+Sources:
 
 - [SWE-agent](https://arxiv.org/abs/2405.15793)
 - [SWE-Gym](https://arxiv.org/abs/2412.21139)
@@ -323,67 +324,67 @@ SWE-agent 主要改善 Agent-Computer Interface，本身不是持续学习系统
 
 ---
 
-## 5. 现有工程系统提供了什么
+## 5. What existing engineering systems provide
 
-| 系统 | 记忆检索 | 规律归纳 | Skill 形成 | 独立评估 | 更新模型权重 |
+| System | Memory retrieval | Pattern induction | Skill formation | Independent evaluation | Updates model weights |
 |---|---:|---:|---:|---:|---:|
-| OpenAI Agents Sessions | 是 | 否 | 否 | 否 | 否 |
-| AutoGen Memory | 是 | 否 | 否 | 否 | 否 |
-| LangGraph Memory | 是 | 应用自建 | 应用自建 | 应用自建 | 否 |
-| Letta/MemGPT | 是 | 有限 | 否 | 否 | 否 |
-| CrewAI Memory | 是 | 合并/衰减 | 否 | 否 | 否 |
-| Memorix | 是 | 是 | Mini-skill/Promotion | 有回放基础 | 否 |
-| OpenClaw | 是 | Dreaming/Consolidation | 有 Skills 生态 | 有预览和回滚机制 | 否 |
-| Hermes Agent | 是 | 后台 Review | 是 | 有限 | 否 |
-| Voyager | 是 | 是 | 是 | Critic/环境 | 否 |
-| DSPy/GEPA | 轨迹输入 | 是 | Prompt/Program | 是 | 否 |
-| SWE-Gym/SWE-RL | 训练数据 | 是 | 参数化 | 是 | 是 |
+| OpenAI Agents Sessions | Yes | No | No | No | No |
+| AutoGen Memory | Yes | No | No | No | No |
+| LangGraph Memory | Yes | Built by the application | Built by the application | Built by the application | No |
+| Letta/MemGPT | Yes | Limited | No | No | No |
+| CrewAI Memory | Yes | Merging/decay | No | No | No |
+| Memorix | Yes | Yes | Mini-skill/Promotion | Replay foundation | No |
+| OpenClaw | Yes | Dreaming/Consolidation | Skills ecosystem | Preview and rollback mechanisms | No |
+| Hermes Agent | Yes | Background Review | Yes | Limited | No |
+| Voyager | Yes | Yes | Yes | Critic/environment | No |
+| DSPy/GEPA | Trajectory input | Yes | Prompt/Program | Yes | No |
+| SWE-Gym/SWE-RL | Training data | Yes | Parameterized | Yes | Yes |
 
 ### 5.1 Memorix
 
-Memorix 最适合承担通用 Memory 基础设施：
+Memorix is best suited to general-purpose Memory infrastructure:
 
-- Project、Reasoning、Git 和 Long-term Memory。
-- Git remote 驱动的 repo identity。
-- 写入准入、价值分类、合并、衰减和归档。
-- MCP、Hooks、Copilot Plugin 和 Dashboard。
-- Memory feedback、审计和项目隔离。
-- 将稳定知识提升为 mini-skill。
+- Project, Reasoning, Git, and Long-term Memory.
+- Repo identity derived from Git remotes.
+- Write admission, value classification, merging, decay, and archival.
+- MCP, Hooks, Copilot Plugin, and Dashboard.
+- Memory feedback, auditing, and project isolation.
+- Promotion of stable knowledge into mini-skills.
 
-它的不足是：核心仍是 Memory Control Plane，不会自动证明一个 Skill 确实提高了软件任务成功率。
+Its limitation is that its core remains a Memory Control Plane. It does not automatically prove that a Skill improves software task success rates.
 
 ### 5.2 Hermes Agent
 
-Hermes 更接近“经验形成技能”：
+Hermes is closer to turning experience into skills:
 
-- `MEMORY.md`、`USER.md` 和 Session SQLite。
-- `/learn` 从文档、代码或刚完成的工作流生成或修订 `SKILL.md`。
-- Skill 使用计数、状态、创建者、关联技能和可恢复归档。
-- 后台 Memory/Skill Review。
-- 独立子 Agent、工具执行和多种 sandbox backend。
+- `MEMORY.md`, `USER.md`, and Session SQLite.
+- `/learn` generates or revises `SKILL.md` from documents, code, or a recently completed workflow.
+- Skill usage counts, status, creators, related skills, and recoverable archival.
+- Background Memory/Skill Review.
+- Independent sub-Agents, tool execution, and multiple sandbox backends.
 
-它的学习仍主要发生在外部 Memory 与 Skill 层，并不自动训练模型权重。
+Its learning still occurs mainly in external Memory and Skill layers. It does not automatically train model weights.
 
 ### 5.3 OpenClaw
 
-OpenClaw 更适合常驻个人 Agent：
+OpenClaw is better suited to a persistent personal Agent:
 
-- Gateway 持续接收现实事件。
-- Active Memory。
-- Light、REM、Deep 多阶段 Dreaming。
-- Deep 阶段才允许写入长期 Memory。
-- Consolidation 保存来源引用、preimage，并支持 preview 和 rollback。
-- 可按 session、participant 或 hook source 执行来源删除。
+- A Gateway continuously receives real-world events.
+- Active Memory.
+- Multistage Dreaming: Light, REM, and Deep.
+- Writes to long-term Memory are allowed only in the Deep stage.
+- Consolidation retains source references and preimages, with preview and rollback support.
+- Source deletion can operate by session, participant, or hook source.
 
-它展示了一个重要原则：
+It demonstrates a useful principle:
 
-> 离线巩固应是受控维护任务，而不是每条聊天结束后立即修改长期知识。
+> Offline consolidation should be a controlled maintenance task. Long-term knowledge should not change immediately after every chat.
 
 ---
 
-## 6. ProvenLoop 应当如何差异化
+## 6. How ProvenLoop should differentiate itself
 
-通用记忆和 Skill 文件已经是相对成熟的基础能力。ProvenLoop 更值得自研的是软件工程结果反馈闭环。
+General-purpose memory and Skill files are already relatively mature capabilities. ProvenLoop should focus its own development on a software engineering outcome feedback loop.
 
 ```mermaid
 flowchart LR
@@ -415,17 +416,17 @@ flowchart LR
     FEEDBACK --> REGISTRY
 ```
 
-核心区别不是“ProvenLoop 也能生成一个 SKILL.md”，而是：
+Generating a SKILL.md is only part of the distinction. ProvenLoop also:
 
-1. 它知道 Skill 来自哪些 Session、Commit 和测试。
-2. 它知道哪些后续结果支持或反驳该 Skill。
-3. 它可以在历史任务上比较启用前后的效果。
-4. 它可以将新版本 canary 到少量任务。
-5. 它可以在效果下降时自动回滚。
+1. Knows which Sessions, Commits, and tests produced a Skill.
+2. Knows which later outcomes support or contradict that Skill.
+3. Can compare results on historical tasks with and without it.
+4. Can canary a new version on a small number of tasks.
+5. Can automatically roll back when results deteriorate.
 
 ---
 
-## 7. 推荐数据模型
+## 7. Recommended data model
 
 ### 7.1 RawEvent
 
@@ -443,7 +444,7 @@ exit_code
 timestamp
 ```
 
-RawEvent 是不可变审计记录，不直接进入模型上下文。
+RawEvent is an immutable audit record and does not enter model context directly.
 
 ### 7.2 WorkEpisode
 
@@ -464,7 +465,7 @@ follow_up_bug_ids
 confidence
 ```
 
-WorkEpisode 负责跨 Session 关联同一软件工作。
+WorkEpisode links the same software work across Sessions.
 
 ### 7.3 MemoryCandidate
 
@@ -519,90 +520,90 @@ evidence_ref
 timestamp
 ```
 
-反馈应为 append-only event。当前状态由事件重建，以支持审计和回滚。
+Feedback should be an append-only event. Rebuild the current state from events to support auditing and rollback.
 
 ---
 
-## 8. 从 Memory 晋升为 Skill 的规则
+## 8. Rules for promoting Memory to Skills
 
-自动生成 Skill Candidate 至少满足一项：
+Automatic generation of a Skill Candidate requires at least one of the following:
 
-1. 两条以上独立成功轨迹具有相同稳定步骤。
-2. 用户明确要求保存为流程或 Skill。
-3. 同类失败被同一个修复方法多次解决。
+1. Two or more independent successful trajectories share the same stable steps.
+2. The user explicitly asks to save a procedure or Skill.
+3. The same fix resolves the same type of failure multiple times.
 
-并同时满足：
+All of the following must also hold:
 
-- 有机器可验证的成功判据。
-- 不依赖临时绝对路径、密钥或偶然环境。
-- 具有清晰触发条件。
-- 所需权限可以声明。
-- 来源轨迹完整。
-- 未把网页、邮件或工具输出中的指令直接视为可信规则。
+- There is a machine-verifiable success criterion.
+- The procedure does not depend on temporary absolute paths, keys, or incidental environment conditions.
+- Triggers are clear.
+- Required permissions can be declared.
+- Source trajectories are complete.
+- Instructions in webpages, emails, or tool output are not directly treated as trusted rules.
 
-以下内容默认不能自动晋升：
+The following must not be automatically promoted by default:
 
-- 单次失败后的推测。
-- 仅由模型自评为成功的流程。
-- 没有 repo、session 或来源的事实。
-- 召回出来的旧 Memory 再次被当作新证据。
-- 包含凭据、个人数据或原始私密对话的内容。
+- Speculation after a single failure.
+- Procedures judged successful only by model self-assessment.
+- Facts without a repo, session, or source.
+- Retrieved old Memory counted again as new evidence.
+- Content containing credentials, personal data, or raw private conversations.
 
 ---
 
-## 9. 评估体系
+## 9. Evaluation framework
 
-### 9.1 为什么必须有无 Skill 基线
+### 9.1 Why a baseline without Skills is necessary
 
-如果启用 Skill 后任务成功，不能直接证明 Skill 有效。基础模型可能本来就能完成任务。
+Task success after enabling a Skill does not prove that the Skill is effective. The foundation model may already have been able to complete the task.
 
-至少需要比较：
+Compare at least:
 
 ```text
-Baseline：无 Memory、无 Skill
-Memory：只提供相关历史
-Skill-old：当前已发布版本
-Skill-new：候选版本
+Baseline: No Memory, no Skill
+Memory: Relevant history only
+Skill-old: Current released version
+Skill-new: Candidate version
 ```
 
-### 9.2 评估指标
+### 9.2 Evaluation metrics
 
-| 维度 | 指标 |
+| Dimension | Metrics |
 |---|---|
-| 任务能力 | success rate、测试通过率、pass@k |
-| 效率 | token、模型调用数、工具调用数、延迟、费用 |
-| 人工负担 | 用户纠正次数、拒绝次数、手动干预次数 |
-| Memory | precision、recall、错误注入率、重复注入率 |
-| Skill | 触发 precision、错误选择率、版本提升率 |
-| 持续学习 | forward transfer、backward transfer、遗忘率 |
-| 安全 | secret 保存率、跨 repo 泄漏率、注入成功率 |
+| Task capability | success rate, test pass rate, pass@k |
+| Efficiency | tokens, model calls, tool calls, latency, cost |
+| Human effort | user corrections, rejections, manual interventions |
+| Memory | precision, recall, wrong injection rate, repeated injection rate |
+| Skill | trigger precision, wrong selection rate, version promotion rate |
+| Continual learning | forward transfer, backward transfer, forgetting rate |
+| Safety | secret retention rate, cross-repo leakage rate, injection success rate |
 
-### 9.3 Held-out 评估
+### 9.3 Held-out evaluation
 
-Skill 不能只在产生它的 Episode 上测试。应保留：
+A Skill cannot be tested only on the Episodes that produced it. Reserve:
 
-- 未参与归纳的历史 Episode。
-- 时间上更晚的任务。
-- 相似但不同 repo 的可移植任务。
-- 明确不应触发该 Skill 的负样本。
+- Historical Episodes that did not contribute to induction.
+- Later tasks.
+- Similar, portable tasks from different repos.
+- Negative samples where the Skill explicitly should not trigger.
 
 ---
 
-## 10. 主要失败模式
+## 10. Main failure modes
 
-| 风险 | 表现 | 控制措施 |
+| Risk | Symptom | Controls |
 |---|---|---|
-| 记忆污染 | 网页或工具输出中的恶意指令成为长期规则 | 来源信任标签、候选隔离、注入扫描 |
-| 错误固化 | 一次 hallucination 升级成 Skill | 多证据、外部测试、人工审批 |
-| 奖励黑客 | Agent 优化测试表面而非真实目标 | 多指标、独立 verifier、人工抽检 |
-| 上下文膨胀 | 历史越来越多导致 token 增长 | Top-k、token budget、渐进披露 |
-| 跨 repo 泄漏 | 项目事实进入其他项目 | Git identity、scope ACL、泄漏测试 |
-| 隐私泄露 | Secret 或私密对话进入长期存储 | 写入/读取双重脱敏、来源删除 |
-| 灾难性遗忘 | 新总结覆盖旧有效规则 | Append-only、preimage、supersession |
-| 过拟合历史 | Skill 只对旧任务有效 | Held-out、时间外评估、canary |
-| 版本漂移 | 模型、代码或依赖变化使 Skill 失效 | 记录环境版本、TTL、重新验证 |
+| Memory contamination | Malicious instructions in webpages or tool output become long-term rules | Source trust labels, candidate isolation, injection scanning |
+| Entrenched errors | A single hallucination is promoted into a Skill | Multiple evidence sources, external tests, human approval |
+| Reward hacking | The Agent optimizes superficial test results instead of the real goal | Multiple metrics, independent verifiers, human spot checks |
+| Context growth | More history increases token use | Top-k, token budgets, progressive disclosure |
+| Cross-repo leakage | Project facts enter other projects | Git identity, scope ACLs, leakage tests |
+| Privacy leakage | Secrets or private conversations enter long-term storage | Sanitization on both writes and reads, source deletion |
+| Catastrophic forgetting | A new summary overwrites an older valid rule | Append-only, preimages, supersession |
+| Overfitting to history | A Skill works only on old tasks | Held-out data, out-of-time evaluation, canary |
+| Version drift | Model, code, or dependency changes invalidate a Skill | Environment version records, TTL, revalidation |
 
-相关安全研究：
+Related safety research:
 
 - [AgentPoison](https://arxiv.org/abs/2407.12784)
 - [AgentDojo](https://arxiv.org/abs/2406.13352)
@@ -610,76 +611,76 @@ Skill 不能只在产生它的 Episode 上测试。应保留：
 
 ---
 
-## 11. 分阶段工程路线
+## 11. Phased engineering roadmap
 
-## Phase 0：只观测
+## Phase 0: Observe only
 
-- 收集 Copilot Session、工具、文件、Git 和测试结果。
-- 建立不可变轨迹存储。
-- 默认脱敏。
-- 不做自动长期写入。
-- 建立 20-50 个真实任务回放集。
+- Capture Copilot Sessions, tools, files, Git, and test results.
+- Establish immutable trajectory storage.
+- Sanitize by default.
+- Do not perform automatic long-term writes.
+- Build a replay set of 20-50 real tasks.
 
-成功标准：
+Success criteria:
 
-- 能重建 Work Episode。
-- 不影响正常 Copilot CLI 延迟。
-- 能准确识别测试成功、失败、用户纠正和 revert。
+- Work Episodes can be reconstructed.
+- Normal Copilot CLI latency is unaffected.
+- Test success, failure, user corrections, and reverts can be identified accurately.
 
-## Phase 1：安全 Memory
+## Phase 1: Safe Memory
 
-- 显式 `/remember`。
-- repo-scoped Memory。
-- 单独管理 portable personal preferences。
-- 每次请求最多注入 3-5 条，并设置 token ceiling。
-- 支持 correction、resolve、archive 和 delete。
+- Explicit `/remember`.
+- Repo-scoped Memory.
+- Separate management of portable personal preferences.
+- Inject at most 3-5 items per request, with a token ceiling.
+- Support correction, resolve, archive, and delete.
 
-成功标准：
+Success criteria:
 
-- 新 Session 中重复解释显著减少。
-- 跨 repo 泄漏为零。
-- 错误 Memory 可定位来源并撤销。
+- Repeated explanations in new Sessions decrease substantially.
+- Cross-repo leakage is zero.
+- Incorrect Memory can be traced to its source and revoked.
 
-## Phase 2：Outcome Linker
+## Phase 2: Outcome Linker
 
-- 将 Session 与 Commit、PR、Review、CI 和后续 Bug Fix 关联。
-- 根据结果强化或削弱历史 Memory。
-- 区分“立即通过”与“之后被回滚”。
-- 构建成功/失败差异视图。
+- Link Sessions to Commits, PRs, Reviews, CI, and later Bug Fixes.
+- Strengthen or weaken historical Memory based on outcomes.
+- Distinguish an immediate pass from a later rollback.
+- Build a view of differences between success and failure.
 
-这是 ProvenLoop 相比通用 Memory 的首要差异化。
+This is ProvenLoop's primary distinction from general-purpose Memory.
 
-## Phase 3：Skill Candidate
+## Phase 3: Skill Candidate
 
-- 从重复成功 Episode 生成 `SKILL.md` 草稿。
-- 抽象绝对路径和实例参数。
-- 声明触发条件、验证步骤和权限。
-- 进行静态检查、Secret 扫描和 Prompt Injection 扫描。
+- Generate `SKILL.md` drafts from repeatedly successful Episodes.
+- Abstract absolute paths and instance parameters.
+- Declare triggers, verification steps, and permissions.
+- Run static checks, Secret scans, and Prompt Injection scans.
 
-默认不自动启用。
+Do not enable automatically by default.
 
-## Phase 4：离线评估与发布
+## Phase 4: Offline evaluation and release
 
-- 在 sandbox 中执行历史回放。
-- 比较无 Skill、旧 Skill 和新 Skill。
-- 通过后进入人工审批。
-- 发布 immutable version。
-- 采用 5% canary。
-- 支持一键回滚。
+- Replay historical tasks in a sandbox.
+- Compare no Skill, the old Skill, and the new Skill.
+- Send passing candidates for human approval.
+- Publish an immutable version.
+- Use a 5% canary.
+- Support one-click rollback.
 
-## Phase 5：可选参数训练
+## Phase 5: Optional parameter training
 
-- 仅使用批准、脱敏、去重且许可明确的轨迹。
-- 分离训练、验证和时间外测试集。
-- 采用 SFT、DPO、RFT 或 LoRA。
-- 模型版本作为独立产物发布。
-- 不能覆盖 Memory 和 Skill 层的审计能力。
+- Use only approved, sanitized, deduplicated trajectories with clear licensing.
+- Separate training, validation, and out-of-time test sets.
+- Use SFT, DPO, RFT, or LoRA.
+- Release model versions as separate artifacts.
+- Do not override auditing capabilities in the Memory and Skill layers.
 
 ---
 
-## 12. MVP 建议
+## 12. MVP recommendations
 
-Hackathon 或第一版不应尝试完整自学习 Agent。建议聚焦：
+A hackathon or first version should not attempt a complete self-learning Agent. Focus on:
 
 ```text
 Session + Git + Test
@@ -693,32 +694,32 @@ Knowledge Card correction
 Skill Candidate preview
 ```
 
-必须实现：
+Required implementation:
 
-- Copilot Plugin/Hooks。
-- 本地事件采集。
-- Repo 和 Branch identity。
-- Work Episode 关联。
-- 用户纠正和测试结果识别。
-- Memory 来源与状态。
-- 一条候选 Skill 生成路径。
-- Skill diff 和来源展示。
-- 手动批准、拒绝和回滚。
+- Copilot Plugin/Hooks.
+- Local event capture.
+- Repo and Branch identity.
+- Work Episode linking.
+- Recognition of user corrections and test results.
+- Memory provenance and state.
+- One path for generating a Skill Candidate.
+- Skill diffs and source display.
+- Manual approval, rejection, and rollback.
 
-暂不实现：
+Out of scope for now:
 
-- 在线模型微调。
-- 自动启用高权限 Skill。
-- 团队级知识同步。
-- 通用聊天助手。
-- 每次 Session 强制总结。
-- 自研向量数据库或通用 Memory 平台。
+- Online model fine-tuning.
+- Automatic activation of Skills with elevated permissions.
+- Team-level knowledge synchronization.
+- A general-purpose chat assistant.
+- Mandatory summaries after every Session.
+- Building a vector database or general-purpose Memory platform.
 
 ---
 
-## 13. 与 Memorix、Hermes 和 OpenClaw 的组合
+## 13. Combining Memorix, Hermes, and OpenClaw
 
-推荐关系：
+Recommended relationship:
 
 ```mermaid
 flowchart TB
@@ -736,71 +737,71 @@ flowchart TB
     SKILLS --> COPILOT
 ```
 
-### Memorix 负责
+### Memorix responsibilities
 
-- 项目记忆。
-- MCP 检索。
-- Git Memory。
-- Formation、Retention 和 Consolidation。
-- Dashboard 和基础治理。
+- Project memory.
+- MCP retrieval.
+- Git Memory.
+- Formation, Retention, and Consolidation.
+- Dashboard and basic governance.
 
-### ProvenLoop 负责
+### ProvenLoop responsibilities
 
-- Work Episode。
-- Outcome Linker。
-- 跨时间因果反馈。
-- Skill Candidate。
-- 离线回放和版本比较。
-- Canary、审批和回滚。
+- Work Episode.
+- Outcome Linker.
+- Causal feedback across time.
+- Skill Candidate.
+- Offline replay and version comparison.
+- Canary, approval, and rollback.
 
-### Hermes 可选负责
+### Optional Hermes responsibilities
 
-- 独立 Agent 复盘。
-- Skill 草稿生成。
-- Docker/云环境中的验证任务。
-- 多 Agent 并行研究。
+- Retrospectives by independent Agents.
+- Skill draft generation.
+- Verification tasks in Docker or cloud environments.
+- Parallel research by multiple Agents.
 
-### OpenClaw 可选负责
+### Optional OpenClaw responsibilities
 
-- 长期常驻调度。
-- 跨设备人工审批。
-- 夜间 Dreaming/Consolidation。
-- 通知和远程控制。
+- Persistent scheduling.
+- Human approval across devices.
+- Nightly Dreaming/Consolidation.
+- Notifications and remote control.
 
-MVP 不应同时依赖三者。最现实的顺序是：
+The MVP should not depend on all three at once. The most practical sequence is:
 
 ```text
 Copilot Plugin + ProvenLoop Core
-  -> 集成 Memorix
-  -> 再按需要接入 Hermes 或 OpenClaw
+  -> Integrate Memorix
+  -> Add Hermes or OpenClaw as needed
 ```
 
 ---
 
-## 14. 产品原则
+## 14. Product principles
 
-1. **记忆不是学习。** 只有经过抽象、验证并改善后续任务的经验才算学习。
-2. **结果优先于模型自评。** 测试、CI、Review、用户验收和后续回滚比语言反思更可信。
-3. **来源不能丢。** 每条规律和 Skill 必须能追溯到 Episode、Session 和 Commit。
-4. **候选与生效分离。** 自动系统可以提出，但不能无条件永久修改行为。
-5. **个人、Repo、团队严格隔离。** 跨作用域必须显式批准。
-6. **Context 有硬预算。** 数据库可以增长，请求上下文不能线性增长。
-7. **所有改进都必须可比较。** 没有 baseline 就无法证明变聪明。
-8. **所有改进都必须可回滚。** 学错比不学习更危险。
-9. **先外部学习，再参数学习。** Memory、Skill 和 Policy 成熟后才考虑训练模型。
+1. **Memory alone is not learning.** Lessons count as learning only when they are abstracted, verified, and improve later tasks.
+2. **Outcomes take precedence over model self-assessment.** Tests, CI, Reviews, user acceptance, and later rollbacks are more trustworthy than language reflections.
+3. **Keep provenance.** Every pattern and Skill must be traceable to Episodes, Sessions, and Commits.
+4. **Separate candidates from activation.** Automated systems can make proposals, but cannot permanently change behavior without conditions.
+5. **Keep personal, Repo, and team scopes strictly isolated.** Crossing scopes requires explicit approval.
+6. **Context has a hard budget.** The database may grow, but request context must not grow linearly with it.
+7. **Every improvement must support comparison.** Without a baseline, increased capability cannot be proven.
+8. **Every improvement must be reversible.** Incorrect learning is more dangerous than no learning.
+9. **Start with external learning, then consider parameter learning.** Consider model training only after Memory, Skill, and Policy are mature.
 
 ---
 
-## 15. 参考资料
+## 15. References
 
-### Agent 轨迹与反思
+### Agent trajectories and reflection
 
 - [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
 - [Reflexion: Language Agents with Verbal Reinforcement Learning](https://arxiv.org/abs/2303.11366)
 - [Self-Refine: Iterative Refinement with Self-Feedback](https://arxiv.org/abs/2303.17651)
 - [Generative Agents: Interactive Simulacra of Human Behavior](https://arxiv.org/abs/2304.03442)
 
-### 长期记忆与经验学习
+### Long-term memory and experiential learning
 
 - [MemGPT: Towards LLMs as Operating Systems](https://arxiv.org/abs/2310.08560)
 - [ExpeL: LLM Agents Are Experiential Learners](https://arxiv.org/abs/2308.10144)
@@ -809,7 +810,7 @@ Copilot Plugin + ProvenLoop Core
 - [LongMemEval](https://arxiv.org/abs/2410.10813)
 - [LoCoMo](https://arxiv.org/abs/2402.17753)
 
-### Skills 与程序优化
+### Skills and program optimization
 
 - [Voyager](https://arxiv.org/abs/2305.16291)
 - [Agent Workflow Memory](https://arxiv.org/abs/2409.07429)
@@ -819,7 +820,7 @@ Copilot Plugin + ProvenLoop Core
 - [Agentic Context Engineering / ACE](https://arxiv.org/abs/2510.04618)
 - [GEPA](https://arxiv.org/abs/2507.19457)
 
-### 软件工程 Agent 与参数训练
+### Software engineering Agents and parameter training
 
 - [SWE-agent](https://arxiv.org/abs/2405.15793)
 - [SWE-bench](https://arxiv.org/abs/2310.06770)
@@ -827,13 +828,13 @@ Copilot Plugin + ProvenLoop Core
 - [SWE-smith](https://arxiv.org/abs/2504.21798)
 - [SWE-RL](https://arxiv.org/abs/2502.18449)
 
-### 终身学习综述
+### Continual learning surveys
 
 - [Continual Learning for Large Language Models: A Survey](https://arxiv.org/abs/2402.01364)
 - [Continual Learning of Large Language Models: A Comprehensive Survey](https://arxiv.org/abs/2404.16789)
 - [Lifelong Learning of Large Language Model based Agents: A Roadmap](https://arxiv.org/abs/2501.07278)
 
-### 安全与评估
+### Safety and evaluation
 
 - [AgentPoison](https://arxiv.org/abs/2407.12784)
 - [AgentDojo](https://arxiv.org/abs/2406.13352)
@@ -843,7 +844,7 @@ Copilot Plugin + ProvenLoop Core
 - [GAIA](https://arxiv.org/abs/2311.12983)
 - [OSWorld](https://arxiv.org/abs/2404.07972)
 
-### 工程实现
+### Engineering implementations
 
 - [Memorix](https://github.com/AVIDS2/memorix)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent)
@@ -858,24 +859,24 @@ Copilot Plugin + ProvenLoop Core
 
 ---
 
-## 16. 最终判断
+## 16. Final assessment
 
-ProvenLoop 的 Vision 是可行的，但成功标准不能是：
+ProvenLoop's vision is feasible, but success cannot be measured by:
 
-> 保存了多少 Session 或生成了多少 Memory。
+> How many Sessions were saved or how much Memory was generated.
 
-而应当是：
+It should be measured by:
 
-> 在相似的新任务中，是否更少失败、更少返工、更少用户纠正，并在更低 token、工具调用和时间成本下得到可验证的结果。
+> Whether similar new tasks have fewer failures, less rework, and fewer user corrections, while producing verifiable results with lower token use, fewer tool calls, and less time.
 
-因此，真正的核心资产不是 Memory Database，而是：
+Its core assets therefore extend beyond the Memory Database:
 
 ```text
-可追溯的 Work Episode
-+ 可信 Outcome
-+ 可测试 Skill
-+ 版本化评估结果
-+ 安全激活和回滚机制
+Traceable Work Episodes
++ Trustworthy Outcomes
++ Testable Skills
++ Versioned evaluation results
++ Safe activation and rollback mechanisms
 ```
 
-这四部分共同构成从“记住过去”到“利用过去持续提升”的工程闭环。
+These five parts form the engineering loop that turns remembered history into continuous improvement.

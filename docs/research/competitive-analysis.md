@@ -1,84 +1,84 @@
-# ProvenLoop 调研结论
+# ProvenLoop research findings
 
-> 本文记录 ProvenLoop 在产品定义之前和之后完成的技术、产品及竞品调研。  
-> 产品完整方案见同目录的 `ProvenLoop-product-design.md`。
+> This document records the technical, product, and competitive research conducted before and after ProvenLoop's product definition.
+> See the [product design](../product-design.md) for the complete specification.
 
-**调研快照：** 2026-08-20  
-**首发环境：** Windows + `agency copilot` + GitHub Copilot CLI
+**Research snapshot:** 2026-08-20
+**Initial environment:** Windows + `agency copilot` + GitHub Copilot CLI
 
-## 1. 结论摘要
+## 1. Summary of findings
 
-最初设想是做一个本地、无感、跨 Session 的 Coding Agent Memory：
+The original idea was local Coding Agent Memory that works unobtrusively across Sessions:
 
 ```text
-安装一次
-  -> 用户照常使用 Copilot
-  -> 自动观察 Session
-  -> 沉淀个人习惯和工程经验
-  -> 下次相关任务自动使用
-  -> 越用越少重复解释，越少重犯错误
+Install once
+  -> Users continue using Copilot normally
+  -> Observe Sessions automatically
+  -> Retain personal habits and engineering lessons
+  -> Use them automatically in later related tasks
+  -> Reduce repeated explanations and mistakes over time
 ```
 
-调研后需要修正定位。
+The research calls for revising this positioning.
 
-以下能力已经有大量现成方案：
+Many existing solutions already provide:
 
-- 捕获 Coding Agent Session。
-- 后台总结和压缩。
-- MCP 检索注入。
-- 短期、长期记忆分层。
-- Git Commit 转换为工程记忆。
-- Semantic、Episodic、Procedural Memory。
-- 用户纠正、测试成功或失败等 Outcome Signal。
-- 跨 Claude Code、Codex、Copilot 等 Agent 共享记忆。
-- 将稳定规则同步到 `AGENTS.md`、`CLAUDE.md` 等文件。
+- Coding Agent Session capture.
+- Background summarization and compression.
+- MCP retrieval and injection.
+- Short-term and long-term memory layers.
+- Conversion of Git Commits into engineering memory.
+- Semantic, Episodic, Procedural Memory.
+- Outcome Signals such as user corrections and test success or failure.
+- Shared memory across Agents such as Claude Code, Codex, and Copilot.
+- Synchronization of stable rules to files such as `AGENTS.md` and `CLAUDE.md`.
 
-因此 ProvenLoop 不应再定位为：
+ProvenLoop should therefore move beyond the positioning:
 
-> Local-first coding-agent memory。
+> Local-first coding-agent memory.
 
-更准确的定位是：
+A more accurate positioning is:
 
-> **ProvenLoop 是 Coding Agent 的软件成果反馈学习层。它把 Session、Commit、PR、Review、CI、测试和后续 Bug Fix 连接成工作轨迹，利用后续结果反向校正早期 Agent 决策。**
+> **ProvenLoop is a learning layer for Coding Agents that uses feedback from software outcomes. It connects Sessions, Commits, PRs, Reviews, CI, tests, and later Bug Fixes into work traces, then uses later outcomes to revise earlier Agent decisions.**
 
-推荐技术策略：
+Recommended technical strategy:
 
 ```text
 Build the differentiating layer
 Integrate the commodity memory layer
 ```
 
-即：
+In practice:
 
-- 使用 Memorix 提供通用 Memory、MCP、Hooks、Git Memory、检索和生命周期。
-- ProvenLoop 自研 Work Episode、Outcome Linker、跨时间因果复盘和效果评估。
-- 不 Fork Memorix；通过其 npm SDK 和 MCP Server 嵌入能力组合扩展。
-- 不要求额外 API Key；后台分析调用用户已经登录的 `agency copilot -p`。
-- 用户启动方式保持 `agency copilot` 不变。
+- Use Memorix for general-purpose Memory, MCP, Hooks, Git Memory, retrieval, and lifecycle management.
+- Build ProvenLoop's own Work Episode, Outcome Linker, causal retrospectives across time, and effectiveness evaluation.
+- Extend through composition using Memorix's npm SDK and embedded MCP Server capabilities without forking Memorix.
+- Require no additional API Key; use the user's existing sign-in with `agency copilot -p` for background analysis.
+- Keep the user's launch command unchanged: `agency copilot`.
 
 ---
 
-## 2. GitHub Copilot CLI 原生能力
+## 2. Native GitHub Copilot CLI capabilities
 
-### 2.1 Session 历史
+### 2.1 Session history
 
-Copilot CLI 会记录：
+Copilot CLI records:
 
-- 用户 Prompt。
-- Assistant 回复。
-- 工具调用和结果。
-- 修改的文件。
-- Token、模型和耗时。
-- Checkpoint、Session 引用等结构化数据。
+- User Prompts.
+- Assistant responses.
+- Tool calls and results.
+- Modified files.
+- Tokens, models, and duration.
+- Structured data such as Checkpoints and Session references.
 
-本地位置：
+Local locations:
 
 ```text
 ~/.copilot/session-state/<session-id>/
 ~/.copilot/session-store.db
 ```
 
-每个 Session 目录通常包含：
+Each Session directory typically contains:
 
 ```text
 events.jsonl
@@ -87,7 +87,7 @@ checkpoints/
 files/
 ```
 
-`events.jsonl` 是完整事件流，可能包含：
+`events.jsonl` is the full event stream and may contain:
 
 ```text
 user.message
@@ -97,7 +97,7 @@ tool.execution_complete
 session.mode_changed
 ```
 
-`session-store.db` 是 SQLite 索引，包含：
+`session-store.db` is a SQLite index containing:
 
 ```text
 sessions
@@ -109,43 +109,43 @@ checkpoints
 search_index
 ```
 
-Session 数据与 Copilot Memory 是两个不同系统。
+Session data and Copilot Memory are separate systems.
 
-### 2.2 本机数据实测
+### 2.2 Measurements on this machine
 
-2026-08-17 对当前机器的检查结果：
+Inspection results from this machine on 2026-08-17:
 
-| 数据 | 数量 |
+| Data | Count |
 |---|---:|
-| 数据库中的 Sessions | 90 |
-| 本地 Session 目录 | 81 |
-| 同时存在于数据库和目录 | 74 |
-| 仅数据库中存在 | 16 |
-| 仅目录中存在、尚未索引 | 7 |
-| 对话 Turns | 524 |
-| 文件操作记录 | 853 |
-| 模型 Usage 记录 | 9,431 |
-| Agent trajectory 事件 | 10,312 |
+| Sessions in the database | 90 |
+| Local Session directories | 81 |
+| Present in both the database and directories | 74 |
+| Present only in the database | 16 |
+| Present only as directories, not yet indexed | 7 |
+| Conversation Turns | 524 |
+| File operation records | 853 |
+| Model Usage records | 9,431 |
+| Agent trajectory events | 10,312 |
 
-历史范围：
-
-```text
-最早：2026-03-19 05:24 UTC+8
-最新：2026-08-17
-```
-
-文件规模：
+History range:
 
 ```text
-session-store.db：约 18 MiB
-session-state：约 3.59 GiB
+Earliest: 2026-03-19 05:24 UTC+8
+Latest: 2026-08-17
 ```
 
-GitHub 文档没有声明 Session 历史的固定自动过期时间。通常保留到用户主动删除。Copilot Memory 的 28 天规则不适用于 Session 历史。
+Storage size:
+
+```text
+session-store.db: about 18 MiB
+session-state: about 3.59 GiB
+```
+
+GitHub documentation does not state a fixed automatic expiration period for Session history. It is usually retained until the user deletes it. Copilot Memory's 28-day rule does not apply to Session history.
 
 ### 2.3 Chronicle
 
-Copilot CLI 已提供：
+Copilot CLI already provides:
 
 ```text
 /chronicle search
@@ -156,11 +156,11 @@ Copilot CLI 已提供：
 /chronicle reindex
 ```
 
-Chronicle 可以搜索历史、分析 Token 和生成建议，但它不是可编程的工程反馈学习系统。
+Chronicle can search history, analyze Tokens, and generate suggestions, but it is not a programmable engineering-feedback learning system.
 
-### 2.4 超长 Session
+### 2.4 Very long Sessions
 
-Copilot 在 Context 接近约 95% 时自动 Compact，也支持：
+Copilot automatically Compacts when Context approaches roughly 95% and also supports:
 
 ```text
 /compact
@@ -168,25 +168,25 @@ Copilot 在 Context 接近约 95% 时自动 Compact，也支持：
 /usage
 ```
 
-ProvenLoop 不应整段重新读取或重新发送超长 Session，而应：
+ProvenLoop should avoid rereading or resending entire long Sessions. Instead:
 
 ```text
-增量读取 events.jsonl
-  -> 按 Prompt 或任务切片
-  -> 提取结构化信号
-  -> 保存引用和摘要
-  -> 只在需要时读取局部证据
+Read events.jsonl incrementally
+  -> Split by Prompt or task
+  -> Extract structured signals
+  -> Save references and summaries
+  -> Read local evidence excerpts only when needed
 ```
 
 ### 2.5 Hooks
 
-Copilot CLI 支持用户级 Hook：
+Copilot CLI supports user-level Hooks:
 
 ```text
 ~/.copilot/hooks/*.json
 ```
 
-重要事件：
+Important events:
 
 ```text
 sessionStart
@@ -201,237 +201,237 @@ preCompact
 errorOccurred
 ```
 
-关键能力：
+Capabilities:
 
-- `sessionStart` 可以注入 `additionalContext`。
-- `postToolUse` 可以追加 Context 或修改工具结果。
-- `sessionEnd` 可以触发后台处理。
-- `userPromptSubmitted` 的配置文件 Hook 不能直接修改 Prompt。
-- `userPromptTransformed` 可以修改模型看到的 Prompt，但不适合作为通用 Memory API。
+- `sessionStart` can inject `additionalContext`.
+- `postToolUse` can append Context or modify tool results.
+- `sessionEnd` can trigger background processing.
+- Configuration-file Hooks for `userPromptSubmitted` cannot directly modify the Prompt.
+- `userPromptTransformed` can modify the Prompt seen by the model, but is not suitable as a general-purpose Memory API.
 
-Hook 必须保持快速。ProvenLoop 采用：
+Hooks must remain fast. ProvenLoop uses:
 
 ```text
 sessionEnd Hook
-  -> 写入持久队列
-  -> 唤醒 Worker
-  -> 立即返回
+  -> Write to a persistent queue
+  -> Wake the Worker
+  -> Return immediately
 ```
 
-而不是在 Session 结束时同步等待复盘。
+This avoids synchronously waiting for a retrospective when the Session ends.
 
 ### 2.6 OpenTelemetry
 
-Copilot CLI 原生支持 OpenTelemetry，默认关闭。
+Copilot CLI natively supports OpenTelemetry, disabled by default.
 
-可以观测：
+It can observe:
 
-- Agent invocation。
-- LLM calls。
-- Tool calls。
-- Token。
-- 耗时和错误。
-- 子 Agent Trace。
+- Agent invocation.
+- LLM calls.
+- Tool calls.
+- Token.
+- Duration and errors.
+- Sub-Agent Traces.
 
-示例：
+Example:
 
 ```powershell
 $env:COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME\.copilot\copilot-otel.jsonl"
 copilot
 ```
 
-这适合 Observability，但不是 ProvenLoop 的核心数据模型。Session 事件、Git 和 GitHub 生命周期数据更适合做学习证据。
+This is useful for Observability, but is not ProvenLoop's core data model. Session events, Git, and GitHub lifecycle data are more suitable as learning evidence.
 
 ---
 
 ## 3. GitHub Copilot Memory
 
-### 3.1 保存什么
+### 3.1 What it stores
 
-Copilot Memory 保存两类条目：
+Copilot Memory stores two categories:
 
 #### Repository-level facts
 
-- 编码约定。
-- 架构决定。
-- 构建和测试命令。
-- 项目规则。
+- Coding conventions.
+- Architecture decisions.
+- Build and test commands.
+- Project rules.
 
 #### User-level preferences
 
-- 交互风格。
-- 个人编码习惯。
-- 工作流偏好。
+- Interaction style.
+- Personal coding habits.
+- Workflow preferences.
 
-### 3.2 大致实现
+### 3.2 Approximate implementation
 
-公开信息表明其工作流类似：
+Public information suggests a workflow resembling:
 
 ```text
-Copilot 交互
-  -> 提取候选事实或偏好
-  -> 按用户或仓库范围存储
-  -> 新任务时检索相关条目
-  -> 验证是否仍成立
-  -> 注入当前 Agent Context
+Copilot interaction
+  -> Extract candidate facts or preferences
+  -> Store within user or repository scope
+  -> Retrieve relevant items for a new task
+  -> Verify that they still hold
+  -> Inject into current Agent Context
 ```
 
-Repository fact：
+Repository fact:
 
-- 保存支持该事实的代码引用。
-- 使用前根据当前 Branch 重新验证。
-- 只用于同一仓库。
+- Stores code references supporting the fact.
+- Revalidates against the current Branch before use.
+- Used only within the same repository.
 
-User preference：
+User preference:
 
-- 可以引用用户原话。
-- 绑定当前用户和 billing entity。
-- 可以跨仓库使用。
+- May cite the user's exact words.
+- Bound to the current user and billing entity.
+- May be used across repositories.
 
-未使用的 Memory 经过 28 天会自动删除，成功验证和使用可能重置计时。
+Unused Memory is automatically deleted after 28 days; successful validation and use may reset the timer.
 
-### 3.3 与 ProvenLoop 的区别
+### 3.3 Differences from ProvenLoop
 
-| 维度 | Copilot Memory | ProvenLoop |
+| Dimension | Copilot Memory | ProvenLoop |
 |---|---|---|
-| 主要内容 | 事实与偏好 | 工作过程、结果和经验教训 |
-| 学习单位 | 单条 Memory | Work Episode |
-| 工程数据 | 代码引用 | Session、Commit、PR、Review、CI、Bug Fix |
-| 短期开发 Context | 不专门绑定 Branch | Branch Context |
-| 后续 Bug 反向复盘 | 不是核心能力 | 核心差异 |
-| 效果指标 | 未公开 | 纠正次数、重试、首次成功率 |
-| 存储 | GitHub 托管 | 本地可审计 |
-| Agent 范围 | GitHub Copilot | 通用 Core + 多 Agent Adapter |
+| Main content | Facts and preferences | Work processes, outcomes, and lessons |
+| Learning unit | Individual Memory item | Work Episode |
+| Engineering data | Code references | Session, Commit, PR, Review, CI, Bug Fix |
+| Short-term development Context | Not specifically bound to Branch | Branch Context |
+| Retrospective analysis of later Bugs | Not a core capability | Core differentiator |
+| Effectiveness metrics | Not public | Correction counts, retries, first-attempt success rate |
+| Storage | Hosted by GitHub | Local and auditable |
+| Agent coverage | GitHub Copilot | General-purpose Core + multiple Agent Adapters |
 
-如果 ProvenLoop 只保存偏好和仓库事实，会被 Copilot Memory 覆盖。
+If ProvenLoop only stores preferences and repository facts, Copilot Memory already covers that scope.
 
 ---
 
-## 4. Session Viewer 与 Observability 工具
+## 4. Session Viewer and Observability tools
 
-已经存在针对 Copilot CLI 的工具：
+Existing tools for Copilot CLI include:
 
 ### TracePilot
 
 <https://github.com/MattShelton04/TracePilot>
 
-- Windows Tauri 桌面应用。
-- Session、对话、工具调用、Todo、Checkpoint。
-- Token、成本、Timeline、Waterfall。
-- 搜索、分析和 Session Orchestration。
+- Windows Tauri desktop application.
+- Sessions, conversations, tool calls, Todos, and Checkpoints.
+- Tokens, costs, Timeline, and Waterfall.
+- Search, analysis, and Session Orchestration.
 
 ### gh-agent-viz
 
 <https://github.com/maxbeizer/gh-agent-viz>
 
-- GitHub CLI TUI。
-- 本地与远程 Agent Session。
-- Tool Timeline、Telemetry、Diff、Resume。
+- GitHub CLI TUI.
+- Local and remote Agent Sessions.
+- Tool Timeline, Telemetry, Diff, Resume.
 
 ### copilot-session-tools
 
 <https://github.com/Arithmomaniac/copilot-session-tools>
 
-- Web UI 和 CLI。
-- 读取 Chronicle。
-- 扩展工具调用、Diff、Thinking Blocks。
+- Web UI and CLI.
+- Reads Chronicle.
+- Expands tool calls, Diffs, and Thinking Blocks.
 
 ### copilot-replay
 
 <https://github.com/Lukasedv/copilot-replay>
 
-- 回放 `events.jsonl`。
-- 面向演示和逐事件浏览。
+- Replays `events.jsonl`.
+- Intended for demonstrations and event-by-event browsing.
 
-结论：
+Conclusion:
 
-> 不应该再做普通 Session Viewer。查看“发生了什么”已经不是空白市场。
+> Do not build another ordinary Session Viewer. Tools for inspecting what happened already exist.
 
 ---
 
-## 5. 第三方 LLM Memory 方案
+## 5. Third-party LLM Memory solutions
 
 ### 5.1 Mem0
 
 <https://github.com/mem0ai/mem0>
 
-定位：
+Positioning:
 
-- 面向 AI 应用开发者的通用 Memory SDK/API。
+- General-purpose Memory SDK/API for AI application developers.
 
-能力：
+Capabilities:
 
-- 从对话提取事实。
-- User、Agent、Run 作用域。
-- 向量、BM25、Entity 检索。
-- 去重和长期偏好。
+- Extracts facts from conversations.
+- User, Agent, and Run scopes.
+- Vector, BM25, and Entity retrieval.
+- Deduplication and long-term preferences.
 
-缺口：
+Gaps:
 
-- 不理解 Git、PR、Review、测试和后续 Bug。
-- 没有 Work Episode。
-- 不以工程结果改善为指标。
+- Does not understand Git, PRs, Reviews, tests, and later Bugs.
+- No Work Episode.
+- Does not measure improvement in engineering outcomes.
 
-值得借鉴：
+Useful ideas to adopt:
 
-- Append-only evidence。
-- Scope 模型。
-- Hybrid retrieval。
-- History 和 Audit。
+- Append-only evidence.
+- Scope model.
+- Hybrid retrieval.
+- History and Audit.
 
 ### 5.2 Zep / Graphiti
 
 <https://github.com/getzep/graphiti>
 
-Graphiti 是时态 Knowledge Graph：
+Graphiti is a temporal Knowledge Graph:
 
-- Episode。
-- Entity。
-- Fact provenance。
-- `valid_at`、`invalid_at`、`expired_at`。
-- Semantic、BM25 和 Graph traversal。
+- Episode.
+- Entity.
+- Fact provenance.
+- `valid_at`, `invalid_at`, `expired_at`.
+- Semantic, BM25, and Graph traversal.
 
-与 ProvenLoop 最相关的是：
+Most relevant to ProvenLoop:
 
-- 区分事件发生时间和系统观察时间。
-- 原始 Evidence 不覆盖。
-- 新证据可以使旧结论失效。
-- Saga 可以作为 Work Episode 的参考。
+- Distinguishes event time from system observation time.
+- Does not overwrite original Evidence.
+- New evidence can invalidate old conclusions.
+- Saga can inform the Work Episode design.
 
-不适合 MVP 作为默认依赖：
+Unsuitable as the MVP's default dependency:
 
-- 需要图数据库。
-- 部署和维护过重。
-- Coding 生命周期仍需 ProvenLoop 自己建模。
+- Requires a graph database.
+- Deployment and maintenance are too heavy.
+- ProvenLoop would still need to model the coding lifecycle.
 
 ### 5.3 Letta / MemGPT
 
 <https://github.com/letta-ai/letta-code>
 
-能力：
+Capabilities:
 
-- Core Memory 和 Archival Memory。
-- Stateful Agent。
-- Agent 主动改写记忆。
-- Git-backed Memory Filesystem。
-- 后台 Dreaming。
+- Core Memory and Archival Memory.
+- Stateful Agent.
+- Agents actively rewrite memory.
+- Git-backed Memory Filesystem.
+- Background Dreaming.
 
-区别：
+Differences:
 
-- Letta 是完整 Agent Runtime。
-- ProvenLoop 是附着于现有 Coding Agent 的学习层。
+- Letta is a complete Agent Runtime.
+- ProvenLoop is a learning layer attached to existing Coding Agents.
 
-值得借鉴：
+Useful ideas to adopt:
 
-- Memory 修改带原因和版本记录。
-- Working 与 Archival Memory 分层。
-- 后台 Reflection。
+- Reasons and version history for Memory changes.
+- Separate Working and Archival Memory layers.
+- Background Reflection.
 
 ### 5.4 LangMem / LangGraph Memory
 
 <https://github.com/langchain-ai/langmem>
 
-明确区分：
+Explicitly distinguishes:
 
 ```text
 Semantic Memory
@@ -439,124 +439,124 @@ Episodic Memory
 Procedural Memory
 ```
 
-支持：
+Supports:
 
-- Agent 当场写入。
-- Background Manager。
-- Trajectory + Feedback 驱动 Prompt 优化。
+- Immediate writes by the Agent.
+- Background Manager.
+- Prompt optimization driven by Trajectory + Feedback.
 
-缺口：
+Gaps:
 
-- 没有 Session、Git、PR Collector。
-- 没有 Coding Work Episode。
-- 只是开发框架，不是开箱即用产品。
+- No Session, Git, or PR Collectors.
+- No Coding Work Episode.
+- A development framework, not a ready-to-use product.
 
 ### 5.5 Cognee
 
 <https://github.com/topoteretes/cognee>
 
-能力：
+Capabilities:
 
-- Graph + Vector Memory。
-- Coding Agent Plugin。
-- Prompt 前 Recall。
-- Tool Trace Capture。
-- Session End 后同步到长期 Memory。
+- Graph + Vector Memory.
+- Coding Agent Plugin.
+- Recall before the Prompt.
+- Tool Trace Capture.
+- Synchronization to long-term Memory after Session End.
 
-与 ProvenLoop 的 Hooks、Worker、逐 Prompt 检索形态高度重合。
+Its Hooks, Worker, and per-Prompt retrieval closely overlap with ProvenLoop's operating model.
 
-缺口：
+Gaps:
 
-- 没有明确的软件生命周期因果复盘。
-- 不以 Markdown 为长期事实来源。
-- 重点仍是 Recall，而不是结果学习。
+- No explicit causal retrospective across the software lifecycle.
+- Does not use Markdown as the long-term source of truth.
+- Focuses on Recall rather than learning from outcomes.
 
 ### 5.6 Supermemory
 
 <https://github.com/supermemoryai/supermemory>
 
-能力：
+Capabilities:
 
-- 用户 Profile。
-- Temporal Fact。
-- Contradiction 和 Expiry。
-- Agent Plugin 和 MCP。
+- User Profile.
+- Temporal Fact.
+- Contradiction and Expiry.
+- Agent Plugin and MCP.
 
-缺口：
+Gaps:
 
-- 公共仓库不能完整验证核心引擎。
-- 没有 PR、Review、CI、Bug Fix 的工程因果链。
+- The public repository does not allow complete verification of the core engine.
+- No engineering causal chain across PR, Review, CI, and Bug Fix.
 
 ### 5.7 Claude-Mem
 
 <https://github.com/thedotmack/claude-mem>
 
-这是运行形式最接近 ProvenLoop 的方案：
+This solution is closest to ProvenLoop in its operating model:
 
-- Lifecycle Hooks。
-- 后台 Worker。
-- SQLite。
-- Chroma Semantic Search。
-- Session Summary。
-- MCP Progressive Disclosure。
+- Lifecycle Hooks.
+- Background Worker.
+- SQLite.
+- Chroma Semantic Search.
+- Session Summary.
+- MCP Progressive Disclosure.
 
-它主要回答：
+It mainly answers:
 
-> 以前做过什么？
+> What was done before?
 
-ProvenLoop 应回答：
+ProvenLoop should answer:
 
-> 为什么以前那次实现会遗漏这个问题？后续什么证据证明了它？以后怎样避免？
+> Why did the earlier implementation miss this issue? What later evidence established it? How can it be avoided next time?
 
 ### 5.8 Basic Memory
 
 <https://github.com/basicmachines-co/basic-memory>
 
-采用：
+Uses:
 
-- Markdown 是 Source of Truth。
-- SQLite 是可重建索引。
-- MCP 读写。
-- 人和 AI 可以编辑同一份知识。
+- Markdown as the Source of Truth.
+- SQLite as a rebuildable index.
+- MCP reads and writes.
+- Humans and AI can edit the same knowledge.
 
-这证明 ProvenLoop 的 Markdown + SQLite 设计合理，但该设计本身不是差异化。
+This supports ProvenLoop's Markdown + SQLite design, but the design itself is not a differentiator.
 
 ---
 
-## 6. Memorix 深入评估
+## 6. Detailed Memorix evaluation
 
-项目：
+Project:
 
 <https://github.com/AVIDS2/memorix>
 
-调研时状态：
+State at the time of research:
 
 ```text
-版本：1.7.2
-License：Apache-2.0
-Stars：约 665
-Forks：约 53
-主要语言：TypeScript
-Node：>= 22.18
+Version: 1.7.2
+License: Apache-2.0
+Stars: about 665
+Forks: about 53
+Main language: TypeScript
+Node: >= 22.18
 ```
 
-项目非常活跃，但主要提交集中在一名维护者。当前公开发布说明称约有 2,900 个测试，并覆盖 Windows、macOS、Ubuntu 和大型数据集验证。
+The project is very active, but most commits come from one maintainer. The public release notes at the time report about 2,900 tests, covering Windows, macOS, Ubuntu, and large-dataset validation.
 
-### 6.1 Agent 集成
+### 6.1 Agent integrations
 
-Memorix 已支持：
+Memorix already supports:
 
-- GitHub Copilot CLI。
-- Claude Code。
-- Codex。
-- Cursor。
-- Windsurf。
-- Gemini CLI。
-- OpenCode。
-- Kiro。
-- 其他 Coding Agent。
+- GitHub Copilot CLI.
+- Claude Code.
+- Codex.
+- Cursor.
+- Windsurf.
+- Gemini CLI.
+- OpenCode.
+- Kiro.
+- Other Coding Agents.
 
-Copilot Plugin 包含：
+The Copilot Plugin includes:
 
 ```text
 MCP
@@ -564,7 +564,7 @@ Skills
 Hooks
 ```
 
-Copilot Hook 已监听：
+The Copilot Hook already listens for:
 
 ```text
 sessionStart
@@ -574,7 +574,7 @@ postToolUse
 preCompact
 ```
 
-安装方式：
+Installation:
 
 ```text
 memorix setup --agent copilot --global
@@ -584,7 +584,7 @@ memorix setup --agent copilot --global
 
 #### Observation Memory
 
-支持：
+Supports:
 
 ```text
 session-request
@@ -601,28 +601,28 @@ reasoning
 
 #### Reasoning Memory
 
-保存：
+Stores:
 
-- 为什么做出选择。
-- 替代方案。
-- 约束。
-- 风险和 Trade-off。
+- Reasons for decisions.
+- Alternatives.
+- Constraints.
+- Risks and Trade-offs.
 
 #### Git Memory
 
-Commit 会转换成：
+Commits are converted into:
 
-- Commit Hash。
-- Changed Files。
-- Title 和 Narrative。
-- 推断的 Observation Type。
-- Concepts 和 Entities。
+- Commit Hash.
+- Changed Files.
+- Title and Narrative.
+- Inferred Observation Type.
+- Concepts and Entities.
 
-支持 Git Hook 和历史回填。
+Supports Git Hooks and historical backfill.
 
 #### Long-term Memory
 
-类型：
+Types:
 
 ```text
 episodic
@@ -630,7 +630,7 @@ semantic
 procedural
 ```
 
-生命周期：
+Lifecycle:
 
 ```text
 candidate
@@ -639,19 +639,19 @@ candidate
   -> archived / superseded
 ```
 
-### 6.3 存储与检索
+### 6.3 Storage and retrieval
 
-- SQLite 是规范存储。
-- Orama 负责全文和混合检索。
-- Embedding 可关闭、使用 API 或本地 Provider。
-- 支持 Token Budget。
-- 支持 Progressive Disclosure。
-- 支持 Source-aware Ranking。
-- 支持项目身份和可见性边界。
+- SQLite is the canonical store.
+- Orama handles full-text and hybrid retrieval.
+- Embedding can be disabled or use an API or local Provider.
+- Supports Token Budget.
+- Supports Progressive Disclosure.
+- Supports Source-aware Ranking.
+- Supports project identity and visibility boundaries.
 
 ### 6.4 Memory Formation
 
-Formation Pipeline：
+Formation Pipeline:
 
 ```text
 Extract
@@ -659,19 +659,19 @@ Extract
   -> Evaluate
 ```
 
-功能：
+Features:
 
-- 提取原子事实。
-- 规范化标题。
-- Entity Resolution。
-- 类型纠正。
-- Merge、Evolve、Discard。
-- 长期价值评分。
-- Core、Contextual、Ephemeral 分类。
+- Extracts atomic facts.
+- Normalizes titles.
+- Entity Resolution.
+- Corrects types.
+- Merge, Evolve, Discard.
+- Scores long-term value.
+- Classifies items as Core, Contextual, or Ephemeral.
 
 ### 6.5 Evidence Governor
 
-Memorix 已有较成熟的 Memory Quality 设计：
+Memorix already has a fairly mature Memory Quality design:
 
 ```text
 scope
@@ -682,17 +682,17 @@ scope
   -> token budget
 ```
 
-可以：
+It can:
 
-- 没有合格 Memory 时主动 Abstain。
-- 代码变化后降级旧 Memory。
-- 保留原始 Evidence。
-- 避免模型静默覆盖事实。
-- 解释 Memory 被包含或排除的原因。
+- Abstain when no qualified Memory exists.
+- Downgrade old Memory after code changes.
+- Preserve original Evidence.
+- Prevent the model from silently overwriting facts.
+- Explain why Memory was included or excluded.
 
 ### 6.6 Outcome Signal
 
-已经定义：
+Already defined:
 
 ```text
 verification-passed
@@ -705,23 +705,23 @@ conflict-confirmed
 manual-review
 ```
 
-失败、纠正、源码变化会将 Memory 降级。
+Failures, corrections, and source-code changes downgrade Memory.
 
-这说明“Outcome 影响 Memory Quality”本身已不是 ProvenLoop 的独特创新。
+This shows that Outcomes affecting Memory Quality are not, by themselves, a unique ProvenLoop innovation.
 
-### 6.7 Rules 与 Skills
+### 6.7 Rules and Skills
 
-Memorix 可以：
+Memorix can:
 
-- 将知识提升为 Mini Skill。
-- 同步到多个 Agent 的规则文件。
-- 维护 MCP、Hook、Skill 和 Instruction 集成。
+- Promote knowledge to a Mini Skill.
+- Synchronize rule files across Agents.
+- Maintain MCP, Hook, Skill, and Instruction integrations.
 
-因此 ProvenLoop 不应花大量时间重新实现规则格式转换。
+ProvenLoop should therefore avoid spending substantial time reimplementing rule-format conversion.
 
 ### 6.8 SDK
 
-公开 SDK：
+Public SDK:
 
 ```typescript
 import {
@@ -730,7 +730,7 @@ import {
 } from "memorix/sdk";
 ```
 
-`MemoryClient` 支持：
+`MemoryClient` supports:
 
 ```text
 store
@@ -742,41 +742,41 @@ resolve
 close
 ```
 
-`createMemorixServer` 可以注册到已有 MCP Server，为组合扩展提供基础。
+`createMemorixServer` can register with an existing MCP Server, providing a basis for extension through composition.
 
-### 6.9 无 API Key 行为
+### 6.9 Behavior without an API Key
 
-Memorix 不要求 API Key 才能工作。
+Memorix can operate without an API Key.
 
-无 API Key 时仍可使用：
+Without an API Key, these remain available:
 
-- SQLite 存储。
-- BM25 全文检索。
-- Hooks。
-- MCP。
-- Git Memory。
-- 本地规则过滤和去重。
-- Memory Lifecycle。
+- SQLite storage.
+- BM25 full-text retrieval.
+- Hooks.
+- MCP.
+- Git Memory.
+- Local rule filtering and deduplication.
+- Memory Lifecycle.
 
-关闭 Embedding：
+Disable Embedding:
 
 ```toml
 [embedding]
 provider = "off"
 ```
 
-没有 `MEMORIX_LLM_API_KEY` 时：
+Without `MEMORIX_LLM_API_KEY`:
 
-- LLM Formation 不可用。
-- LLM Summarization 不可用。
-- 智能 Dedup 和 Rerank 不可用。
-- 系统降级为本地 Heuristic 模式。
+- LLM Formation is unavailable.
+- LLM Summarization is unavailable.
+- Intelligent Dedup and Rerank are unavailable.
+- The system falls back to local Heuristic mode.
 
-这对 ProvenLoop 是可接受的，因为 ProvenLoop 可以使用用户已登录的 Copilot 完成后台推理。
+This is acceptable for ProvenLoop because it can use the user's existing Copilot sign-in for background reasoning.
 
-### 6.10 Memorix 尚未覆盖的差异
+### 6.10 Gaps Memorix does not yet cover
 
-调研未发现 Memorix 完整实现：
+The research did not find a complete Memorix implementation of:
 
 ```text
 Session
@@ -786,22 +786,22 @@ Session
   -> Review
   -> CI / Test
   -> Merge
-  -> 后续 Issue / Bug Fix / Revert
+  -> Later Issue / Bug Fix / Revert
 ```
 
-也未发现产品级自动完成：
+Nor did it find product-level automation that answers:
 
-> 后续这个 Bug Fix 应归因于几周前哪个 Agent PR 漏掉了什么检查？
+> Which Agent PR from weeks ago missed which check and led to this later Bug Fix?
 
-Memorix 有 Outcome Signal，但主要是单条 Memory 或 Workflow 的质量反馈，不是完整软件生命周期因果分析。
+Memorix has Outcome Signals, but these mainly provide quality feedback for individual Memory items or Workflows, not causal analysis across the full software lifecycle.
 
 ---
 
-## 7. 为什么不 Fork Memorix
+## 7. Why not fork Memorix
 
-不 Fork 不等于不能扩展。
+Memorix can be extended without a fork.
 
-推荐使用组合架构：
+The recommended architecture uses composition:
 
 ```text
 ProvenLoop Copilot Plugin
@@ -818,7 +818,7 @@ ProvenLoop Copilot Plugin
    └─ Generic MCP Tools
 ```
 
-示意代码：
+Illustrative code:
 
 ```typescript
 import {
@@ -828,16 +828,16 @@ import {
 
 const server = new McpServer(...);
 
-// 注册 Memorix 通用工具。
+// Register Memorix's general-purpose tools.
 await createMemorixServer(projectRoot, server);
 
-// 注册 ProvenLoop 差异化工具。
+// Register ProvenLoop's differentiated tools.
 registerEpisodeTools(server);
 registerOutcomeTools(server);
 registerRetrospectiveTools(server);
 ```
 
-ProvenLoop 保存自己的领域模型：
+ProvenLoop stores its own domain model:
 
 ```text
 LifecycleEvent
@@ -848,7 +848,7 @@ Retrospective
 BehaviorMetric
 ```
 
-最终稳定结论写入 Memorix：
+Final, stable conclusions are written to Memorix:
 
 ```typescript
 await memory.store({
@@ -861,120 +861,120 @@ await memory.store({
 });
 ```
 
-只有以下情况下才需要 Fork：
+A fork is needed only if:
 
-- ProvenLoop 必须修改 Memorix 内部 Schema。
-- 需要的 API 无法通过 SDK 或 CLI 实现。
-- 上游不接受必要的 Extension API。
-- 运行性能要求必须侵入核心执行路径。
+- ProvenLoop must modify Memorix's internal Schema.
+- The required API cannot be implemented through the SDK or CLI.
+- Upstream will not accept a necessary Extension API.
+- Runtime performance requirements demand changes to the core execution path.
 
-优先顺序：
+Order of preference:
 
 ```text
 Public SDK
-  -> 独立 ProvenLoop Store
-  -> 向 Memorix 提交上游 PR
-  -> 最后才 Fork
+  -> Independent ProvenLoop Store
+  -> Upstream PR to Memorix
+  -> Fork only as a last resort
 ```
 
 ---
 
-## 8. 无额外 API Key 的后台推理
+## 8. Background reasoning without an additional API Key
 
-用户已经通过 Agency 使用 GitHub Copilot：
+The user already uses GitHub Copilot through Agency:
 
 ```powershell
 agency copilot
 ```
 
-Agency 支持把 Prompt 和参数传给底层 Copilot CLI：
+Agency can forward Prompts and arguments to the underlying Copilot CLI:
 
 ```powershell
 agency copilot -p "..."
 ```
 
-因此 ProvenLoop 后台 Worker 可以调用：
+ProvenLoop's background Worker can therefore call:
 
 ```powershell
 $env:PROVENLOOP_INTERNAL = "1"
-agency copilot -p "分析这些 Session、Commit、PR、Review 和测试证据，生成结构化复盘"
+agency copilot -p "Analyze this Session, Commit, PR, Review, and test evidence and produce a structured retrospective"
 ```
 
-特点：
+Characteristics:
 
-- 不需要 OpenAI、Anthropic 或 Memorix API Key。
-- 复用用户现有 GitHub Copilot 登录和订阅。
-- 使用用户已有的 Agency Copilot 模型能力。
-- 后台分析是独立 Copilot Session。
-- 用户当前前台 Session 不需要等待。
+- No OpenAI, Anthropic, or Memorix API Key required.
+- Reuses the user's existing GitHub Copilot sign-in and subscription.
+- Uses the user's existing Agency Copilot model capabilities.
+- Background analysis runs in a separate Copilot Session.
+- The user's current foreground Session does not wait.
 
-`PROVENLOOP_INTERNAL=1` 用于让 Hook 跳过内部分析 Session，避免递归：
+`PROVENLOOP_INTERNAL=1` tells Hooks to skip internal analysis Sessions and prevent recursion:
 
 ```text
-分析 Session
-  -> Hook 又触发分析
-  -> 无限循环
+Analysis Session
+  -> Hook triggers analysis again
+  -> Infinite loop
 ```
 
-后台 Worker 仍应：
+The background Worker should still:
 
-- 使用持久队列。
-- 保证同时只有一个 Worker。
-- 任务完成后退出。
-- 机器重启后继续处理积压。
-- 无价值 Session 不调用 AI。
+- Use a persistent queue.
+- Ensure that only one Worker runs at a time.
+- Exit when the task completes.
+- Resume processing the backlog after a machine restart.
+- Avoid AI calls for Sessions with no learning value.
 
 ---
 
-## 9. `agency copilot` 启动兼容性
+## 9. Launch compatibility with `agency copilot`
 
-当前用户启动方式：
+The user's current launch command:
 
 ```powershell
 agency copilot
 ```
 
-Agency 的 `copilot` 命令会运行底层 GitHub Copilot CLI，并支持：
+Agency's `copilot` command runs the underlying GitHub Copilot CLI and supports:
 
-- Copilot Plugin。
-- `~/.copilot` 配置。
-- MCP。
-- Agent。
-- Copilot 原生参数转发。
+- Copilot Plugin.
+- `~/.copilot` configuration.
+- MCP.
+- Agent.
+- Forwarding native Copilot arguments.
 
-ProvenLoop 全局 Plugin 安装位置：
+ProvenLoop's global Plugin installation location:
 
 ```text
 ~/.copilot/plugins/local/provenloop/
 ```
 
-安装后用户仍然运行：
+After installation, users still run:
 
 ```powershell
 agency copilot
 ```
 
-不需要：
+They do not need:
 
 ```text
 provenloop copilot
 memorix copilot
-特殊 Wrapper
+A special Wrapper
 ```
 
-正常调用会自动加载 Plugin。
+Normal invocation loads the Plugin automatically.
 
-注意：
+Caveats:
 
-- `agency copilot --profile-only ...` 会忽略未在 Profile 中声明的环境配置和 Plugin。
-- `--no-config-plugins` 会关闭 Agency 配置中的自动 Plugin。
-- 如果用户采用这些特殊参数，需要在 Profile 中显式声明 ProvenLoop。
+- `agency copilot --profile-only ...` ignores environment configuration and Plugins not declared in the Profile.
+- `--no-config-plugins` disables automatic Plugins in Agency configuration.
+- Users of these special flags must explicitly declare ProvenLoop in their Profile.
 
-普通 `agency copilot` 不受影响。
+Ordinary `agency copilot` invocation is unaffected.
 
 ---
 
-## 10. 最新推荐架构
+## 10. Latest recommended architecture
 
 ```text
                     agency copilot
@@ -1010,37 +1010,37 @@ Session / Git / GitHub   agency copilot -p|
       Generic Memory / Search / Lifecycle
 ```
 
-### Memorix 负责
+### Memorix responsibilities
 
-- 项目身份。
-- 通用 Observation。
-- Reasoning 和 Git Memory。
-- SQLite 存储。
-- BM25 和可选 Semantic Search。
-- Memory Lifecycle。
-- Evidence Qualification。
-- 通用 MCP 工具。
-- Rule 和 Skill 同步。
-- 多 Agent 集成基础。
+- Project identity.
+- General-purpose Observation.
+- Reasoning and Git Memory.
+- SQLite storage.
+- BM25 and optional Semantic Search.
+- Memory Lifecycle.
+- Evidence Qualification.
+- General-purpose MCP tools.
+- Rule and Skill synchronization.
+- Foundations for multiple Agent integrations.
 
-### ProvenLoop 负责
+### ProvenLoop responsibilities
 
-- Copilot Session 与 GitHub 生命周期 Collector。
-- Branch、Commit、PR、Review、CI、Issue、Fix 关系。
-- Work Episode Builder。
-- Outcome Linker。
-- 跨时间因果复盘。
-- 纠正和重试指标。
-- Branch Context。
-- 新任务的 Episode-aware Retrieval。
+- Copilot Session and GitHub lifecycle Collectors.
+- Relationships among Branch, Commit, PR, Review, CI, Issue, and Fix.
+- Work Episode Builder.
+- Outcome Linker.
+- Causal retrospectives across time.
+- Correction and retry metrics.
+- Branch Context.
+- Episode-aware Retrieval for new tasks.
 
 ---
 
-## 11. 修订后的 MVP
+## 11. Revised MVP
 
-### P0：真正差异化
+### P0: Differentiated capabilities
 
-1. **统一生命周期事件模型**
+1. **Unified lifecycle event model**
 
 ```text
 session
@@ -1060,32 +1060,32 @@ correction
 
 2. **Work Episode Builder**
 
-关联依据：
+Association signals:
 
-- Repo ID。
-- Branch。
-- Commit ancestry。
-- PR 和 Issue 引用。
-- 修改文件重合。
-- 时间。
-- Prompt 语义。
-- 测试名称和错误。
+- Repo ID.
+- Branch.
+- Commit ancestry.
+- PR and Issue references.
+- Overlap in modified files.
+- Time.
+- Prompt semantics.
+- Test names and errors.
 
 3. **Outcome Linker**
 
-检测：
+Detect:
 
-- 后续测试失败。
-- Review Correction。
-- Revert。
-- Fix Commit。
-- 用户纠正。
+- Later test failures.
+- Review Correction.
+- Revert.
+- Fix Commit.
+- User corrections.
 
-并找到可能需要重新评估的旧 Episode。
+Then identify older Episodes that may need reassessment.
 
 4. **Retrospective Analyzer**
 
-结构化输出：
+Structured output:
 
 ```text
 earlier assumption
@@ -1099,190 +1099,190 @@ confidence
 
 5. **Behavior Metrics**
 
-主指标：
+Primary metric:
 
 ```text
-相似任务中用户纠正次数下降
+Fewer user corrections in similar tasks
 ```
 
-辅助指标：
+Supporting metrics:
 
-- 工具和测试重试。
-- 重复输入 Context。
-- 首次通过 CI 或 Review。
-- 错误 Memory 导致失败的频率。
+- Tool and test retries.
+- Repeated Context input.
+- CI or Review passing on the first attempt.
+- Frequency of failures caused by incorrect Memory.
 
-### P1：必要体验
+### P1: Essential user experience
 
-- Copilot Plugin 一键安装。
-- 非阻塞 Hook 和持久队列。
-- Branch Context。
-- 每 Prompt MCP 检索。
-- Explain 和 Forget。
+- One-click Copilot Plugin installation.
+- Nonblocking Hooks and a persistent queue.
+- Branch Context.
+- Per-Prompt MCP retrieval.
+- Explain and Forget.
 
-### 不应重点自研
+### Areas that should not receive major in-house investment
 
-- 通用 Memory CRUD。
-- 通用向量数据库。
-- 通用 Embedding Provider。
-- 通用 Rules 转换。
-- 普通 Session Viewer。
-- 普通 Dashboard。
-- 通用 Agent Orchestration。
-
----
-
-## 12. Build vs Integrate 决策
-
-### 集成 Memorix
-
-使用：
-
-- npm package。
-- `memorix/sdk`。
-- `createMemoryClient`。
-- `createMemorixServer`。
-- Memorix Observation 和 Git Memory。
-
-### ProvenLoop 独立实现
-
-自建：
-
-- Lifecycle Store。
-- Work Episode Store。
-- Outcome Evidence。
-- Retrospective Card。
-- Effect Evaluation。
-
-### 不立即采用
-
-- Graphiti 作为默认后端：过重。
-- Mem0 作为 Canonical Store：模型不适合工程 Evidence。
-- 自建通用向量搜索：没有差异。
-- 深度 Fork Memorix：维护成本和上游漂移风险高。
+- General-purpose Memory CRUD.
+- General-purpose vector databases.
+- General-purpose Embedding Providers.
+- General-purpose Rules conversion.
+- Ordinary Session Viewer.
+- Ordinary Dashboard.
+- General-purpose Agent Orchestration.
 
 ---
 
-## 13. 主要风险
+## 12. Build vs Integrate decision
 
-### Memorix 演进过快
+### Integrate Memorix
 
-风险：
+Use:
 
-- SDK 尚不覆盖全部内部能力。
-- 主要维护者集中。
-- Schema 和 API 可能快速变化。
+- npm package.
+- `memorix/sdk`.
+- `createMemoryClient`.
+- `createMemorixServer`.
+- Memorix Observation and Git Memory.
 
-缓解：
+### Implement independently in ProvenLoop
 
-- 只依赖公开 `memorix/sdk`。
-- 固定兼容版本。
-- ProvenLoop 领域数据独立保存。
-- 增加 Adapter 层。
-- 必要能力优先上游贡献。
+Build:
 
-### Memorix 的 SQLite 是 Canonical Store
+- Lifecycle Store.
+- Work Episode Store.
+- Outcome Evidence.
+- Retrospective Card.
+- Effect Evaluation.
 
-这与最初“Markdown 是全部事实来源”的设计不同。
+### Do not adopt immediately
 
-推荐调整：
-
-- Memorix 保存通用 Observation 和检索记录。
-- ProvenLoop 的最终 Retrospective Card 可以继续保存 Markdown。
-- ProvenLoop 将 Markdown 结论索引到 Memorix。
-- 不要求 Memorix 所有内部数据都转换成 Markdown。
-
-### 后台 Copilot 调用递归
-
-缓解：
-
-- `PROVENLOOP_INTERNAL=1`。
-- Hook 检测并跳过。
-- 内部 Session 标记来源。
-
-### 自动因果归因错误
-
-缓解：
-
-- 多信号关联。
-- 每条结论必须引用具体 Evidence。
-- 低置信结论不自动注入。
-- 新冲突立即暂停旧结论。
-
-### Plugin 没有加载
-
-缓解：
-
-- `provenloop doctor`。
-- 检查 `agency copilot` Profile。
-- 检查 Plugin、MCP 和 Hook 状态。
-- 安装后启动新 Session 验证。
+- Graphiti as the default backend: too heavy.
+- Mem0 as the Canonical Store: its model does not fit engineering Evidence.
+- Custom general-purpose vector search: no differentiation.
+- A deep Memorix fork: high maintenance cost and risk of divergence from upstream.
 
 ---
 
-## 14. 最终判断
+## 13. Main risks
 
-### 可以基于 Memorix 扩展
+### Memorix evolves too quickly
 
-而且比自建全部基础设施更合理。
+Risks:
 
-但 ProvenLoop 不能只是：
+- The SDK does not yet cover all internal capabilities.
+- Maintenance is concentrated among very few people.
+- Schema and API may change rapidly.
+
+Mitigation:
+
+- Depend only on the public `memorix/sdk`.
+- Pin a compatible version.
+- Store ProvenLoop domain data separately.
+- Add an Adapter layer.
+- Prefer upstream contributions for required capabilities.
+
+### Memorix uses SQLite as its Canonical Store
+
+This differs from the original design in which Markdown was the source of all facts.
+
+Recommended adjustments:
+
+- Memorix stores general-purpose Observations and retrieval records.
+- ProvenLoop's final Retrospective Cards may remain in Markdown.
+- ProvenLoop indexes Markdown conclusions in Memorix.
+- Do not require all internal Memorix data to be converted to Markdown.
+
+### Recursive background Copilot calls
+
+Mitigation:
+
+- `PROVENLOOP_INTERNAL=1`.
+- Hooks detect and skip them.
+- Mark the provenance of internal Sessions.
+
+### Incorrect automatic causal attribution
+
+Mitigation:
+
+- Associate using multiple signals.
+- Every conclusion must cite specific Evidence.
+- Do not automatically inject low-confidence conclusions.
+- Pause old conclusions immediately when new conflicts appear.
+
+### Plugin fails to load
+
+Mitigation:
+
+- `provenloop doctor`.
+- Check the `agency copilot` Profile.
+- Check Plugin, MCP, and Hook status.
+- Start a new Session after installation to verify loading.
+
+---
+
+## 14. Final assessment
+
+### Extending Memorix is feasible
+
+It is also more sensible than building all the infrastructure from scratch.
+
+But ProvenLoop cannot be only:
 
 ```text
 Memorix + Copilot Adapter
 ```
 
-因为 Memorix 已经有 Copilot Adapter。
+Memorix already has a Copilot Adapter.
 
-ProvenLoop 必须集中在：
+ProvenLoop must focus on:
 
 ```text
-完整软件生命周期事件
+Complete software lifecycle events
   -> Work Episode
-  -> 后续 Outcome
-  -> 反向因果复盘
-  -> 可验证的工程经验
-  -> 下一次减少纠正
+  -> Later Outcomes
+  -> Retrospective causal analysis
+  -> Verifiable engineering lessons
+  -> Fewer corrections next time
 ```
 
-### 推荐产品关系
+### Recommended product relationship
 
 ```text
 Memorix
-  = 通用 Coding Agent Memory Platform
+  = General-purpose Coding Agent Memory Platform
 
 ProvenLoop
   = Outcome-aware Engineering Learning Engine
 ```
 
-### 推荐用户体验
+### Recommended user experience
 
-概念安装：
+Conceptual installation:
 
 ```powershell
 provenloop install
 ```
 
-安装器内部完成：
+The installer handles:
 
-- 安装 ProvenLoop Copilot Plugin。
-- 安装或打包 Memorix Dependency。
-- 注册 Hook。
-- 注册 MCP。
-- 建立 Worker。
-- 扫描最近 30 天历史建立长期基线。
+- Installing the ProvenLoop Copilot Plugin.
+- Installing or bundling the Memorix Dependency.
+- Registering Hooks.
+- Registering MCP.
+- Setting up the Worker.
+- Scanning the last 30 days of history to establish a long-term baseline.
 
-用户之后始终使用：
+Afterward, users always run:
 
 ```powershell
 agency copilot
 ```
 
-不需要额外 API Key，不需要改变启动方式，也不需要手动触发学习。
+No additional API Key, change to the launch command, or manual learning trigger is required.
 
 ---
 
-## 15. 主要参考资料
+## 15. Main references
 
 ### GitHub Copilot
 
@@ -1300,7 +1300,7 @@ agency copilot
 - <https://github.com/AVIDS2/memorix/blob/main/src/sdk.ts>
 - <https://github.com/AVIDS2/memorix/blob/main/src/knowledge/outcome-types.ts>
 
-### 其他 Memory
+### Other Memory solutions
 
 - <https://github.com/mem0ai/mem0>
 - <https://github.com/getzep/graphiti>
@@ -1311,7 +1311,7 @@ agency copilot
 - <https://github.com/thedotmack/claude-mem>
 - <https://github.com/basicmachines-co/basic-memory>
 
-### Copilot Session 工具
+### Copilot Session tools
 
 - <https://github.com/MattShelton04/TracePilot>
 - <https://github.com/maxbeizer/gh-agent-viz>

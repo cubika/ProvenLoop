@@ -29,6 +29,8 @@ implemented M0-M2 code into an installable, observable, and reversible product.
 
 The planned quality release is complete only when:
 
+- ordinary natural-language corrections trigger automatic extraction and
+  qualified later-task reuse without manual remember/retrieve instructions;
 - installation uses a published package rather than a source checkout;
 - the Copilot Extension and MCP run from installed assets;
 - M0 blockers are evaluated from retained evidence instead of hard-coded
@@ -49,6 +51,9 @@ additional requirement, not a box that packaging work can close.
 
 ### Included
 
+The list describes the release target, not a claim that every item is in 0.11.
+Automatic natural-language extraction remains a first-product blocker.
+
 - GitHub Copilot CLI adapter;
 - non-blocking Extension event capture;
 - durable local queue and worker;
@@ -60,6 +65,8 @@ additional requirement, not a box that packaging work can close.
 - Knowledge list/show/confirm/replace/revoke with reviewed digests and explicit
   confirmation; workflow controls require a matching live SDK Session and cwd;
 - M2 verified correction learning;
+- automatic source-backed proposal extraction through the existing authorized
+  Copilot sign-in, including narrow verified MCP invocation recovery;
 - Knowledge lifecycle and counterevidence handling;
 - M0, M1, M2, and MVP evaluation gates;
 - automatic local observations and safe export;
@@ -596,6 +603,15 @@ explicitly separate; never relabel it M0/MVP-approved.
 
 ## 16. Definition of done
 
+- [ ] `M2-AUTO-001` through `M2-AUTO-008` are implemented in the existing release
+  evaluator and pass with version-bound native-host evidence, including the
+  coverage/noise thresholds and user-visible feedback in product validation.
+- [ ] A normal correction in an open Session becomes a qualified reusable rule
+  without fixed fields, manual `remember`, or a user-invoked extraction tool.
+- [ ] A subsequent relevant task retrieves and follows that rule without the
+  user restating it or requesting a ProvenLoop tool call.
+- [ ] The model provider has one-time disclosed consent, no tool permissions,
+  bounded usage/retries, recursion isolation and visible pause/failure states.
 - [ ] A user can install from a published package without cloning the repo.
 - [ ] Installed Plugin and MCP paths survive moving or deleting the source
   checkout.
