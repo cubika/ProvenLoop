@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +15,7 @@ import {
 } from "@provenloop/contracts";
 import { createCaptureEnvelope, sha256 } from "@provenloop/domain";
 import { CanonicalSqliteStore, DEFAULT_SQLITE_MIGRATIONS } from "@provenloop/storage-sqlite";
+import { createCanonicalStoreWorkerModule } from "../fixtures/canonical-store-worker.js";
 
 const roots: string[] = [];
 const eventTime = "2026-09-01T00:00:00.000Z";
@@ -268,16 +268,17 @@ describe("canonical observed-time ranges", () => {
           });
           try { store.ingestQueueItem(workerData.item); }
           finally { store.close(); }
-        } catch {
+        } catch (error) {
+          console.error(error);
           Atomics.store(gate, 0, -1);
           Atomics.notify(gate, 0);
         }
       })();
     `, {
-      eval: true, execArgv: ["--experimental-strip-types"],
+      eval: true,
       workerData: {
         gate: gate.buffer, path, item, observedAt: laterSeen,
-        moduleUrl: pathToFileURL(join(process.cwd(), "packages", "storage-sqlite", "src", "canonical-store.ts")).href,
+        moduleUrl: await createCanonicalStoreWorkerModule(root),
       },
     });
     try {

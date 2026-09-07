@@ -3,7 +3,6 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +22,7 @@ import {
   DEFAULT_SQLITE_MIGRATIONS,
   StaleCanonicalStoreError,
 } from "@provenloop/storage-sqlite";
+import { createCanonicalStoreWorkerModule } from "../fixtures/canonical-store-worker.js";
 
 const roots: string[] = [];
 const timestamp = "2026-09-01T00:00:00.000Z";
@@ -1021,18 +1021,16 @@ describe("canonical transaction boundaries", () => {
             store.completeDeletion(operation.deletionId);
           } finally { store.close(); }
           Atomics.store(gate, 0, 2);
-        } catch {
+        } catch (error) {
+          console.error(error);
           Atomics.store(gate, 0, -1);
         } finally { Atomics.notify(gate, 0); }
       })();
     `, {
       eval: true,
-      execArgv: ["--experimental-strip-types"],
       workerData: {
         gate: gate.buffer, path, sourceId,
-        moduleUrl: pathToFileURL(join(
-          process.cwd(), "packages", "storage-sqlite", "src", "canonical-store.ts",
-        )).href,
+        moduleUrl: await createCanonicalStoreWorkerModule(root),
       },
     });
     const exec = DatabaseSync.prototype.exec;
