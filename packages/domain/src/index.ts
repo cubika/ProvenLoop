@@ -83,3 +83,5 @@ export {
   type RedactedCaptureMetadata,
   type RedactedCaptureContent,
 } from "./redaction.js";
+
+export * from "./automatic-learning.js";

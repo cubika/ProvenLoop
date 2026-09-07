@@ -964,6 +964,7 @@ describe("Copilot operational adapter", () => {
       commandRunner: new FakeCommandRunner(),
       copilotHome: join(root, "copilot-home"),
       dataRoot,
+      environment: { LOCALAPPDATA: join(root, "local-app-data") },
       platform: "win32",
     });
 
@@ -1038,7 +1039,7 @@ describe("Copilot operational adapter", () => {
           on: () => undefined,
         }),
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       status: "started",
     });
 
@@ -1099,7 +1100,7 @@ describe("Copilot operational adapter", () => {
     ).toHaveLength(1);
 
     runner.releaseVersionCheck();
-    await expect(starting).resolves.toEqual({
+    await expect(starting).resolves.toMatchObject({
       status: "started",
     });
     await expect(

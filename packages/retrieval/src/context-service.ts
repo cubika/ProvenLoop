@@ -94,6 +94,9 @@ const distinct = <T>(input: readonly T[]): T[] =>
   [...new Set(input)];
 
 const searchTerms = (request: ContextRequest): readonly string[] => {
+  const toolTerms = request.toolInvocation === undefined ? [] : normalizedTokens(
+    `${request.toolInvocation.serverName} ${request.toolInvocation.toolName}`,
+  ).slice(0, 8);
   const hints = normalizedTokens((request.fileHints ?? []).join("\n"))
     .filter((token) => token.length >= 2 && token.length <= 64)
     .slice(0, 8);
@@ -107,7 +110,7 @@ const searchTerms = (request: ContextRequest): readonly string[] => {
         ...prompt.slice(0, Math.ceil(available / 2)),
         ...prompt.slice(-Math.floor(available / 2)),
       ];
-  return distinct([...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
+  return distinct([...toolTerms, ...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
 };
 
 const overlapRatio = (
@@ -1059,6 +1062,10 @@ export class ContextRetrievalService {
     const conflicting = this.#store.knowledgeCandidates(
       candidate.conflictsWith,
     );
+    const learningEvidence = this.#store.knowledgeAdmissionEvidence([candidate]);
+    const learningProposals = (learningEvidence.learningProposals ?? []).filter(
+      (proposal) => proposal.knowledgeId === candidate.knowledgeId,
+    );
     return {
       applicability: {
         appliesWhen: candidate.appliesWhen,
@@ -1079,6 +1086,24 @@ export class ContextRetrievalService {
       kind: "knowledge",
       unresolvedEvidenceIds: this.#knowledgeEvidenceState(candidate).unresolvedEvidenceIds,
       provenance: {
+        ...(learningProposals.length === 0 ? {} : {
+          learning: learningProposals.map((proposal) => ({
+            proposalId: proposal.proposalId,
+            jobId: proposal.jobId,
+            userSource: { ...proposal.userSource, quote: redactPotentialSecrets(proposal.userSource.quote) },
+            sourceDigests: proposal.sourceDigests,
+            receipts: (learningEvidence.learningReceipts ?? []).filter(
+              (receipt) => receipt.proposalId === proposal.proposalId,
+            ).map((receipt) => ({
+              receiptId: receipt.receiptId, proves: receipt.proves,
+              contractDigest: receipt.contract.digest, contractVersion: receipt.contract.version,
+              failedOperationEventId: receipt.failedOperationEventId,
+              retryOperationEventId: receipt.retryOperationEventId,
+              completionEventId: receipt.completionEventId,
+              verifiedAt: receipt.verifiedAt,
+            })),
+          })),
+        }),
         sourceEpisodes: candidate.sourceEpisodeIds.map(
           (episodeId) => {
             const episode = episodesById.get(episodeId);
@@ -1491,6 +1516,8 @@ export class ContextRetrievalService {
           match: "any",
           now,
           text: terms.join(" "),
+          ...(request.toolInvocation === undefined ? {} : { toolInvocation: request.toolInvocation }),
+          ...(request.projectInstructions === undefined ? {} : { projectInstructions: request.projectInstructions }),
           ...(request.branch === undefined
             ? {}
             : {

@@ -18,6 +18,9 @@ export interface CopilotSessionLike {
   readonly workspacePath?: string;
   on(listener: (event: CopilotSessionEvent) => void): unknown;
   disconnect?(): Promise<void> | void;
+  log?(message: string, options?: { readonly level?: "info" | "warning" | "error"; readonly ephemeral?: boolean }): Promise<void>;
+  readonly rpc?: { readonly tools?: { getCurrentMetadata(): Promise<{ readonly tools: readonly import("./learning-tool-registry.js").CopilotToolMetadata[] | null }> };
+    readonly eventLog?: { read(options: { direction: "backward"; max: number; types: [string,...string[]]; includeEphemeral: boolean; waitMs: number }): Promise<{events: readonly CopilotSessionEvent[]}> } };
 }
 
 export interface CopilotExtensionCaptureOptions {

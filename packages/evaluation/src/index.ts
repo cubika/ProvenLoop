@@ -144,3 +144,12 @@ export {
   SYNTHETIC_REGRESSION_LIMITATION,
   type ObservationManifest,
 } from "./observation-manifest.js";
+export {
+  automaticLearningEvidenceSchema,
+  automaticLearningObservationIds,
+  evaluateAutomaticLearningAcceptance,
+  loadAutomaticLearningEvidence,
+  type AutomaticLearningAcceptanceReport,
+  type AutomaticLearningCheck,
+  type AutomaticLearningEvidence,
+} from "./automatic-learning-acceptance.js";

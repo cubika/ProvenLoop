@@ -6,6 +6,8 @@ import type {
   EvidenceTier,
   FeedbackEvent,
   KnowledgeCandidate,
+  McpRecoveryReceipt,
+  RuleProposal,
   RepositoryState,
   Scope,
   WorkEpisode,
@@ -69,6 +71,8 @@ export interface CanonicalKnowledgeStore {
 }
 
 export interface KnowledgeAdmissionEvidence {
+  readonly learningProposals?: readonly RuleProposal[];
+  readonly learningReceipts?: readonly McpRecoveryReceipt[];
   readonly contextUseRecords: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
   readonly correctionSourceEventIds: ReadonlySet<string>;
@@ -124,6 +128,8 @@ extends CanonicalKnowledgeAdmissionStore {
 }
 
 export interface KnowledgeRetrievalQuery {
+  readonly toolInvocation?: TrustedToolInvocation;
+  readonly projectInstructions?: readonly string[];
   readonly branchScopeId?: string;
   readonly limit: number;
   readonly match?: "all" | "any";
@@ -139,6 +145,8 @@ export interface RetrievedKnowledge {
 }
 
 export interface ContextRequest {
+  readonly toolInvocation?: TrustedToolInvocation;
+  readonly projectInstructions?: readonly string[];
   readonly branch?: string;
   readonly cwd: string;
   readonly fileHints?: readonly string[];
@@ -150,6 +158,12 @@ export interface ContextRequest {
   readonly tokenBudget: number;
   readonly trustedWorkspace?: TrustedWorkspaceIdentity;
   readonly workflowScopeId?: string;
+}
+
+export interface TrustedToolInvocation {
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly contractDigest: string;
 }
 
 export interface TrustedWorkspaceIdentity {

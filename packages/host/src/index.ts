@@ -61,3 +61,5 @@ export {
   type WorkEpisodeProjectorOptions,
   type WorkEpisodeRebuildOptions,
 } from "./work-episode-projector.js";
+
+export * from "./learning-coordinator.js";

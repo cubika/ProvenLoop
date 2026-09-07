@@ -46,6 +46,10 @@ import {
   type M2ReleaseReport,
 } from "./m2-release-gate.js";
 import {
+  evaluateAutomaticLearningAcceptance,
+  type AutomaticLearningAcceptanceReport,
+} from "./automatic-learning-acceptance.js";
+import {
   containsKnownSecret,
   containsPotentialSecret,
   redactKnownSecrets,
@@ -140,6 +144,7 @@ export interface MvpReleaseEvidence {
 }
 
 export interface MvpAutomatedReadiness {
+  readonly automaticLearning?: AutomaticLearningAcceptanceReport;
   readonly codeVersions: readonly string[];
   readonly evaluationBinding: MvpEvaluationBinding;
   readonly eventProcessIntegrityPassed: boolean;
@@ -190,6 +195,7 @@ export interface MvpReleaseReport {
 }
 
 export interface RunMvpReleaseGateOptions {
+  readonly automaticLearningEvidencePath?: string;
   readonly observationManifestPath?: string;
   readonly codeVersion?: string;
   readonly cwd?: string;
@@ -887,6 +893,15 @@ export const evaluateMvpReleaseReadiness = (input: {
   const versions = new Set(input.automated.codeVersions);
   const checks: MvpReleaseCheck[] = [
     {
+      checkId: "automatic-learning-acceptance",
+      status: input.automated.automaticLearning?.status === "pass" &&
+        Array.from({ length: 8 }, (_, index) => `M2-AUTO-00${index + 1}`).every((id) =>
+          input.automated.automaticLearning?.checks.some((check) => check.checkId === id && check.status === "pass"))
+        ? "pass" : "blocked",
+      message: "All eight automatic-learning requirements need retained installed acceptance; missing evidence cannot inherit synthetic regression approval.",
+    },
+    ...(input.automated.automaticLearning ?? evaluateAutomaticLearningAcceptance(undefined, input.releaseTarget)).checks,
+    {
       checkId: "field-effect-evidence",
       status: "blocked",
       message: "Controlled field effects have not been evaluated. Synthetic regression and observational manifests cannot establish user benefit.",
@@ -1254,6 +1269,7 @@ const automatedReadiness = (
       m1.codeVersion,
       m2.codeVersion,
     ],
+    automaticLearning: m2.automaticLearning ?? evaluateAutomaticLearningAcceptance(undefined),
     evaluationBinding: binding,
     eventProcessIntegrityPassed: requiredSuitesVerified(
       m0,
@@ -1575,6 +1591,7 @@ export const runMvpReleaseGate = async (
           runId: "m1",
         }),
         runM2ReleaseGate({
+          ...(options.automaticLearningEvidencePath === undefined ? {} : { automaticLearningEvidencePath: options.automaticLearningEvidencePath }),
           ...(options.observationManifestPath === undefined ? {} : { observationManifestPath: options.observationManifestPath }),
           codeVersion,
           cwd,

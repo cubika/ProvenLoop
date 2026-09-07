@@ -11,6 +11,7 @@ import {
   type FeedbackEvent,
   type KnowledgeCandidate,
   type WorkEpisode,
+  type RuleProposal, type McpRecoveryReceipt,
 } from "@provenloop/contracts";
 import {
   directKnowledgeCounterevidence,
@@ -23,6 +24,7 @@ import {
   verificationOutcome,
   verificationProofEventIds,
 } from "./verification-proof.js";
+import { verifyMcpRecovery, renderLearningPredicate } from "./automatic-learning.js";
 
 export type KnowledgeAdmissionReason =
   | "content_mismatch"
@@ -42,6 +44,8 @@ export type KnowledgeAdmissionReason =
   | "untrusted_verification_evidence";
 
 export interface KnowledgeAdmissionInput {
+  readonly learningProposals?: readonly RuleProposal[];
+  readonly learningReceipts?: readonly McpRecoveryReceipt[];
   readonly candidate: KnowledgeCandidate;
   readonly contextUseRecords?: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
@@ -52,6 +56,8 @@ export interface KnowledgeAdmissionInput {
 }
 
 export interface KnowledgeAdmissionBatchInput {
+  readonly learningProposals?: readonly RuleProposal[];
+  readonly learningReceipts?: readonly McpRecoveryReceipt[];
   readonly candidates: readonly KnowledgeCandidate[];
   readonly contextUseRecords?: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
@@ -208,6 +214,9 @@ export const refreshKnowledgeAdmissionDecision = (
 };
 
 interface PreparedKnowledgeAdmissionContext {
+  readonly learningProposals: readonly RuleProposal[];
+  readonly learningReceipts: readonly McpRecoveryReceipt[];
+  readonly allContextUseRecords: readonly ContextUseRecord[];
   readonly correctionKeysBySourceEventId: ReadonlyMap<
     string,
     readonly CorrectionKey[]
@@ -310,6 +319,9 @@ const prepareContext = (
     }
   }
   return {
+    learningProposals: input.learningProposals ?? [],
+    learningReceipts: input.learningReceipts ?? [],
+    allContextUseRecords: contextUseRecords,
     correctionKeysBySourceEventId,
     contextUseRecordsByEpisode,
     envelopesById: new Map(
@@ -350,6 +362,23 @@ const evaluateCandidate = (
   });
   if (evidenceState.unresolvedEvidenceIds.length > 0) {
     reasons.add("unresolved_counterevidence");
+  }
+  if (candidate.topicKey.startsWith("learning:") || candidate.knowledgeId.startsWith("learning-knowledge-")) {
+    const receipt = context.learningReceipts.find((entry) => context.learningProposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === entry.proposalId && proposal.sourceDigests.length === candidate.sourceEvidenceIds.length && proposal.sourceDigests.every((source) => sourceEvidence.has(source.eventId))));
+    const proposal = context.learningProposals.find((entry) => entry.knowledgeId === candidate.knowledgeId && entry.proposalId === receipt?.proposalId);
+    const checked = proposal && receipt ? verifyMcpRecovery(proposal, [...context.envelopesById.values()], [receipt.contract], new Date(receipt.verifiedAt)) : undefined;
+    if (!checked) reasons.add("invalid_verification_evidence");
+    if (!proposal || candidate.content !== renderLearningPredicate(proposal)) reasons.add("content_mismatch");
+    if (proposal && (candidate.scope !== "repository" || proposal.sourceDigests.some((source) => context.envelopesById.get(source.eventId)?.event.repoId !== candidate.scopeId))) reasons.add("scope_mismatch");
+    if (proposal && (candidate.sourceEvidenceIds.length !== proposal.sourceDigests.length || proposal.sourceDigests.some((source) => !sourceEvidence.has(source.eventId)))) reasons.add("incomplete_proof_chain");
+    if (candidate.sourceEvidenceIds.some((id) => context.recalledReferences.has(id))) reasons.add("recalled_knowledge_evidence");
+    if (proposal && receipt) {
+      const user = context.envelopesById.get(proposal.userSource.eventId);
+      const completion = context.envelopesById.get(proposal.completionEventId);
+      if (context.allContextUseRecords.some((record) => record.sessionId === user?.event.sessionId && recordRecallsKnowledge(record, candidate.knowledgeId) &&
+          Date.parse(record.createdAt) >= Date.parse(user?.event.timestamp ?? "") && Date.parse(record.createdAt) <= Date.parse(completion?.event.timestamp ?? ""))) reasons.add("recalled_knowledge_evidence");
+    }
+    return decision(candidate, [], reasons);
   }
   if (
       candidate.sourceEvidenceIds.some((evidenceId) =>
@@ -658,6 +687,8 @@ export class KnowledgeAdmissionPolicy {
       input: KnowledgeAdmissionInput,
   ): KnowledgeAdmissionDecision {
       const [result] = this.evaluateAll({
+        ...(input.learningProposals === undefined ? {} : { learningProposals: input.learningProposals }),
+        ...(input.learningReceipts === undefined ? {} : { learningReceipts: input.learningReceipts }),
         candidates: [
           input.candidate,
         ],

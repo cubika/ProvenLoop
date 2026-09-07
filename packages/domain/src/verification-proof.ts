@@ -1,6 +1,7 @@
 import { posix, win32 } from "node:path";
 
 import type { CaptureEnvelope, VerificationBinding } from "@provenloop/contracts";
+import { validCapturedParent } from "./parent-bridge.js";
 
 export type VerificationOutcome = "succeeded" | "failed" | "unknown";
 export type { VerificationBinding } from "@provenloop/contracts";
@@ -151,7 +152,10 @@ export const boundVerificationOperation = (
   const visited = new Set<string>();
   let parentId = operation.event.parentEventId;
   let childTimestamp = Date.parse(operation.event.timestamp);
+  let child = operation;
   while (parentId !== undefined && !visited.has(parentId)) {
+    const linkedParent = eventsById.get(parentId);
+    if (linkedParent === undefined || !validCapturedParent(child, linkedParent)) return undefined;
     if (parentId === correction.event.eventId) {
       return operation;
     }
@@ -169,6 +173,7 @@ export const boundVerificationOperation = (
       return undefined;
     }
     childTimestamp = Date.parse(parent.event.timestamp);
+    child = parent;
     parentId = parent.event.parentEventId;
   }
   return undefined;

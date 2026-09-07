@@ -1341,7 +1341,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     );
     const repositoryRoot =
       rootResult.exitCode === 0
-        ? optionalText(rootResult.stdout)
+        ? (() => { const path = optionalText(rootResult.stdout); return path === undefined ? undefined : resolve(path); })()
         : undefined;
     if (repositoryRoot === undefined) {
       return {

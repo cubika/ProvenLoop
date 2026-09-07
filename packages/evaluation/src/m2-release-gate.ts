@@ -17,6 +17,11 @@ import {
 } from "node:path";
 
 import { z } from "zod";
+import {
+  evaluateAutomaticLearningAcceptance,
+  loadAutomaticLearningEvidence,
+  type AutomaticLearningAcceptanceReport,
+} from "./automatic-learning-acceptance.js";
 
 import { sanitizeDiagnostic } from "@provenloop/domain";
 
@@ -52,6 +57,7 @@ export interface M2ReleaseGateCheck {
 }
 
 export interface M2ReleaseReport {
+  readonly automaticLearning?: AutomaticLearningAcceptanceReport;
   readonly evidenceKind: "synthetic";
   readonly evaluationPurpose: "regression";
   readonly observationEvidence?: ObservationManifest;
@@ -69,6 +75,7 @@ export interface M2ReleaseReport {
 }
 
 export interface RunM2ReleaseGateOptions {
+  readonly automaticLearningEvidencePath?: string;
   readonly observationManifestPath?: string;
   readonly codeVersion?: string;
   readonly cwd?: string;
@@ -86,6 +93,7 @@ export interface RunM2ReleaseGateResult {
 
 const m2ReleaseReportSchema = z
   .object({
+    automaticLearning: z.unknown().optional(),
     evidenceKind: z.literal("synthetic"),
     evaluationPurpose: z.literal("regression"),
     observationEvidence: observationManifestSchema.optional(),
@@ -554,6 +562,7 @@ const renderM2ReleaseReport = (
 | Code version | \`${report.codeVersion}\` |
 | Release target | ${report.releaseTarget} |
 | Status | **${report.status.toUpperCase()}** |
+| Automatic learning acceptance | ${report.automaticLearning?.status ?? "insufficient_evidence"} |
 | Exit code | ${report.exitCode} |
 | Started | ${report.startedAt} |
 | Completed | ${report.completedAt} |
@@ -563,6 +572,12 @@ const renderM2ReleaseReport = (
 | Check | Status | Message |
 |---|---|---|
 ${checks.join("\n")}
+
+## Automatic learning acceptance
+
+| Check | Status | Message |
+|---|---|---|
+${(report.automaticLearning ?? evaluateAutomaticLearningAcceptance(undefined)).checks.map((check) => `| ${escapeMarkdownText(check.checkId)} | ${check.status} | ${escapeMarkdownText(check.message)} |`).join("\n")}
 
 ## Correction Recurrence
 
@@ -682,6 +697,9 @@ export const runM2ReleaseGate = async (
         options.codeVersion ?? await resolveCodeVersion(cwd);
       codeVersion = validateCodeVersion(resolvedCodeVersion);
       const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
+      const automaticLearning = evaluateAutomaticLearningAcceptance(
+        await loadAutomaticLearningEvidence(options.automaticLearningEvidencePath), releaseTarget, codeVersion,
+      );
       let dataset: CorrectionRecurrenceDataset;
       try {
         dataset = await loadCorrectionRecurrenceDataset(
@@ -721,6 +739,7 @@ export const runM2ReleaseGate = async (
           ? "pass"
           : "fail";
       const report: M2ReleaseReport = {
+        automaticLearning,
         evidenceKind: "synthetic",
         evaluationPurpose: "regression",
         ...(observationEvidence === undefined ? {} : { observationEvidence }),

@@ -128,11 +128,37 @@ export const copyEvidenceValue = (
     }
     result[key] = values;
   }
-  if (Object.keys(result).length === 0) {
+    if (Object.keys(result).length === 0) {
     quality.omittedFields.push(path);
     return { kind: "object", status: "omitted_in_callback" };
   }
   return result;
+};
+
+export const copyMcpArguments = (value: unknown, quality: CaptureQuality): JsonValue | undefined => {
+  let nodes = 0; let remaining = 16_384;
+  const copy = (input: unknown, depth: number, path: string): JsonValue | undefined => {
+    nodes += 1;
+    if (nodes > 256 || depth > 8 || remaining <= 0) { quality.omittedFields.push(path); return undefined; }
+    if (input === null || typeof input === "boolean") return input;
+    if (typeof input === "number") return Number.isFinite(input) ? input : undefined;
+    if (typeof input === "string") { const text = boundedText(input, remaining, quality, path); remaining -= text.length; return text; }
+    if (Array.isArray(input)) {
+      if (input.length > 64) quality.omittedFields.push(path);
+      return input.slice(0, 64).map((entry, index) => copy(entry, depth + 1, `${path}[${index}]`) ?? null);
+    }
+    if (input === undefined || typeof input !== "object") return undefined;
+    const result: Record<string, JsonValue> = {};
+    const entries = Object.entries(input);
+    if (entries.length > 64) quality.omittedFields.push(path);
+    for (const [key, entry] of entries.slice(0, 64)) {
+      if (key.length > 256) { quality.omittedFields.push(path); continue; }
+      remaining -= key.length; const copied = copy(entry, depth + 1, `${path}.${key}`);
+      if (copied !== undefined) Object.defineProperty(result, key, {value:copied,enumerable:true,writable:true,configurable:true});
+    }
+    return result;
+  };
+  return copy(value, 0, "toolArguments");
 };
 
 export const copyToolContentBlocks = (

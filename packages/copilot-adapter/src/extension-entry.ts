@@ -14,7 +14,7 @@ import {
   resolve,
 } from "node:path";
 import { isoTimestampSchema } from "@provenloop/contracts";
-import { sanitizeDiagnostic } from "@provenloop/domain";
+import { sanitizeDiagnostic, sha256 } from "@provenloop/domain";
 
 import {
   ExtensionShutdownRequestedError,
@@ -31,6 +31,11 @@ import {
   CopilotCliAdapter,
 } from "./copilot-cli-adapter.js";
 import type { CopilotSessionLike } from "./extension-runtime.js";
+import { CopilotLearningToolRegistry } from "./learning-tool-registry.js";
+import { hasCopilotLearningHookApproval } from "./automatic-host-capability.js";
+import { recoverPermissionBridges } from "./permission-bridge-recovery.js";
+import { homedir } from "node:os";
+import type { LearningToolContract } from "@provenloop/contracts";
 import type { CopilotSessionEvent, CopilotWorkspaceSnapshot } from "./event-mapper.js";
 import { readCopilotAdapterState } from "./operational-state.js";
 import { startCopilotExtensionCapture, type CaptureTerminationSignalSource } from "./start-extension.js";
@@ -47,7 +52,13 @@ export interface InstalledCopilotExtensionOptions {
   readonly environment?: Readonly<
     Record<string, string | undefined>
   >;
-  readonly joinSession: () => Promise<CopilotSessionLike>;
+  readonly joinSession: (config?: { readonly hooks?: {
+    readonly onUserPromptSubmitted?: (input: { readonly prompt: string; readonly sessionId: string; readonly workingDirectory: string }) => Promise<{ additionalContext?: string } | undefined>;
+    readonly onPreToolUse?: (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly workingDirectory: string }) => Promise<{ additionalContext?: string } | undefined>;
+    readonly onPostToolUse?: (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly toolResult: { readonly resultType: string } }) => Promise<void>;
+    readonly onPostToolUseFailure?: (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly error: string }) => Promise<void>;
+  } }) => Promise<CopilotSessionLike>;
+  readonly onAutomaticContext?: (input: { readonly prompt?: string; readonly toolArguments?: unknown; readonly tool?: LearningToolContract; readonly workspace: CopilotWorkspaceSnapshot; readonly sessionId: string }) => Promise<string | undefined>;
   readonly now?: () => Date;
   readonly onStopped?: () => void;
   readonly workflowScopeId?: string;
@@ -65,6 +76,8 @@ export type InstalledCopilotExtensionResult =
     }
   | {
       readonly status: "started";
+      readonly hostSession?: CopilotSessionLike;
+      readonly toolRegistry?: CopilotLearningToolRegistry;
       readonly captureSession?: {
         readonly sessionId: string;
         readonly sessionStateRoot: string;
@@ -159,6 +172,8 @@ export const runInstalledCopilotExtension = async (
   let metricsTimer: NodeJS.Timeout | undefined;
   let dataRootVerified = false;
   let sdkSession: CopilotSessionLike | undefined;
+  const toolRegistry = new CopilotLearningToolRegistry();
+  const pendingTools = new Map<string, { name: string; argumentDigest: string; mcp: NonNullable<import("@provenloop/contracts").RawEvent["mcp"]> }>();
   let captureSession: Extract<InstalledCopilotExtensionResult, { status: "started" }>["captureSession"];
   let disconnecting: Promise<void> | undefined;
   let stopPublishing: () => Promise<void> = async () => undefined;
@@ -271,6 +286,10 @@ export const runInstalledCopilotExtension = async (
       };
     }
     const queue = new WindowsCaptureQueue(paths.queue, { onDiagnostic: diagnostic });
+    const hooksEnabled = state.automaticLearning?.enabled === true &&
+      await hasCopilotLearningHookApproval(options.copilotHome ?? environment.COPILOT_HOME ?? join(homedir(), ".copilot"),
+        identity.worktreePath ?? process.cwd(), adapterVersion);
+    if (state.automaticLearning?.enabled && !hooksEnabled) diagnostic("Automatic retrieval paused: grant Copilot repository-scoped ProvenLoop hook access, then restart this session. Capture and bounded extraction remain enabled.");
     let queueReady: Promise<void> | undefined;
     const initializeQueue = (): Promise<void> => {
       queueReady ??= queue.initialize().catch((error: unknown) => {
@@ -414,7 +433,48 @@ export const runInstalledCopilotExtension = async (
       },
       environment,
       joinSession: async ({ onEvent, refreshWorkspace }) => {
-        const session = await options.joinSession();
+        const automaticContext = async (input: { readonly prompt?: string; readonly toolName?: string; readonly toolArgs?: unknown; readonly sessionId: string; readonly workingDirectory: string }): Promise<{ additionalContext?: string } | undefined> => {
+          if (!runtimeActive || input.sessionId !== sessionId || resolve(input.workingDirectory).toLowerCase() !== resolve(workspace.cwd ?? "").toLowerCase()) return;
+          try {
+            if (sdkSession?.rpc?.tools !== undefined) {
+              let timer: NodeJS.Timeout | undefined;
+              const metadata = await Promise.race([sdkSession.rpc.tools.getCurrentMetadata(), new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 100); })]).finally(() => clearTimeout(timer));
+              if (metadata === undefined) return;
+              if (metadata.tools !== null) toolRegistry.replace(metadata.tools, adapterVersion);
+            }
+            const tool = input.toolName === undefined ? undefined : toolRegistry.find(input.toolName);
+            const context = await options.onAutomaticContext?.({ sessionId, workspace,
+              ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+              ...(tool === undefined ? {} : { tool, toolArguments: input.toolArgs }) });
+            if (runtimeActive && context) return { additionalContext: context };
+          } catch (error) { diagnostic(`Automatic context unavailable: ${sanitizeDiagnostic(error)}`); }
+          return undefined;
+        };
+        const recordToolResult = async (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly error?: string }, resultType: "success" | "failure"): Promise<void> => {
+          if (input.sessionId !== sessionId) return;
+          let active = true; let timer: NodeJS.Timeout | undefined;
+          const replay = (event: CopilotSessionEvent): void => {
+            if(active && ["permission.requested","permission.completed","hook.start","hook.end"].includes(String(event.type)))
+              onEvent({id:event.id,type:event.type,parentId:event.parentId,timestamp:event.timestamp,data:{}});
+          };
+          const recovery = sdkSession?.rpc?.eventLog !== undefined
+            ? sdkSession.rpc.eventLog.read({direction:"backward",max:128,types:["permission.requested","permission.completed","hook.start","hook.end"],includeEphemeral:false,waitMs:0})
+              .then((result) => { for(const event of result.events.slice(-128)) replay(event); })
+            : recoverPermissionBridges(sdkSession?.workspacePath, sessionId, replay);
+          try { await Promise.race([recovery,
+            new Promise<void>((resolve) => {timer=setTimeout(resolve,100);})]); } catch { diagnostic("Permission parent recovery unavailable; verification remains pending."); }
+          finally { active=false; clearTimeout(timer); }
+          const matches = [...pendingTools.values()].filter((entry) => entry.name === input.toolName && entry.argumentDigest === sha256(input.toolArgs));
+          if (matches.length !== 1 || !matches[0]) return;
+          const match = matches[0];
+          const argument = input.error?.slice(0, 1024).match(/(?:missing required (?:argument|parameter|property)[: ]+["']?([A-Za-z_][A-Za-z0-9_]*)|required (?:argument|parameter|property) ["']([A-Za-z_][A-Za-z0-9_]*)["'] (?:is )?missing)/iu);
+          match.mcp = { ...match.mcp, resultType, ...((argument?.[1] ?? argument?.[2]) === undefined ? {} : { failureArgument: argument?.[1] ?? argument?.[2] }) };
+        };
+        const session = await options.joinSession(hooksEnabled ? { hooks: {
+          onUserPromptSubmitted: automaticContext, onPreToolUse: automaticContext,
+          onPostToolUse: async (input) => { if (input.toolResult.resultType === "success") await recordToolResult(input, "success"); },
+          onPostToolUseFailure: (input) => recordToolResult(input, "failure"),
+        } } : undefined);
         sdkSession = session;
         if (!runtimeActive) {
           await disconnectSession();
@@ -453,7 +513,15 @@ export const runInstalledCopilotExtension = async (
                 }
               }
             }
-            onEvent(event);
+            const data = event.data !== null && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
+            const contract = typeof data.toolName === "string" ? toolRegistry.find(data.toolName) : undefined;
+            if (event.type === "tool.execution_start" && contract && typeof data.toolCallId === "string") {
+              if (pendingTools.size >= 256) pendingTools.clear();
+              pendingTools.set(data.toolCallId, { name: String(data.toolName), argumentDigest: sha256(data.arguments), mcp: { serverName: contract.serverName, toolName: contract.toolName, contractDigest: contract.digest } });
+            }
+            const pending = typeof data.toolCallId === "string" ? pendingTools.get(data.toolCallId) : undefined;
+            onEvent(pending === undefined ? event : { ...event, mcp: pending.mcp });
+            if (event.type === "tool.execution_complete" && typeof data.toolCallId === "string") pendingTools.delete(data.toolCallId);
           } catch (error) {
             diagnostic(`SDK event handling failed: ${sanitizeDiagnostic(error)}`);
           }
@@ -636,6 +704,8 @@ export const runInstalledCopilotExtension = async (
     void flushMetrics();
     return {
       status: "started",
+      ...(sdkSession === undefined ? {} : { hostSession: sdkSession }),
+      toolRegistry,
       ...(captureSession === undefined ? {} : { captureSession }),
     };
   } catch (error) {

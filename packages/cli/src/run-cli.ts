@@ -15,6 +15,11 @@ import {
 } from "@provenloop/contracts";
 import {
   CopilotCliAdapter,
+  AUTOMATIC_LEARNING_DISCLOSURE,
+  approveCopilotLearningHooks,
+  getCopilotAutomaticLearningHostCapability,
+  readCopilotAdapterState,
+  writeCopilotAdapterState,
   readTrustedSessionContext,
   type TrustedSessionContext,
 } from "@provenloop/copilot-adapter";
@@ -139,6 +144,8 @@ const usage = `Usage:
   provenloop enable <capability> [--data-root <directory>]
   provenloop disable <capability> [--data-root <directory>]
   provenloop collection <enable|disable> [--data-root <directory>]
+  provenloop learning <status|enable|disable|mute|unmute> [--confirm] [--data-root <directory>]
+  provenloop learning approve-hooks --cwd <repository-directory> --confirm
   provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop knowledge list [--state <state>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop knowledge show <knowledge-id> [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
@@ -161,8 +168,8 @@ const usage = `Usage:
   provenloop eval episodes [--dataset <file>]
   provenloop eval m0 --out <directory> [--evidence <file>]
   provenloop eval m1 --out <directory> [--dataset <file>] [--stable]
-  provenloop eval m2 --out <directory> [--dataset <file>] [--stable]
-  provenloop eval mvp --out <directory> [--evidence <file>] [--stable]
+  provenloop eval m2 --out <directory> [--dataset <file>] [--automatic-learning-evidence <file>] [--stable]
+  provenloop eval mvp --out <directory> [--evidence <file>] [--automatic-learning-evidence <file>] [--stable]
   provenloop eval run --suite <suite> --out <directory>
   provenloop eval report --run <run-id-or-directory>`;
 
@@ -231,7 +238,7 @@ const LEASE_RETRY_DELAY_MS = 25;
 
 const acquireMaintenanceLease = async (
   root: string,
-  purpose: "knowledge-projection" | "observations",
+  purpose: "knowledge-projection" | "observations" | "adapter-state",
 ) => {
   const leaseName = await resolveWindowsProvenLoopLeaseName(
     root,
@@ -246,7 +253,7 @@ const acquireMaintenanceLease = async (
       throw new Error(
         purpose === "knowledge-projection"
           ? "Timed out waiting for the Knowledge projection lease. Retry the command after maintenance completes."
-          : "Timed out waiting for the observations lease. Retry the command after collection completes.",
+          : `Timed out waiting for the ${purpose} lease. Retry after the active operation completes.`,
       );
     }
     await new Promise<void>((resolve) => {
@@ -940,6 +947,7 @@ const runEvaluationCommand = async (
   if (args[1] === "m2") {
     const outputRoot = option(args, "--out");
     const datasetPath = option(args, "--dataset");
+    const automaticLearningEvidencePath = option(args, "--automatic-learning-evidence");
     if (
       !hasOnlyOptions(args, 2, {
         flags: [
@@ -947,18 +955,20 @@ const runEvaluationCommand = async (
         ],
         values: [
           "--dataset",
+          "--automatic-learning-evidence",
           "--out",
         ],
       }) ||
       !outputRoot ||
       outputRoot.startsWith("--") ||
-      hasInvalidOptionValue(args, "--dataset")
+      hasInvalidOptionValue(args, "--dataset") || hasInvalidOptionValue(args, "--automatic-learning-evidence")
     ) {
       io.error(usage);
       return 2;
     }
     try {
       const result = await runM2ReleaseGate({
+        ...(automaticLearningEvidencePath === undefined ? {} : { automaticLearningEvidencePath }),
         ...(datasetPath === undefined
           ? {}
           : {
@@ -981,6 +991,7 @@ const runEvaluationCommand = async (
   if (args[1] === "mvp") {
     const outputRoot = option(args, "--out");
     const evidencePath = option(args, "--evidence");
+    const automaticLearningEvidencePath = option(args, "--automatic-learning-evidence");
     if (
       !hasOnlyOptions(args, 2, {
         flags: [
@@ -988,18 +999,20 @@ const runEvaluationCommand = async (
         ],
         values: [
           "--evidence",
+          "--automatic-learning-evidence",
           "--out",
         ],
       }) ||
       !outputRoot ||
       outputRoot.startsWith("--") ||
-      hasInvalidOptionValue(args, "--evidence")
+      hasInvalidOptionValue(args, "--evidence") || hasInvalidOptionValue(args, "--automatic-learning-evidence")
     ) {
       io.error(usage);
       return 2;
     }
     try {
       const result = await runMvpReleaseGate({
+        ...(automaticLearningEvidencePath === undefined ? {} : { automaticLearningEvidencePath }),
         ...(evidencePath === undefined
           ? {}
           : {
@@ -1244,11 +1257,89 @@ const runCollectionCommand = async (
   }
 };
 
+const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<number> => {
+  const action = args[1];
+  if (action === "approve-hooks") {
+    const cwd = option(args, "--cwd");
+    if (!cwd || hasInvalidOptionValue(args, "--cwd") ||
+        !hasOnlyOptions(args, 2, { values: ["--cwd"], flags: ["--confirm"] })) { io.error(usage); return 2; }
+    io.log(`This grants plugin:provenloop:event-capture access to Copilot session hooks in ${resolve(cwd)}. Hooks can observe prompts and tool calls and supply verified guidance. The grant persists in Copilot for this repository.`);
+    if (!args.includes("--confirm")) { io.error("Approve this repository-scoped host permission with --confirm."); return 2; }
+    try {
+      io.log(JSON.stringify(await approveCopilotLearningHooks({ cwd: resolve(cwd) }), null, 2));
+      io.log("Restart the Copilot session to load the approved hooks.");
+      return 0;
+    } catch (error) { io.error(error instanceof Error ? error.message : String(error)); return 3; }
+  }
+  if (!["status", "enable", "disable", "mute", "unmute"].includes(action ?? "") ||
+      hasInvalidOptionValue(args, "--data-root") ||
+      !hasOnlyOptions(args, 2, { values: ["--data-root"], flags: ["--confirm"] })) {
+    io.error(usage); return 2;
+  }
+  if (action === "enable") {
+    io.log(AUTOMATIC_LEARNING_DISCLOSURE);
+    if (!args.includes("--confirm")) {
+      io.error("Enabling background inference requires accepting this disclosure with --confirm.");
+      return 2;
+    }
+  }
+  try {
+    const paths = resolveWindowsProvenLoopPaths(dataRoot(args));
+    await access(paths.rootMarker);
+    const lease = await acquireMaintenanceLease(paths.root, "adapter-state");
+    try {
+      const now = new Date();
+      const state = await readCopilotAdapterState(paths.adapterState, now);
+      if (action === "status") {
+        await access(paths.database);
+        const store = new CanonicalSqliteStore(paths.database);
+        let jobs;
+        try {
+          jobs = store.learningJobs().map((job) => ({
+            jobId: job.jobId, state: job.state, attempts: job.attempts, result: job.result,
+            createdAt: job.createdAt, updatedAt: job.updatedAt, expiresAt: job.expiresAt,
+          }));
+        } finally { store.close(); }
+        io.log(JSON.stringify({
+          automaticLearning: state.automaticLearning ?? { enabled: false, consentRequired: true },
+          prerequisites: { installed: state.installed,
+            capture: state.capabilities.capture.enabled, worker: state.capabilities.worker.enabled,
+            correctionLearning: state.capabilities.correction_learning.enabled },
+          disclosure: AUTOMATIC_LEARNING_DISCLOSURE,
+          hostHooks: { ...getCopilotAutomaticLearningHostCapability(state.detectedCopilotVersion),
+            permission: "extension-permission-access", extension: "plugin:provenloop:event-capture",
+            detail: "Copilot must approve this extension in each repository before automatic retrieval hooks can start. Consent alone does not grant host permissions." },
+          jobs,
+        }, null, 2));
+        return 0;
+      }
+      if (action !== "enable" && state.automaticLearning === undefined) {
+        io.log("Automatic learning has no consent and remains disabled."); return 0;
+      }
+      const previous = state.automaticLearning ?? {
+        consentedAt: now.toISOString(), disclosureVersion: 1 as const,
+        enabled: false, notificationsEnabled: true,
+      };
+      const automaticLearning = { ...previous,
+        enabled: action === "enable" ? true : action === "disable" ? false : previous.enabled,
+        notificationsEnabled: action === "mute" ? false : action === "unmute" ? true : previous.notificationsEnabled,
+      };
+      await writeCopilotAdapterState(paths.adapterState, { ...state, automaticLearning, updatedAt: now.toISOString() });
+      io.log(JSON.stringify({ automaticLearning }, null, 2));
+      if (action === "enable") io.log("Copilot also requires repository-scoped hook approval. Run provenloop learning approve-hooks --cwd <repository-directory> --confirm, then restart the Copilot session. Automatic reuse is unavailable until the host grants this permission.");
+      return 0;
+    } finally { await lease.release(); }
+  } catch (error) {
+    io.error(error instanceof Error ? error.message : String(error)); return 3;
+  }
+};
+
 export const runCli = async (
   args: readonly string[],
   io: CliIo = defaultIo,
   dependencies: CliDependencies = defaultDependencies,
 ): Promise<number> => {
+  if (args[0] === "learning") return runLearningCommand(args, io);
   if (args[0] === "version" && args.length === 1) {
     io.log(JSON.stringify(releaseMetadata, null, 2));
     return 0;

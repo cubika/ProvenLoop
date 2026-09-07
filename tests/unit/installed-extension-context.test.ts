@@ -167,8 +167,9 @@ describe("installed extension trusted context wiring", () => {
   it("passes only the joined SDK Session workspace and observation boundary to background reconciliation", async () => {
     const sdk = { ...session(), workspacePath: "C:\\sdk-state\\sdk-session" };
     const running = start(sdk);
-    expect(await running.result).toEqual({
+    expect(await running.result).toMatchObject({
       status: "started",
+      hostSession: sdk,
       captureSession: {
         sessionId: "sdk-session",
         sessionStateRoot: "C:\\sdk-state",
@@ -183,15 +184,18 @@ describe("installed extension trusted context wiring", () => {
     "does not authorize reconciliation from an unrelated SDK workspace %s",
     async (workspacePath) => {
       const sdk = { ...session(), workspacePath };
-      expect(await start(sdk).result).toEqual({ status: "started" });
+      const result = await start(sdk).result;
+      expect(result).toMatchObject({ status: "started", hostSession: sdk });
+      expect(result).not.toHaveProperty("captureSession");
     },
   );
 
   it("publishes with capture disabled, joins/subscribes once, and never touches the queue", async () => {
     const runtime = start();
-    expect(await runtime.result).toEqual({ status: "started" });
+    expect(await runtime.result).toMatchObject({ status: "started", hostSession: runtime.sdk });
     await settle();
     expect(runtime.joinSession).toHaveBeenCalledOnce();
+    expect(runtime.joinSession.mock.calls[0]).toEqual([undefined]);
     expect(runtime.sdk.on).toHaveBeenCalledOnce();
     expect(fixtures.publishers[0]?.start).toHaveBeenCalledOnce();
     expect(fixtures.publishers[0]?.options).toMatchObject({

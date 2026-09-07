@@ -107,6 +107,10 @@ const redactCaptureProvenance = (event: RawEvent) => {
   const targets = evidence?.targetPaths?.map((value, index) =>
     collect(value, `event.evidence.targetPaths[${index}]`),
   );
+  const bridgeKeys = event.parentBridge?.map((entry, index) => {
+    const keys = ["sourceEventId", "parentSourceEventId", "sessionId", "repoId", "worktree"] as const;
+    return Object.fromEntries(keys.map((field) => [field, collect(entry[field], `event.parentBridge[${index}].${field}`, field !== "worktree")]));
+  });
   const redacted = redactCaptureMetadata(fields, identifiers);
   const safe = (key: string): string => {
     const value = redacted.values[key];
@@ -121,6 +125,9 @@ const redactCaptureProvenance = (event: RawEvent) => {
       locations[path.replace(/^event\./u, "")] ?? path,
     ),
     metadata: {
+      ...(event.parentBridge === undefined ? {} : { parentBridge: event.parentBridge.map((entry, index) => ({
+        ...entry, ...Object.fromEntries(Object.entries(bridgeKeys?.[index] ?? {}).map(([field, key]) => [field, safe(key)])),
+      })) }),
       ...definedField("repositoryState", event.repositoryState),
       ...(quality === undefined ? {} : {
         captureQuality: {
@@ -201,6 +208,7 @@ export const createCaptureEnvelope = (
     exitCode: input.exitCode,
     operationId: input.operationId,
     parentEventId: input.parentEventId,
+    originalParentSourceEventId: input.originalParentSourceEventId,
     participantId: input.participantId,
     protocol: input.protocol,
     protocolVersion: input.protocolVersion,
@@ -215,6 +223,8 @@ export const createCaptureEnvelope = (
     trust: input.trust,
     worktree: input.worktree,
     ...definedField("verificationBinding", input.verificationBinding),
+    ...definedField("mcp", input.mcp),
+    ...definedField("parentBridge", input.parentBridge),
     ...definedField("captureQuality", input.captureQuality),
     ...definedField("evidence", input.evidence),
     ...definedField("repositoryState", input.repositoryState),
@@ -401,6 +411,7 @@ export const redactCaptureEnvelopeForPersistence = (
       ...definedField("exitCode", event.exitCode),
       ...definedField("operationId", event.operationId),
       ...definedField("parentEventId", event.parentEventId),
+      ...definedField("originalParentSourceEventId", event.originalParentSourceEventId),
       ...definedField("participantId", event.participantId),
       ...definedField("protocol", event.protocol),
       ...definedField("protocolVersion", event.protocolVersion),
@@ -422,6 +433,8 @@ export const redactCaptureEnvelopeForPersistence = (
       trust: event.trust,
       ...definedField("worktree", event.worktree),
       ...definedField("verificationBinding", verificationBinding(parsed)),
+      ...definedField("mcp", parsed.event.mcp),
+      ...definedField("parentBridge", parsed.event.parentBridge),
       ...definedField("captureQuality", event.captureQuality),
       ...definedField("evidence", event.evidence),
       ...definedField("repositoryState", event.repositoryState),

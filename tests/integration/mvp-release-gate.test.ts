@@ -61,6 +61,9 @@ describe("M1 + M2 MVP aggregate release gate", () => {
       releaseTarget: "stable",
     });
     expect(result.report.subgates).toHaveLength(3);
+    expect(result.report.checks.find((check) => check.checkId === "automatic-learning-acceptance")?.status).toBe("blocked");
+    expect(result.report.checks.filter((check) => check.checkId.startsWith("M2-AUTO-")))
+      .toHaveLength(8);
     expect(result.report.evaluationBinding).toMatchObject({
       codeVersion: "test-code-version",
       datasets: {

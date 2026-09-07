@@ -23,6 +23,7 @@ vi.mock("../../packages/cli/src/reconcile-capture.js", () => ({
 }));
 
 import { runProvenLoopCopilotExtension } from "@provenloop/cli";
+import { runInstalledCopilotExtension } from "../../packages/cli/src/extension-entry.js";
 
 let stop: (() => void) | undefined;
 const options = {
@@ -66,6 +67,26 @@ afterEach(() => {
 });
 
 describe("automatic Extension observation scheduling", () => {
+  it("exports the complete scheduler under the entry name used by installed plugins", () => {
+    expect(runInstalledCopilotExtension).toBe(runProvenLoopCopilotExtension);
+  });
+  it("continues capture and observation while background inference is unresolved", async () => {
+    let finish: ((result: { status: "disabled" }) => void) | undefined;
+    const runLearning = vi.fn(() => new Promise<{ status: "disabled" }>((resolve) => { finish = resolve; }));
+    await runProvenLoopCopilotExtension(options, { runLearning });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runLearning).toHaveBeenCalledTimes(1);
+    expect(work.collect).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(work.worker).toHaveBeenCalledTimes(2);
+    expect(work.collect).toHaveBeenCalledTimes(2);
+    expect(runLearning).toHaveBeenCalledTimes(1);
+    stop?.();
+    finish?.({ status: "disabled" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(work.worker).toHaveBeenCalledTimes(2);
+  });
+
   it("collects without an acceptance command and throttles idle work", async () => {
     await runProvenLoopCopilotExtension(options);
     await vi.advanceTimersByTimeAsync(0);

@@ -2,7 +2,7 @@ import type {
   JsonValue,
   RawEvent,
 } from "@provenloop/contracts";
-import { isoTimestampSchema, SUPPORTED_EVENT_TYPES } from "@provenloop/contracts";
+import { isoTimestampSchema, SUPPORTED_EVENT_TYPES, rawEventSchema } from "@provenloop/contracts";
 import {
   isExplicitCorrectionMessage,
   createCaptureDeduplicationKey,
@@ -14,6 +14,7 @@ import {
   classifyVerificationCommand,
   commandTargetPaths,
   copyEvidenceValue,
+  copyMcpArguments,
   copyToolContentBlocks,
   evidencePaths,
   newCaptureQuality,
@@ -31,6 +32,7 @@ import {
 type CaptureEventInput = DomainCaptureEventInput;
 
 export interface CopilotSessionEvent {
+  readonly mcp?: RawEvent["mcp"];
   readonly agentId?: unknown;
   readonly data?: unknown;
   readonly ephemeral?: unknown;
@@ -67,6 +69,7 @@ interface SourceCaptureContext {
   readonly repoId: string | undefined;
   readonly worktree: string | undefined;
   readonly correctionEventId: string | undefined;
+  readonly parentBridge?: NonNullable<RawEvent["parentBridge"]>;
 }
 
 export class InvalidCopilotEventMapperConfigurationError extends Error {
@@ -370,6 +373,7 @@ export class CopilotEventMapper {
     readonly correctionEventId?: string;
     readonly workspacePending: boolean;
     readonly builtinTool: boolean;
+    readonly mcp?: RawEvent["mcp"];
   }>();
   readonly #sourceEvents = new Map<string, SourceCaptureContext>();
   readonly #canonicalSourceEvents = new Map<string, SourceCaptureContext>();
@@ -493,6 +497,8 @@ export class CopilotEventMapper {
       };
     }
     const event = input as Readonly<Record<string, unknown>>;
+    const parsedMcp = rawEventSchema.shape.mcp.safeParse(event.mcp);
+    const mcp = parsedMcp.success ? parsedMcp.data : undefined;
     const issues: string[] = [];
     const sourceEventId =
       typeof event.id === "string" && event.id.trim().length > 0 && event.id.length <= 256
@@ -561,6 +567,18 @@ export class CopilotEventMapper {
     }
 
     const data = asRecord(event.data);
+    const observedParent = typeof event.parentId === "string" ? this.#sourceEvents.get(event.parentId) : undefined;
+    const bridgeTypes = new Set(["hook.start", "hook.end", "system.message", "permission.requested", "permission.completed", "session.usage_checkpoint", "session.info", "session.model_change"]);
+    if (bridgeTypes.has(eventType) && observedParent !== undefined && typeof event.parentId === "string" &&
+        this.#workspace.repoId !== undefined && this.#workspace.worktree !== undefined &&
+        observedParent.repoId === this.#workspace.repoId && observedParent.worktree === this.#workspace.worktree &&
+        (observedParent.parentBridge?.length ?? 0) < 32) {
+      const parentBridge = [{ schemaVersion: 1 as const, sourceEventId, parentSourceEventId: event.parentId, eventType: eventType as NonNullable<RawEvent["parentBridge"]>[number]["eventType"], timestamp, sessionId: this.#sessionId,
+        repoId: this.#workspace.repoId, worktree: this.#workspace.worktree, trust: "system" as const }, ...(observedParent.parentBridge ?? [])];
+      if (this.#sourceEvents.size >= 4_096) { const oldest = this.#sourceEvents.keys().next().value; if (oldest !== undefined) this.#sourceEvents.delete(oldest); }
+      this.#sourceEvents.set(sourceEventId, { ...observedParent, parentBridge });
+      return { status: "ignored", reason: "ephemeral", eventType, sourceEventId };
+    }
     const quality = newCaptureQuality();
     if (this.#workspacePending) quality.omittedFields.push("workspace.gitContext");
     if (typeof event.parentId === "string" && !this.#sourceEvents.has(event.parentId)) {
@@ -574,6 +592,7 @@ export class CopilotEventMapper {
         "system",
       ),
       captureQuality: quality,
+      ...(observedParent?.parentBridge === undefined ? {} : { parentBridge: observedParent.parentBridge, originalParentSourceEventId: event.parentId as string }),
       ...(typeof event.parentId === "string"
         ? {
             parentEventId: this.#sourceEvents.get(event.parentId)?.eventId ?? event.parentId,
@@ -688,7 +707,7 @@ export class CopilotEventMapper {
         if (toolCallId !== undefined && toolName !== undefined) {
           this.#toolNames.set(toolCallId, toolName);
         }
-        const toolArguments = copyBoundedValue(
+        const toolArguments = (mcp !== undefined || typeof data.mcpServerName === "string") ? copyMcpArguments(data.arguments, quality) : copyBoundedValue(
           data.arguments,
           this.#copyLimits,
           quality,
@@ -712,6 +731,7 @@ export class CopilotEventMapper {
             ),
             workspacePending: this.#workspacePending,
             builtinTool: data.mcpServerName === undefined && data.mcpToolName === undefined,
+            ...(mcp === undefined ? {} : { mcp }),
             ...(() => {
               const parent = typeof event.parentId === "string" ? this.#sourceEvents.get(event.parentId) : undefined;
               return parent?.correctionEventId !== undefined &&
@@ -729,6 +749,7 @@ export class CopilotEventMapper {
           {
             ...common,
             eventType: "tool.started",
+            ...(mcp === undefined ? {} : { mcp }),
             completionStatus: "running",
             ...(toolCallId === undefined
               ? {}
@@ -756,6 +777,7 @@ export class CopilotEventMapper {
         );
         const success = requiredBoolean(data, "success", issues);
         const started = toolCallId === undefined ? undefined : this.#operations.get(toolCallId);
+        const completionMcp = mcp ?? started?.mcp;
         const toolName =
           toolCallId === undefined
             ? undefined
@@ -786,6 +808,8 @@ export class CopilotEventMapper {
           {
             ...common,
             ...(exitCode === undefined ? {} : { exitCode }),
+            ...(completionMcp === undefined ? {} : { mcp: { ...completionMcp,
+              ...(typeof asRecord(data.result).isError === "boolean" ? { isError: asRecord(data.result).isError as boolean } : {}) } }),
             eventType:
               success === false ? "tool.failed" : "tool.completed",
             completionStatus:

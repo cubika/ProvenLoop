@@ -6,6 +6,9 @@ export {
   type CaptureQueueSink,
   type CaptureWriterStatus,
 } from "./async-writer.js";
+export { CopilotLearningProvider } from "./learning-provider.js";
+export { getCopilotAutomaticLearningHostCapability, hasCopilotLearningHookApproval, approveCopilotLearningHooks } from "./automatic-host-capability.js";
+export { CopilotLearningToolRegistry, type CopilotToolMetadata } from "./learning-tool-registry.js";
 export {
   COPILOT_CAPTURE_CAPABILITIES,
   COPILOT_SUPPORTED_SOURCE_EVENT_TYPES,
@@ -88,6 +91,8 @@ export {
 } from "./session-file-parser.js";
 export {
   createDefaultCopilotAdapterState,
+  AUTOMATIC_LEARNING_DISCLOSURE,
+  type AutomaticLearningConsent,
   readInternalSessionIds,
   readCopilotAdapterState,
   setPersistedCapability,

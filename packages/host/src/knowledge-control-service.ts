@@ -5,6 +5,7 @@ import {
   type CaptureEnvelope,
   type FeedbackEvent,
   type KnowledgeCandidate,
+  type RuleProposal,
   type Scope,
 } from "@provenloop/contracts";
 import {
@@ -22,7 +23,7 @@ export interface KnowledgeControlStore {
   ): readonly KnowledgeCandidate[];
   knowledgeAdmissionEvidence?(
     candidates: readonly KnowledgeCandidate[],
-  ): { readonly envelopes: readonly CaptureEnvelope[] };
+  ): { readonly envelopes: readonly CaptureEnvelope[]; readonly learningProposals?: readonly RuleProposal[] };
   recordKnowledgeFeedback(input: {
     readonly event: FeedbackEvent;
     readonly updateCandidate?: (
@@ -137,6 +138,14 @@ export class KnowledgeControlService {
     },
   ): readonly KnowledgeReview[] {
     const scopeId = validateScope(input.scope, input.scopeId);
+    const reviewApplicability = (candidate: KnowledgeCandidate): readonly string[] => {
+      if (!candidate.knowledgeId.startsWith("learning-knowledge-")) return candidate.appliesWhen;
+      const proposal = this.#store.knowledgeAdmissionEvidence?.([candidate]).learningProposals?.find((entry) =>
+        entry.knowledgeId === candidate.knowledgeId && entry.sourceDigests.length === candidate.sourceEvidenceIds.length &&
+        entry.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)));
+      const digest = proposal?.predicate?.contractDigest;
+      return digest === undefined ? candidate.appliesWhen : candidate.appliesWhen.map((value) => value.replaceAll(digest, "[tool contract digest]"));
+    };
     const candidates = this.#store.knowledgeCandidates()
       .filter((candidate) =>
         candidate.scope === input.scope &&
@@ -145,7 +154,7 @@ export class KnowledgeControlService {
         ![
           candidate.content,
           candidate.scopeId ?? "",
-          ...candidate.appliesWhen,
+          ...reviewApplicability(candidate),
           ...candidate.nonApplicability,
         ].some(containsPotentialSecret),
       );

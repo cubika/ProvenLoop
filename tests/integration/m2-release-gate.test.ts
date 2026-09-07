@@ -65,6 +65,7 @@ describe("M2 aggregate release gate", () => {
       correctionRecurrence: {
         status: "pass",
       },
+      automaticLearning: { status: "insufficient_evidence" },
       exitCode: 0,
       releaseTarget: "research",
       status: "pass",

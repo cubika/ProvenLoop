@@ -7,6 +7,7 @@ export interface CommandResult {
 }
 
 export interface CommandRunOptions {
+  readonly signal?: AbortSignal;
   readonly cwd?: string;
   readonly environment?: Readonly<
     Record<string, string | undefined>
@@ -48,6 +49,9 @@ export class SpawnCommandRunner implements CommandRunner {
         shell: false,
         windowsHide: true,
       });
+      const abort = (): void => { child.kill(); };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
       let timedOut = false;
       const timeout =
         options.timeoutMs === undefined
@@ -63,6 +67,7 @@ export class SpawnCommandRunner implements CommandRunner {
         stderr = appendBounded(stderr, chunk);
       });
       child.once("error", (error) => {
+        options.signal?.removeEventListener("abort", abort);
         if (timeout !== undefined) {
           clearTimeout(timeout);
         }
@@ -73,6 +78,7 @@ export class SpawnCommandRunner implements CommandRunner {
         });
       });
       child.once("close", (exitCode) => {
+        options.signal?.removeEventListener("abort", abort);
         if (timeout !== undefined) {
           clearTimeout(timeout);
         }

@@ -14,6 +14,7 @@ import {
   type KnowledgeRetrievalQuery,
   type RetrievedKnowledge,
 } from "./types.js";
+import { learningApplicable } from "./learning-applicability.js";
 
 const eligible = (
   candidate: KnowledgeCandidate,
@@ -73,6 +74,8 @@ export class CanonicalKnowledgeRetriever {
       string,
       ReturnType<KnowledgeAdmissionPolicy["evaluate"]>
     >();
+    const applicableById = new Map<string, boolean>();
+    const learningApplicabilityById = new Map<string, readonly string[]>();
     const deadline =
       options.timeoutMs === undefined
         ? undefined
@@ -127,6 +130,18 @@ export class CanonicalKnowledgeRetriever {
         const evidence = this.#store.knowledgeAdmissionEvidence(
           unevaluatedCandidates,
         );
+        for (const candidate of unevaluatedCandidates) {
+          applicableById.set(candidate.knowledgeId, learningApplicable(
+            candidate, evidence.learningProposals ?? [], query,
+          ));
+          const proposal = evidence.learningProposals?.find((entry) =>
+            entry.knowledgeId === candidate.knowledgeId && entry.predicate !== undefined &&
+            entry.sourceDigests.length === candidate.sourceEvidenceIds.length &&
+            entry.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)));
+          if (proposal?.predicate) learningApplicabilityById.set(candidate.knowledgeId, [
+            `Calling ${proposal.predicate.serverName}/${proposal.predicate.toolName} under its verified tool contract.`,
+          ]);
+        }
         for (const admission of this.#admissionPolicy.evaluateAll({
           candidates: unevaluatedCandidates,
           ...evidence,
@@ -146,13 +161,15 @@ export class CanonicalKnowledgeRetriever {
           candidate === undefined ||
           deleted.has(candidate.knowledgeId) ||
           !eligible(candidate, query, now) ||
+          applicableById.get(candidate.knowledgeId) !== true ||
           admissionById.get(candidate.knowledgeId)?.admitted !== true ||
           hit.sourceDigest !== sha256(candidate)
         ) {
           continue;
         }
         retrieved.push({
-          candidate,
+          candidate: learningApplicabilityById.has(candidate.knowledgeId)
+            ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
           score: hit.score,
         });
         if (retrieved.length === query.limit) {

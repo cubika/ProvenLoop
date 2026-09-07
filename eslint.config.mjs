@@ -9,6 +9,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/node_modules/**",
       ".provenloop/**",
+      "evaluation-output/**",
       "plugins/**/extensions/**/extension.mjs",
       "spikes/**",
     ],

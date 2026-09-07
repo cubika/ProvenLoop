@@ -38,6 +38,7 @@ export interface PersistedCapabilityState {
 }
 
 export interface PersistedCopilotAdapterState {
+  readonly automaticLearning?: AutomaticLearningConsent;
   readonly capabilities: Readonly<
     Record<ProvenLoopCapability, PersistedCapabilityState>
   >;
@@ -50,6 +51,27 @@ export interface PersistedCopilotAdapterState {
   readonly schemaVersion: 1;
   readonly updatedAt: string;
 }
+
+export interface AutomaticLearningConsent {
+  readonly consentedAt: string;
+  readonly disclosureVersion: 1;
+  readonly enabled: boolean;
+  readonly notificationsEnabled: boolean;
+}
+
+export const AUTOMATIC_LEARNING_DISCLOSURE =
+  "Automatic correction learning sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in. It uses isolated background requests with tools disabled; Copilot service usage and retention policies apply. Candidates stay private until verified. You can disable learning, mute notices, revoke rules, or delete their sources.";
+
+const parseAutomaticLearning = (input: unknown, path: string): AutomaticLearningConsent | undefined => {
+  if (input === undefined) return undefined;
+  if (!isRecord(input) || input.disclosureVersion !== 1 ||
+      typeof input.consentedAt !== "string" || !Number.isFinite(Date.parse(input.consentedAt)) ||
+      typeof input.enabled !== "boolean" || typeof input.notificationsEnabled !== "boolean") {
+    throw new InvalidCopilotAdapterStateError(path);
+  }
+  return { consentedAt: input.consentedAt, disclosureVersion: 1,
+    enabled: input.enabled, notificationsEnabled: input.notificationsEnabled };
+};
 
 export class InvalidCopilotAdapterStateError extends Error {
   public override readonly name = "InvalidCopilotAdapterStateError";
@@ -192,7 +214,9 @@ const parseState = (
     input.experimentalSetting,
     path,
   );
+  const automaticLearning = parseAutomaticLearning(input.automaticLearning, path);
   return {
+    ...(automaticLearning === undefined ? {} : { automaticLearning }),
     capabilities,
     installed: input.installed,
     marketplaceRegistered: input.marketplaceRegistered,
@@ -452,6 +476,7 @@ export const clearExperimentalSettingState = (
   state: PersistedCopilotAdapterState,
   now: Date,
 ): PersistedCopilotAdapterState => ({
+  ...(state.automaticLearning === undefined ? {} : { automaticLearning: state.automaticLearning }),
   capabilities: state.capabilities,
   installed: state.installed,
   marketplaceRegistered: state.marketplaceRegistered,

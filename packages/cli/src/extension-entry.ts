@@ -1,5 +1,5 @@
 import {
-  runInstalledCopilotExtension,
+  runInstalledCopilotExtension as startInstalledAdapter,
   type InstalledCopilotExtensionOptions,
   type InstalledCopilotExtensionResult,
 } from "@provenloop/copilot-adapter";
@@ -12,30 +12,61 @@ import {
 } from "./run-worker.js";
 import { collectLocalObservations } from "./collect-observations.js";
 import { reconcileCurrentSessionCapture } from "./reconcile-capture.js";
+import { LocalMcpToolHandlers } from "./run-mcp-server.js";
+import { runLearningOnce, notifyLearningActivation } from "./run-learning.js";
+import { readCopilotAdapterState } from "@provenloop/copilot-adapter";
+import { resolveWindowsProvenLoopPaths } from "@provenloop/platform-windows";
 
 export type {
   InstalledCopilotExtensionOptions,
   InstalledCopilotExtensionResult,
 };
-export {
-  runInstalledCopilotExtension,
-};
 
 export const runProvenLoopCopilotExtension = async (
   options: InstalledCopilotExtensionOptions,
-  dependencies: { readonly runWorker?: typeof runCaptureWorkerOnce } = {},
+  dependencies: { readonly runWorker?: typeof runCaptureWorkerOnce; readonly runLearning?: typeof runLearningOnce } = {},
 ): Promise<InstalledCopilotExtensionResult> => {
   let workerRunning = false;
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
   let nextObservationAt = 0;
+  let deliveryNoticeSent = false;
+  let learningNoticeSent = false;
+  let learningRunning = false;
+  const learningShutdown = new AbortController();
+  const host = { session: undefined as Extract<InstalledCopilotExtensionResult, { status: "started" }>["hostSession"] };
+  const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
+  const notificationsEnabled = async (): Promise<boolean> => {
+    const state = await readCopilotAdapterState(paths.adapterState, new Date());
+    return state.automaticLearning?.enabled === true && state.automaticLearning.notificationsEnabled && state.capabilities.retrieval.enabled;
+  };
   const stopScheduling = (): void => {
     stopped = true;
+    learningShutdown.abort();
     clearTimeout(timer);
     process.removeListener("SIGTERM", stopScheduling);
   };
-  const result = await runInstalledCopilotExtension({
+  const result = await startInstalledAdapter({
     ...options,
+    onAutomaticContext: options.onAutomaticContext ?? (async (input) => {
+      if (stopped || input.workspace.repositoryState !== "known_repo" || !input.workspace.repoId) return undefined;
+      const cwd = input.workspace.cwd ?? input.workspace.worktree;
+      if (!cwd) return undefined;
+      const response = await new LocalMcpToolHandlers({ cwd, dataRoot: options.dataRoot, now: () => new Date() }).context({
+        cwd, sessionId: input.sessionId, tokenBudget: 600,
+        prompt: input.prompt?.slice(0, 8192) ?? `${input.tool?.serverName ?? ""} ${input.tool?.toolName ?? ""}`,
+        trustedWorkspace: { repositoryState: "known_repo", repositoryObservedAt: new Date().toISOString(),
+          repositoryId: input.workspace.repoId, ...(input.workspace.branch === undefined ? {} : { branch: input.workspace.branch }),
+          ...(input.workspace.commitSha === undefined ? {} : { commitSha: input.workspace.commitSha }) },
+        ...(input.tool === undefined ? {} : { toolInvocation: { serverName: input.tool.serverName, toolName: input.tool.toolName, contractDigest: input.tool.digest } }),
+      });
+      if (stopped || response.items.length === 0) return undefined;
+      if (!deliveryNoticeSent && host.session?.log && await notificationsEnabled()) {
+        deliveryNoticeSent = true;
+        void host.session.log(`ProvenLoop provided ${response.items.length} scoped guidance item(s). Sources: ${response.items.map((item) => item.explanationRef).join(", ")}`, { ephemeral: true }).catch(() => undefined);
+      }
+      return response.items.map((item) => `${item.guidance}\nSource: ${item.explanationRef}`).join("\n\n");
+    }),
     onStopped: () => {
       stopScheduling();
       options.onStopped?.();
@@ -44,6 +75,7 @@ export const runProvenLoopCopilotExtension = async (
   if (result.status !== "started" || stopped) {
     return result;
   }
+  host.session = result.hostSession;
   (options.signalSource ?? process).once("SIGTERM", stopScheduling);
   const schedule = (delayMs: number): void => {
     if (stopped) {
@@ -61,6 +93,17 @@ export const runProvenLoopCopilotExtension = async (
       dataRoot: options.dataRoot,
     })
       .then(async (workerResult) => {
+        if (!stopped && !learningRunning && workerResult.status === "completed") {
+          learningRunning = true;
+          void (dependencies.runLearning ?? runLearningOnce)({ dataRoot: options.dataRoot, contracts: result.toolRegistry?.contracts() ?? [], signal: learningShutdown.signal }).then(async (learning) => {
+            if ("qualified" in learning && (learning.qualified ?? 0) > 0) await (dependencies.runWorker ?? runCaptureWorkerOnce)({ dataRoot: options.dataRoot });
+            if (!stopped && !learningNoticeSent && "learned" in learning && learning.learned.length > 0 && host.session?.log && await notificationsEnabled()) {
+              const log = host.session.log.bind(host.session);
+              learningNoticeSent = await notifyLearningActivation(options.dataRoot, learning.learned, (message) => log(message, { ephemeral: true }));
+            }
+          }).catch((error: unknown) => { console.error(`ProvenLoop automatic learning paused: ${sanitizeDiagnostic(error)}`); })
+            .finally(() => { learningRunning = false; });
+        }
         let observationPending = false;
         if (
           !stopped &&
@@ -131,3 +174,5 @@ export const runProvenLoopCopilotExtension = async (
   drainWorker();
   return result;
 };
+
+export const runInstalledCopilotExtension = runProvenLoopCopilotExtension;
