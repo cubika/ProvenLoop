@@ -1,6 +1,6 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.13 local validation complete; remote CI, publication and quality-release acceptance remain open
+**Status:** 0.13 published with a live upgrade observation; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-08
@@ -17,8 +17,9 @@ storage/capture repairs are included alongside opt-in user/agent learning inheri
 from 0.12. The 0.13 scope adds graceful MCP shutdown, narrowly verified legacy-helper
 cleanup, guarded Windows locked-directory refresh and state-preserving recovery.
 Checked engineering items below refer to recorded work, including the local 0.13
-regression and packaged-runtime results in section 14. Remote CI, publication and
-tag/source/asset binding require separate verification.
+regression and packaged-runtime results in section 14. The
+[published upgrade record](plugin-process-recovery.md#published-013-upgrade-on-2026-09-08)
+separately records remote CI, tag/source/asset verification and a same-schema live upgrade.
 
 ## 1. Goal
 
@@ -613,8 +614,8 @@ Local validation completed on Windows with Node.js 22.18.0: lint, typecheck,
 skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
 Windows PowerShell 5.1 `install.ps1 -DryRun` passed. The
 [release notes](releases/0.1.0-alpha.0.13.md#verification-scope-and-remaining-evidence)
-record the coverage. Checked items below are local engineering results, not
-remote CI, publication, real-user upgrade evidence or M0/MVP acceptance:
+record the coverage. The final three items link to separate remote and installed-host
+observations; none of these engineering results constitutes M0/MVP acceptance:
 
 - [x] MCP shutdown finishes accepted work, exits the protocol loop and reports
   lifecycle inspection failures explicitly.
@@ -638,11 +639,11 @@ remote CI, publication, real-user upgrade evidence or M0/MVP acceptance:
 - [x] Drive an `os error 32` uninstall failure through the installed bundled CLI
   in package smoke, verify every refreshed asset against exact embedded/source
   release bytes, and preserve unrelated configuration and `source_sha` semantics.
-- [ ] Retain remote CI/release results, including the native process fixture in
+- [x] Retain remote CI/release results, including the native process fixture in
   the standard unit suite.
-- [ ] Retain a version-bound installed-host upgrade/recovery observation separately
+- [x] Retain a version-bound installed-host upgrade/recovery observation separately
   from mocked, synthetic and prior manual recovery records.
-- [ ] Verify the GitHub Release tarball, checksum and tag/source binding after
+- [x] Verify the GitHub Release tarball, checksum and tag/source binding after
   publication without creating a public npm dependency.
 
 ## 15. Release decision

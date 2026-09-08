@@ -4,9 +4,9 @@
 
 **Candidate:** `0.1.0-alpha.0.13` Windows Design Partner Preview
 
-This document describes the 0.13 recovery contract and separately preserves the
-historical manual 0.12 recovery below. It does not report a new 0.13 live-host
-upgrade, publication success, hot reconnection or controlled learning benefit.
+This document describes the 0.13 recovery contract and separately records the
+historical manual 0.12 repair and the published 0.13 upgrade below. Process survival
+and successful installation do not establish hot reconnection or controlled benefit.
 For the versioned bootstrap and data-recovery precautions, see
 [installation and operations](alpha-installation.md#upgrade).
 
@@ -118,8 +118,8 @@ embedded/source release assets, and checks unrelated configuration and
 source-level refresh calls. These controlled fixtures do not constitute a real
 user's 0.13 upgrade or tool reconnection. The
 [0.13 release notes](releases/0.1.0-alpha.0.13.md#verification-scope-and-remaining-evidence)
-record the complete local validation summary. Remote CI/release results,
-publication and version-bound live-host acceptance remain separate open checks.
+record the complete local validation summary. Remote CI, publication and a bounded
+live-host upgrade observation are recorded below; broader field acceptance remains open.
 
 Retain version-bound test and packed-artifact results separately from live-host
 observations. Neither those regressions nor the historical recovery below prove
@@ -148,3 +148,29 @@ It establishes that the plugin can be repaired without terminating those session
 The capability restoration described here was part of that manual repair, not a
 promise that 0.13 recovery re-enables disabled settings. The three preserved host
 PIDs are historical 0.12 evidence, not a newly observed 0.13 release result.
+
+## Published 0.13 upgrade on 2026-09-08
+
+Both Windows Node.js 22.18.0 and Node.js 24 jobs passed in
+[CI run 34220593611](https://github.com/cubika/ProvenLoop/actions/runs/34220593611).
+[Release run 34221132424](https://github.com/cubika/ProvenLoop/actions/runs/34221132424)
+published `v0.1.0-alpha.0.13` from commit
+`2c8d20b25123b996d9c824dbc3871843509dc508`. The downloaded tarball matched its
+checksum file and GitHub's asset digest:
+
+```text
+bb57c24eaa524a4db963e19be046c59c0f5a32fe57244ec9a490fc906ce304e3
+```
+
+The published bootstrap upgraded an existing 0.12 installation to 0.13 without
+closing its six foreground Copilot processes. Each retained the same PID and
+creation identity. The plugin was installed and enabled at 0.13, the runtime
+locator retained the data root, and every capability preference and the existing
+automatic-learning consent were unchanged. No generic stale schema-recovery
+diagnostics remained. SQLite reported `quick_check=ok` at schema 14.
+
+This was a same-schema installed-host upgrade, not a new schema-migration or
+hot-reconnection test. Doctor still reported retained dead letters, an idle worker
+and incomplete host/provider verification. Those records and warnings were not
+deleted or changed merely to report a healthy status. Existing sessions can stay
+open; use a new session or a supported host reload when updated tools are needed.
