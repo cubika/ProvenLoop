@@ -13,6 +13,7 @@ import {
 } from "@provenloop/copilot-adapter";
 import { createCaptureEnvelope, sanitizeDiagnostic } from "@provenloop/domain";
 import {
+  isUpgradeMaintenanceActive,
   resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopPaths,
   WindowsCaptureQueue,
@@ -208,6 +209,7 @@ export const reconcileCurrentSessionCapture = async (
   let cached: CachedReconciliation | undefined;
   try {
     const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
+    if (await isUpgradeMaintenanceActive(paths.root)) return { status: "skipped", reason: "upgrade_maintenance" };
     await assertCopilotAdapterDataRoot(paths);
     const ownerRoot = await realpath(paths.root);
     const state = await readCopilotAdapterState(paths.adapterState, new Date(observedAt));
@@ -229,6 +231,7 @@ export const reconcileCurrentSessionCapture = async (
     const provider = new WindowsNamedPipeLeaseProvider(await resolveWindowsCaptureWorkerLeaseName(paths.root));
     lease = await provider.tryAcquire();
     if (lease === undefined) return { status: "skipped", reason: "lease_unavailable" };
+    if (await isUpgradeMaintenanceActive(paths.root)) return { status: "skipped", reason: "upgrade_maintenance" };
     const currentState = await readCopilotAdapterState(paths.adapterState, new Date(observedAt));
     if (!isDeepStrictEqual(state, currentState)) return { status: "skipped", reason: "capability_state_changed" };
     const dataDirectory = await realpath(dirname(paths.database));

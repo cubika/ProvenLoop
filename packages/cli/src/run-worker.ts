@@ -27,6 +27,7 @@ import {
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
+  isUpgradeMaintenanceActive,
   resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
@@ -124,6 +125,7 @@ export const runCaptureWorkerOnce = async (
 ): Promise<CaptureWorkerRunResult> => {
   const now = options.now ?? (() => new Date());
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
+  if (await isUpgradeMaintenanceActive(paths.root)) return { status: "lease_unavailable" };
   await assertCopilotAdapterDataRoot(paths);
   await access(paths.database);
   const workerId =
@@ -138,6 +140,15 @@ export const runCaptureWorkerOnce = async (
     return {
       status: "lease_unavailable",
     };
+  }
+  try {
+    if (await isUpgradeMaintenanceActive(paths.root)) {
+      await workerLease.release();
+      return { status: "lease_unavailable" };
+    }
+  } catch (error) {
+    await workerLease.release();
+    throw error;
   }
   let store: CanonicalSqliteStore | undefined;
   let knowledgeBackend: SqliteFtsKnowledgeBackend | undefined;

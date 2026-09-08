@@ -212,16 +212,28 @@ installed code, not canonical user data.
 
 Current source uses schema 14; the published 0.11 preview uses schema 10. Existing older databases require explicit
 `provenloop upgrade`; ordinary runtime opens do not silently migrate them.
-Upgrade requests Extension shutdown and waits for background database users to finish.
-It holds the learning-inference lease through snapshot, migration, plugin replacement
-and any rollback. A busy learner or unverified inference-scratch cleanup stops the
-upgrade before migration; retry after cleanup finishes. New learning requests stay
-disabled while the maintenance shutdown barrier is present. Upgrade retains
+Upgrade first pauses new ProvenLoop MCP requests and background database work.
+It waits up to 15 seconds for current learning, capture, observation and MCP calls
+to release their database leases. A drain timeout removes the maintenance barrier
+before any migration or Extension shutdown, so existing sessions can continue.
+While paused, Context returns a temporary maintenance result; Explain and Feedback
+report a retryable maintenance error. Degraded observation paths do not write data.
+
+After draining, upgrade stops ProvenLoop Extensions and holds every database lease
+through snapshot, migration, plugin replacement and any rollback. Unknown inference
+scratch ownership stops the upgrade before migration. Upgrade retains
 `data\backups\pre-upgrade-<id>.db` with its deletion key, manifest, and available
 runtime locator before changing schema. Failed integration replacement can
 restore that snapshot only when no intervening canonical writes occurred.
 Otherwise it preserves data/snapshots and pauses capabilities for review.
 Do not delete the recovery journal or force the old runtime to open new data.
+
+Copilot sessions can remain open while this coordination runs. The host is not
+terminated, but ProvenLoop capture pauses when its Extension stops. After successful
+upgrade, restart affected sessions to load the new plugin/runtime. This step does
+not hot-reload old MCP processes. Sessions started with older previews do not have
+the new admission gate; close those sessions before the first upgrade to this
+mechanism, especially when the canonical schema changes.
 
 ## Automatic capture and recovery
 

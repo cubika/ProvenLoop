@@ -16,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { PROVENLOOP_VERSION } from "@provenloop/contracts";
+import { LocalMcpToolHandlers } from "@provenloop/cli";
 
 import {
   CopilotCliAdapter,
@@ -28,8 +29,10 @@ import {
 import {
   beginExtensionShutdown,
   isExtensionShutdownRequested,
+  isUpgradeMaintenanceActive,
   resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopLeaseName,
+  resolveWindowsProvenLoopPaths,
   registerActiveExtension,
   waitForActiveExtensionsToStop,
   WindowsNamedPipeLeaseProvider,
@@ -835,14 +838,14 @@ describe("Copilot operational adapter", () => {
     )).toBe(true);
   });
 
-  it("refuses migration and plugin replacement while learning is active, then retries safely", async () => {
+  it("times out before migration and plugin replacement while learning is active, then retries safely", async () => {
     const root = await createTemporaryDirectory();
     const dataRoot = join(root, "data-root");
     const databasePath = join(dataRoot, "data", "provenloop.db");
     const runner = new FakeCommandRunner();
     const adapter = new CopilotCliAdapter({
       commandRunner: runner, copilotHome: join(root, "copilot-home"),
-      dataRoot, environment: {}, platform: "win32",
+      dataRoot, environment: {}, platform: "win32", upgradeDrainTimeoutMs: 100,
     });
     await adapter.install();
     await installPreviousSchema(root, databasePath);
@@ -862,6 +865,7 @@ describe("Copilot operational adapter", () => {
         /^copilot (?:plugin (?:uninstall|install|update)|plugin marketplace (?:add|remove|update)|plugins (?:enable|disable))/u.test(command),
       )).toEqual([]);
       expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
+      expect(await isUpgradeMaintenanceActive(dataRoot)).toBe(false);
     } finally {
       await inferenceLease?.release();
     }
@@ -914,14 +918,14 @@ describe("Copilot operational adapter", () => {
   });
 
   it.each(["capture-worker", "observations"] as const)(
-    "refuses upgrade while %s holds its maintenance lease",
+    "times out safely while %s holds its maintenance lease",
     async (purpose) => {
       const root = await createTemporaryDirectory();
       const dataRoot = join(root, "data-root");
       const runner = new FakeCommandRunner();
       const adapter = new CopilotCliAdapter({
         commandRunner: runner, copilotHome: join(root, "copilot-home"),
-        dataRoot, environment: {}, platform: "win32",
+        dataRoot, environment: {}, platform: "win32", upgradeDrainTimeoutMs: 100,
       });
       await adapter.install();
       const lease = await new WindowsNamedPipeLeaseProvider(
@@ -930,15 +934,93 @@ describe("Copilot operational adapter", () => {
           : await resolveWindowsProvenLoopLeaseName(dataRoot, purpose),
       ).tryAcquire();
       try {
-        await expect(adapter.upgrade()).rejects.toThrow(
-          purpose === "capture-worker" ? "capture worker is active" : "observation collector is active",
-        );
+        await expect(adapter.upgrade()).rejects.toThrow(/timed out/iu);
+        expect(await isUpgradeMaintenanceActive(dataRoot)).toBe(false);
+        expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
       } finally {
         await lease?.release();
       }
       await expect(adapter.upgrade()).resolves.toMatchObject({ status: "changed" });
     },
   );
+
+  it("waits for an active MCP database lease before stopping Sessions and migrating", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32", upgradeDrainTimeoutMs: 2_000,
+    });
+    await adapter.install();
+    await installPreviousSchema(root, databasePath);
+    const session = await registerActiveExtension(dataRoot, "open-upgrade-session");
+    const request = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dataRoot, "knowledge-projection"),
+    ).tryAcquire();
+    expect(request).toBeDefined();
+    let finished = false;
+    const upgrading = adapter.upgrade().finally(() => { finished = true; });
+    void upgrading.catch(() => undefined);
+    try {
+      await expect.poll(() => isUpgradeMaintenanceActive(dataRoot)).toBe(true);
+      expect(finished).toBe(false);
+      expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
+      expect(CanonicalSqliteStore.databaseVersion(databasePath))
+        .toBe(DEFAULT_SQLITE_MIGRATIONS.length - 1);
+      await request?.release();
+      await expect.poll(() => isExtensionShutdownRequested(dataRoot)).toBe(true);
+      await session.release();
+      await expect(upgrading).resolves.toMatchObject({
+        status: "changed", message: expect.stringMatching(/restart.*sessions/iu),
+      });
+      expect(CanonicalSqliteStore.databaseVersion(databasePath)).toBe(DEFAULT_SQLITE_MIGRATIONS.length);
+      expect(() => new CanonicalSqliteStore(databasePath, { migrations: DEFAULT_SQLITE_MIGRATIONS.slice(0, -1) }))
+        .toThrow("newer than supported");
+      expect(await isUpgradeMaintenanceActive(dataRoot)).toBe(false);
+    } finally {
+      await request?.release();
+      await session.release();
+      await upgrading.catch(() => undefined);
+    }
+  });
+
+  it("removes admission pause after timeout and leaves the existing Session and MCP handler usable", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32", upgradeDrainTimeoutMs: 100,
+    });
+    await adapter.install();
+    const paths = resolveWindowsProvenLoopPaths(dataRoot);
+    const stateBefore = await readFile(paths.adapterState, "utf8");
+    const session = await registerActiveExtension(dataRoot, "timeout-upgrade-session");
+    const handlers = new LocalMcpToolHandlers({ cwd: root, dataRoot, now: () => new Date() });
+    const request = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dataRoot, "knowledge-projection"),
+    ).tryAcquire();
+    expect(request).toBeDefined();
+    try {
+      await expect(adapter.upgrade()).rejects.toThrow(/timed out/iu);
+      expect(await isUpgradeMaintenanceActive(dataRoot)).toBe(false);
+      expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
+      expect(await readFile(paths.adapterState, "utf8")).toBe(stateBefore);
+      await expect(registerActiveExtension(dataRoot, "timeout-upgrade-session"))
+        .rejects.toThrow("already active");
+      await request?.release();
+      await expect(handlers.context({ cwd: root, prompt: "Continue the same task.", sessionId: "timeout-upgrade-session", tokenBudget: 200 }))
+        .resolves.toMatchObject({ status: "degraded", statusDetail: "Retrieval capability is disabled." });
+      const store = new CanonicalSqliteStore(paths.database);
+      try { expect(store.contextUseRecords("timeout-upgrade-session")).toHaveLength(1); }
+      finally { store.close(); }
+    } finally {
+      await request?.release();
+      await session.release();
+    }
+  });
 
   it("validates managed Copilot settings before uninstalling", async () => {
       const root = await createTemporaryDirectory();

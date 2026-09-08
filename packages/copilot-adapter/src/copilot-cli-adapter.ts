@@ -46,6 +46,8 @@ import {
 } from "@provenloop/domain";
 import {
   beginExtensionShutdown,
+  beginUpgradeMaintenance,
+  waitForMaintenanceLease,
   resolveWindowsCaptureWorkerLeaseName,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
@@ -136,6 +138,7 @@ const STATE_LEASE_RETRY_DELAY_MS = 25;
 const EXTENSION_SHUTDOWN_TIMEOUT_MS = 6_000;
 
 export interface CopilotCliAdapterOptions {
+  readonly upgradeDrainTimeoutMs?: number;
   readonly cliBinPath?: string;
   readonly commandRunner?: CommandRunner;
   readonly copilotHome?: string;
@@ -342,9 +345,14 @@ implements AgentAdapter<CopilotEventMappingResult> {
   readonly #paths: WindowsProvenLoopPaths;
   readonly #platform: NodeJS.Platform;
   readonly #writeLocalMarketplaceAssets: boolean;
+  readonly #upgradeDrainTimeoutMs: number;
   #storageMaintenanceActive = false;
 
   public constructor(options: CopilotCliAdapterOptions) {
+    this.#upgradeDrainTimeoutMs = options.upgradeDrainTimeoutMs ?? 15_000;
+    if (!Number.isInteger(this.#upgradeDrainTimeoutMs) || this.#upgradeDrainTimeoutMs < 1 || this.#upgradeDrainTimeoutMs > 60_000) {
+      throw new RangeError("Upgrade drain timeout must be between 1 and 60000 milliseconds.");
+    }
     this.#paths = resolveWindowsProvenLoopPaths(options.dataRoot);
     this.#commandRunner =
       options.commandRunner ?? new SpawnCommandRunner();
@@ -489,38 +497,26 @@ implements AgentAdapter<CopilotEventMappingResult> {
       return this.#install();
     }
     await this.#ensureOwnedDataRoot();
-    const workerLease = await new WindowsNamedPipeLeaseProvider(
-      await resolveWindowsCaptureWorkerLeaseName(this.#paths.root),
-    ).tryAcquire();
-    if (workerLease === undefined) {
-      throw new Error("Cannot upgrade while the capture worker is active; retry after it finishes.");
-    }
+    const maintenance = await beginUpgradeMaintenance(this.#paths.root);
+    const deadline = Date.now() + this.#upgradeDrainTimeoutMs;
+    let workerLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let projectionLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let observationsLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let learningLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let shutdown: Awaited<ReturnType<typeof beginExtensionShutdown>> | undefined;
     try {
-      projectionLease = await new WindowsNamedPipeLeaseProvider(
-        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "knowledge-projection"),
-      ).tryAcquire();
-      if (projectionLease === undefined) {
-        throw new Error("Cannot upgrade while retrieval, deletion, or projection is active.");
-      }
-      observationsLease = await new WindowsNamedPipeLeaseProvider(
-        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "observations"),
-      ).tryAcquire();
-      if (observationsLease === undefined) {
-        throw new Error("Cannot upgrade while an observation collector is active.");
-      }
+      // Drain before stopping extensions: timeout leaves the existing session running.
+      learningLease = await waitForMaintenanceLease(new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "learning-inference")), deadline, "learning inference");
+      workerLease = await waitForMaintenanceLease(new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsCaptureWorkerLeaseName(this.#paths.root)), deadline, "capture worker");
+      observationsLease = await waitForMaintenanceLease(new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "observations")), deadline, "observation collector");
+      projectionLease = await waitForMaintenanceLease(new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "knowledge-projection")), deadline, "MCP retrieval or feedback");
+      await cancelLearningScratch(join(this.#paths.root, "temp"));
       shutdown = await beginExtensionShutdown(this.#paths.root);
       await waitForActiveExtensionsToStop(this.#paths.root, EXTENSION_SHUTDOWN_TIMEOUT_MS);
-      learningLease = await new WindowsNamedPipeLeaseProvider(
-        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "learning-inference"),
-      ).tryAcquire();
-      if (learningLease === undefined) {
-        throw new Error("Cannot upgrade while learning inference or its database cleanup is active; retry after it finishes.");
-      }
-      await cancelLearningScratch(join(this.#paths.root, "temp"));
       this.#storageMaintenanceActive = true;
       return await this.#upgradeInMaintenance();
     } finally {
@@ -534,7 +530,9 @@ implements AgentAdapter<CopilotEventMappingResult> {
           try {
             await observationsLease?.release();
           } finally {
-            try { await projectionLease?.release(); } finally { await workerLease.release(); }
+            try { await projectionLease?.release(); } finally {
+              try { await workerLease?.release(); } finally { await maintenance.release(); }
+            }
           }
         }
       }

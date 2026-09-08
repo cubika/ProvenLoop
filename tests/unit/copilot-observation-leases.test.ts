@@ -48,7 +48,7 @@ const fixture = async () => {
   const run = vi.fn(async () => { throw new Error("Synthetic command failure"); });
   const adapter = new CopilotCliAdapter({
     dataRoot: paths.root, copilotHome: join(root, "copilot-home"),
-    commandRunner: { run }, platform: "win32", environment: {},
+    commandRunner: { run }, platform: "win32", environment: {}, upgradeDrainTimeoutMs: 80,
   });
   return {
     adapter, paths, run,
@@ -67,7 +67,7 @@ afterEach(async () => {
 
 describe("Copilot observation lifecycle leases", () => {
   it.each(["upgrade", "purge"] as const)(
-    "takes worker, projection, then observation leases before %s mutates installation data",
+    "excludes active database work before %s mutates installation data",
     async (operation) => {
       const { adapter, paths, names, run } = await fixture();
       const invoke = () => operation === "upgrade" ? adapter.upgrade() : adapter.uninstall({ purge: true });
@@ -78,13 +78,19 @@ describe("Copilot observation lifecycle leases", () => {
         worker = await acquire(names[0]);
         projection = await acquire(names[1]);
         observations = await acquire(names[2]);
-        await expect(invoke()).rejects.toThrow("capture worker is active");
+        await expect(invoke()).rejects.toThrow(operation === "upgrade" ? "waiting for capture worker" : "capture worker is active");
         await worker.release();
         worker = undefined;
-        await expect(invoke()).rejects.toThrow("retrieval, deletion");
-        await projection.release();
-        projection = undefined;
-        await expect(invoke()).rejects.toThrow("observation collector is active");
+        if (operation === "upgrade") {
+          await expect(invoke()).rejects.toThrow("waiting for observation collector");
+          await observations.release(); observations = undefined;
+          await expect(invoke()).rejects.toThrow("waiting for MCP retrieval");
+          await projection.release(); projection = undefined;
+        } else {
+          await expect(invoke()).rejects.toThrow("retrieval, deletion");
+          await projection.release(); projection = undefined;
+          await expect(invoke()).rejects.toThrow("observation collector is active");
+        }
         expect(run).not.toHaveBeenCalled();
         expect(JSON.parse(await readFile(paths.adapterState, "utf8")).installed).toBe(true);
         const previousMigration = DEFAULT_SQLITE_MIGRATIONS.at(-2);
@@ -113,19 +119,21 @@ describe("Copilot observation lifecycle leases", () => {
         throw new Error("Synthetic command failure");
       });
       const released: number[] = [];
+      const observationPosition = operation === "upgrade" ? 5 : 4;
+      const acquiredCount = operation === "upgrade" ? 6 : 4;
       let attempts = 0;
       const tryAcquire = WindowsNamedPipeLeaseProvider.prototype.tryAcquire;
       const spy = vi.spyOn(WindowsNamedPipeLeaseProvider.prototype, "tryAcquire")
         .mockImplementation(async function (this: WindowsNamedPipeLeaseProvider) {
           const position = ++attempts;
           const lease = await tryAcquire.call(this);
-          if (lease === undefined || position > 4) return lease;
+          if (lease === undefined || position > acquiredCount) return lease;
           return {
             ...lease,
             release: async () => {
               await lease.release();
               released.push(position);
-              if (position === 4) throw new Error("Injected observation release failure");
+              if (position === observationPosition) throw new Error("Injected observation release failure");
             },
           };
         });
@@ -134,7 +142,7 @@ describe("Copilot observation lifecycle leases", () => {
           .rejects.toThrow("Injected observation release failure");
         expect(heldDuringProbe.length).toBeGreaterThan(0);
         expect(heldDuringProbe.every(Boolean)).toBe(true);
-        expect(released).toEqual([4, 3, 2, 1]);
+        expect(released).toEqual(operation === "upgrade" ? [3, 5, 6, 4, 2, 1] : [4, 3, 2, 1]);
       } finally {
         spy.mockRestore();
       }

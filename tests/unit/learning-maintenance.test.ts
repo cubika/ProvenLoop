@@ -10,6 +10,7 @@ import {
 } from "@provenloop/copilot-adapter";
 import {
   beginExtensionShutdown,
+  beginUpgradeMaintenance,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
   WindowsNamedPipeLeaseProvider,
@@ -17,6 +18,9 @@ import {
 import { CanonicalSqliteStore, DEFAULT_SQLITE_MIGRATIONS } from "@provenloop/storage-sqlite";
 
 import { runLearningOnce } from "../../packages/cli/src/run-learning.js";
+import { runCaptureWorkerOnce } from "../../packages/cli/src/run-worker.js";
+import { collectLocalObservations } from "../../packages/cli/src/collect-observations.js";
+import { reconcileCurrentSessionCapture } from "../../packages/cli/src/reconcile-capture.js";
 
 const roots: string[] = [];
 
@@ -52,6 +56,19 @@ const seedLegacyLearningInstallation = async () => {
 };
 
 describe("learning database lifetime during maintenance", () => {
+  it("pauses all background database entry points before an upgrade drains the old schema", async () => {
+    const paths = await seedLegacyLearningInstallation();
+    const pause = await beginUpgradeMaintenance(paths.root);
+    try {
+      expect(await runLearningOnce({ dataRoot: paths.root, contracts: [] })).toMatchObject({ status: "disabled" });
+      expect(await runCaptureWorkerOnce({ dataRoot: paths.root })).toMatchObject({ status: "lease_unavailable" });
+      expect(await collectLocalObservations({ dataRoot: paths.root })).toMatchObject({ status: "busy" });
+      expect(await reconcileCurrentSessionCapture({ dataRoot: paths.root, sessionId: "maintenance-session", sessionStateRoot: join(paths.root, "session-state") }))
+        .toMatchObject({ status: "skipped", reason: "upgrade_maintenance" });
+      expect(CanonicalSqliteStore.databaseVersion(paths.database)).toBe(DEFAULT_SQLITE_MIGRATIONS.length - 1);
+    } finally { await pause.release(); }
+    await expect(runLearningOnce({ dataRoot: paths.root, contracts: [] })).rejects.toThrow("maintenance upgrade");
+  });
   it("does not open a legacy database while the inference lease is held and releases the lease after an open failure", async () => {
     const paths = await seedLegacyLearningInstallation();
     const inference = new WindowsNamedPipeLeaseProvider(

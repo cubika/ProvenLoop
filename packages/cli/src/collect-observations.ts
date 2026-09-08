@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { isUpgradeMaintenanceActive } from "@provenloop/platform-windows";
 
 import {
   assertCopilotAdapterDataRoot,
@@ -192,6 +193,7 @@ export const collectLocalObservations = async (
     pending: false,
   };
   const now = options.now?.() ?? new Date();
+  if (await isUpgradeMaintenanceActive(paths.root)) return { status: "busy", ...empty };
   const initialState = await readCopilotAdapterState(paths.adapterState, now);
   if (initialState.installed !== true ||
       !initialState.capabilities.worker.enabled) {
@@ -205,6 +207,7 @@ export const collectLocalObservations = async (
     return { status: "busy", ...empty };
   }
   try {
+    if (await isUpgradeMaintenanceActive(paths.root)) return { status: "busy", ...empty };
     const state = await readCopilotAdapterState(paths.adapterState, now);
     if (state.installed !== true || !state.capabilities.worker.enabled) {
       return { status: "disabled", ...empty };

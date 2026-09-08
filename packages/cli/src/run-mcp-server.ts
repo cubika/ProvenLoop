@@ -30,6 +30,7 @@ import {
   isProvenLoopInternalEnvironment,
 } from "@provenloop/domain";
 import {
+  isUpgradeMaintenanceActive,
   resolveWindowsProvenLoopDataRoot,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
@@ -640,6 +641,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     const deadline =
       startedAt + DEFAULT_CONTEXT_TIMEOUT_MS;
     try {
+      await this.#assertNotUpgrading();
       const state = await this.#state();
       if (await this.#isInternalSession(request.sessionId)) {
         return {
@@ -655,8 +657,10 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         const requestId = `context-${randomUUID()}`;
         let recorded = false;
         let store: CanonicalSqliteStore | undefined;
+        let observationLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
         try {
           const paths = resolveWindowsProvenLoopPaths(this.#dataRoot);
+          observationLease = await this.#acquireKnowledgeLease();
           await access(paths.database);
           store = new CanonicalSqliteStore(paths.database, {
             busyTimeoutMs: MCP_WRITE_RESERVE_MS,
@@ -685,7 +689,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         } catch {
           recorded = false;
         } finally {
-          store?.close();
+          try { store?.close(); } finally { await observationLease?.release(); }
         }
         return {
           items: [],
@@ -717,21 +721,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
             "ProvenLoop internal sessions do not receive retrieval context.",
         };
       }
-      const paths = resolveWindowsProvenLoopPaths(
-        this.#dataRoot,
-      );
-      const contextLease =
-        await new WindowsNamedPipeLeaseProvider(
-          await resolveWindowsProvenLoopLeaseName(
-            paths.root,
-            "knowledge-projection",
-          ),
-        ).tryAcquire();
-      if (contextLease === undefined) {
-        throw new Error(
-          "Retrieval is unavailable while deletion or projection maintenance is active.",
-        );
-      }
+      const contextLease = await this.#acquireKnowledgeLease();
       try {
         const {
           repoId: suppliedRepositoryId,
@@ -764,9 +754,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
           }),
         deadline);
       } finally {
-        setImmediate(() => {
-          void contextLease.release().catch(() => undefined);
-        });
+        await contextLease.release();
       }
     } catch (error) {
       return {
@@ -787,7 +775,10 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     const startedAt = Date.now();
     const requestId = `context-${randomUUID()}`;
     let store: CanonicalSqliteStore | undefined;
+    let observationLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
+    let statusDetail = detail;
     try {
+      await this.#assertNotUpgrading();
       const paths = resolveWindowsProvenLoopPaths(this.#dataRoot);
       await assertCopilotAdapterDataRoot(paths);
       if (await this.#isInternalSession(request.sessionId)) {
@@ -800,6 +791,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
           statusDetail: "ProvenLoop internal sessions do not receive retrieval context.",
         };
       }
+      observationLease = await this.#acquireKnowledgeLease();
       await access(paths.database);
       store = new CanonicalSqliteStore(paths.database, { busyTimeoutMs: MCP_WRITE_RESERVE_MS });
       store.appendContextUseRecord({
@@ -815,10 +807,11 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         returnedKnowledgeIds: [],
         sessionId: request.sessionId,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("upgrade maintenance")) statusDetail = error.message;
       // An unavailable canonical store must not turn a degraded read into a successful one.
     } finally {
-      store?.close();
+      try { store?.close(); } finally { await observationLease?.release(); }
     }
     return {
       items: [],
@@ -826,7 +819,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       renderedTokens: 0,
       requestId,
       status: "degraded",
-      statusDetail: detail,
+      statusDetail,
     };
   }
 
@@ -834,6 +827,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     readonly explanationRef: string;
     readonly sessionId: string;
   }): Promise<ContextExplanation> {
+    await this.#assertNotUpgrading();
     await this.#assertRetrievalEnabled();
     if (await this.#isInternalSession(request.sessionId)) {
       throw new Error("Internal sessions cannot inspect user context.");
@@ -851,6 +845,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
   public async feedback(
     request: ContextFeedbackRequest,
   ): Promise<ContextFeedbackResponse> {
+    await this.#assertNotUpgrading();
     const state = await this.#state();
     if (!state.capabilities.retrieval.enabled) {
       throw new Error(
@@ -955,6 +950,18 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
   async #withKnowledgeLease<T>(
     operation: () => Promise<T>,
   ): Promise<T> {
+    const lease = await this.#acquireKnowledgeLease();
+    try { return await operation(); } finally { await lease.release(); }
+  }
+
+  async #assertNotUpgrading(): Promise<void> {
+    if (await isUpgradeMaintenanceActive(this.#dataRoot)) {
+      throw new Error("ProvenLoop upgrade maintenance is in progress; retry after it finishes.");
+    }
+  }
+
+  async #acquireKnowledgeLease() {
+    await this.#assertNotUpgrading();
     const paths = resolveWindowsProvenLoopPaths(
       this.#dataRoot,
     );
@@ -970,9 +977,11 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       );
     }
     try {
-      return await operation();
-    } finally {
+      await this.#assertNotUpgrading();
+      return lease;
+    } catch (error) {
       await lease.release();
+      throw error;
     }
   }
 
@@ -1090,8 +1099,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       });
       return await operation(service);
     } finally {
-      await backend?.closeAsync();
-      store.close();
+      try { await backend?.closeAsync(); } finally { store.close(); }
     }
   }
 }
