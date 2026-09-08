@@ -497,6 +497,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
     }
     let projectionLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let observationsLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
+    let learningLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let shutdown: Awaited<ReturnType<typeof beginExtensionShutdown>> | undefined;
     try {
       projectionLease = await new WindowsNamedPipeLeaseProvider(
@@ -513,20 +514,27 @@ implements AgentAdapter<CopilotEventMappingResult> {
       }
       shutdown = await beginExtensionShutdown(this.#paths.root);
       await waitForActiveExtensionsToStop(this.#paths.root, EXTENSION_SHUTDOWN_TIMEOUT_MS);
+      learningLease = await new WindowsNamedPipeLeaseProvider(
+        await resolveWindowsProvenLoopLeaseName(this.#paths.root, "learning-inference"),
+      ).tryAcquire();
+      if (learningLease === undefined) {
+        throw new Error("Cannot upgrade while learning inference or its database cleanup is active; retry after it finishes.");
+      }
+      await cancelLearningScratch(join(this.#paths.root, "temp"));
       this.#storageMaintenanceActive = true;
       return await this.#upgradeInMaintenance();
     } finally {
       this.#storageMaintenanceActive = false;
       try {
-        await shutdown?.cancel();
+        await learningLease?.release();
       } finally {
         try {
-          await observationsLease?.release();
+          await shutdown?.cancel();
         } finally {
           try {
-            await projectionLease?.release();
+            await observationsLease?.release();
           } finally {
-            await workerLease.release();
+            try { await projectionLease?.release(); } finally { await workerLease.release(); }
           }
         }
       }

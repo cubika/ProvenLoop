@@ -86,6 +86,42 @@ describe("automatic Extension observation scheduling", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(work.worker).toHaveBeenCalledTimes(2);
   });
+  it("waits for learning cleanup before completing the installed stopping hook", async () => {
+    let finish: ((result: { status: "disabled" }) => void) | undefined;
+    let signal: AbortSignal | undefined;
+    const runLearning = vi.fn((input) => {
+      signal = input.signal;
+      return new Promise<{ status: "disabled" }>((resolve) => { finish = resolve; });
+    });
+    await runProvenLoopCopilotExtension(options, { runLearning });
+    await vi.advanceTimersByTimeAsync(0);
+    const installedOptions = work.installed.mock.calls[0]?.[0] as { onStopping: () => Promise<void> };
+    let settled = false;
+    const stopping = installedOptions.onStopping().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signal?.aborted).toBe(true);
+    expect(settled).toBe(false);
+    const previousWorkers = work.worker.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(work.worker).toHaveBeenCalledTimes(previousWorkers);
+    finish?.({ status: "disabled" });
+    await stopping;
+    expect(settled).toBe(true);
+  });
+  it("waits for an already-running observation drain before reporting stopped", async () => {
+    let finish: (() => void) | undefined;
+    work.collect.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    await runProvenLoopCopilotExtension(options, { runLearning: async () => ({ status: "disabled" }) });
+    await vi.advanceTimersByTimeAsync(0);
+    const installedOptions = work.installed.mock.calls[0]?.[0] as { onStopping: () => Promise<void> };
+    let stopped = false;
+    const stopping = installedOptions.onStopping().then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped).toBe(false);
+    finish?.();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
 
   it("collects without an acceptance command and throttles idle work", async () => {
     await runProvenLoopCopilotExtension(options);

@@ -1,7 +1,7 @@
 import { CopilotLearningProvider, readCopilotAdapterState } from "@provenloop/copilot-adapter";
 import type { LearningToolContract } from "@provenloop/contracts";
 import { LearningCoordinator } from "@provenloop/host";
-import { resolveWindowsProvenLoopPaths, resolveWindowsProvenLoopLeaseName, WindowsNamedPipeLeaseProvider } from "@provenloop/platform-windows";
+import { isExtensionShutdownRequested, resolveWindowsProvenLoopPaths, resolveWindowsProvenLoopLeaseName, WindowsNamedPipeLeaseProvider } from "@provenloop/platform-windows";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -11,16 +11,21 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
   const enabled = async (): Promise<boolean> => {
     const state = await readCopilotAdapterState(paths.adapterState, new Date());
-    return !options.signal?.aborted && state.installed && state.automaticLearning?.enabled === true && state.capabilities.capture.enabled
+    return !options.signal?.aborted && !await isExtensionShutdownRequested(paths.root) && state.installed && state.automaticLearning?.enabled === true && state.capabilities.capture.enabled
       && state.capabilities.worker.enabled && state.capabilities.correction_learning.enabled;
   };
   if (!await enabled()) return { status: "disabled" as const };
-  const store = new CanonicalSqliteStore(paths.database);
+  // Maintenance excludes the complete database lifetime, including post-inference projection.
+  const lease = await new WindowsNamedPipeLeaseProvider(await resolveWindowsProvenLoopLeaseName(paths.root, "learning-inference")).tryAcquire();
+  if (!lease) return { status: "busy" as const };
+  let store: CanonicalSqliteStore | undefined;
   try {
+    if (!await enabled()) return { status: "disabled" as const };
+    store = new CanonicalSqliteStore(paths.database);
     const result = await new LearningCoordinator({ store, enabled,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       provider: new CopilotLearningProvider({ temporaryRoot: join(paths.root, "temp"), enabled }),
-      lease: new WindowsNamedPipeLeaseProvider(await resolveWindowsProvenLoopLeaseName(paths.root, "learning-inference")),
+      lease: { tryAcquire: async () => ({ release: async () => undefined }) },
       contracts: () => options.contracts,
     }).run();
     if (result.status === "evaluated" && (result.qualified ?? 0) > 0) {
@@ -43,7 +48,9 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
     }
     const learned = store.pendingLearningActivationIds();
     return { ...result, learned };
-  } finally { store.close(); }
+  } finally {
+    try { store?.close(); } finally { await lease.release(); }
+  }
 }
 
 export async function notifyLearningActivation(dataRoot: string, ids: readonly string[], log: (message: string) => Promise<void>): Promise<boolean> {

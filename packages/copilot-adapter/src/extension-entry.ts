@@ -60,6 +60,7 @@ export interface InstalledCopilotExtensionOptions {
   } }) => Promise<CopilotSessionLike>;
   readonly onAutomaticContext?: (input: { readonly prompt?: string; readonly toolArguments?: unknown; readonly tool?: LearningToolContract; readonly shellTool?: { readonly toolName: "powershell" | "bash"; readonly command: string; readonly cwd: string }; readonly workspace: CopilotWorkspaceSnapshot; readonly sessionId: string }) => Promise<string | undefined>;
   readonly now?: () => Date;
+  readonly onStopping?: () => Promise<void> | void;
   readonly onStopped?: () => void;
   readonly workflowScopeId?: string;
   readonly signalSource?: CaptureTerminationSignalSource;
@@ -206,6 +207,8 @@ export const runInstalledCopilotExtension = async (
         clearInterval(metricsTimer);
         metricsTimer = undefined;
       }
+      // Retain registration until background database users have cancelled and closed.
+      await options.onStopping?.();
       try {
         await stopPublishing();
       } finally {

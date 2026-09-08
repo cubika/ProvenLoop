@@ -33,6 +33,8 @@ export const runProvenLoopCopilotExtension = async (
   let deliveryNoticeSent = false;
   let learningNoticeSent = false;
   let learningRunning = false;
+  let learningTask: Promise<void> | undefined;
+  let workerTask: Promise<void> | undefined;
   const learningShutdown = new AbortController();
   const host = { session: undefined as Extract<InstalledCopilotExtensionResult, { status: "started" }>["hostSession"] };
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
@@ -48,6 +50,11 @@ export const runProvenLoopCopilotExtension = async (
   };
   const result = await startInstalledAdapter({
     ...options,
+    onStopping: async () => {
+      stopScheduling();
+      await Promise.all([learningTask, workerTask]);
+      await options.onStopping?.();
+    },
     onAutomaticContext: options.onAutomaticContext ?? (async (input) => {
       if (stopped || input.workspace.repositoryState !== "known_repo" || !input.workspace.repoId) return undefined;
       const cwd = input.workspace.cwd ?? input.workspace.worktree;
@@ -92,14 +99,14 @@ export const runProvenLoopCopilotExtension = async (
       return;
     }
     workerRunning = true;
-    void (dependencies.runWorker ?? runCaptureWorkerOnce)({
+    workerTask = (dependencies.runWorker ?? runCaptureWorkerOnce)({
       dataRoot: options.dataRoot,
     })
       .then(async (workerResult) => {
         if (!stopped && !learningRunning && workerResult.status === "completed") {
           learningRunning = true;
-          void (dependencies.runLearning ?? runLearningOnce)({ dataRoot: options.dataRoot, contracts: result.toolRegistry?.contracts() ?? [], signal: learningShutdown.signal }).then(async (learning) => {
-            if ("qualified" in learning && (learning.qualified ?? 0) > 0) await (dependencies.runWorker ?? runCaptureWorkerOnce)({ dataRoot: options.dataRoot });
+          learningTask = (dependencies.runLearning ?? runLearningOnce)({ dataRoot: options.dataRoot, contracts: result.toolRegistry?.contracts() ?? [], signal: learningShutdown.signal }).then(async (learning) => {
+            if (!stopped && "qualified" in learning && (learning.qualified ?? 0) > 0) await (dependencies.runWorker ?? runCaptureWorkerOnce)({ dataRoot: options.dataRoot });
             if (!stopped && !learningNoticeSent && "learned" in learning && learning.learned.length > 0 && host.session?.log && await notificationsEnabled()) {
               const log = host.session.log.bind(host.session);
               learningNoticeSent = await notifyLearningActivation(options.dataRoot, learning.learned, (message) => log(message, { ephemeral: true }));

@@ -742,7 +742,36 @@ describe("Copilot operational adapter", () => {
       `copilot plugin marketplace add ${releaseMarketplaceSource}`,
       { exitCode: 1, stderr: "simulated upgrade failure", stdout: "" },
     );
+    const inferenceLease = new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dataRoot, "learning-inference"),
+    );
+    const inferenceObservations: { readonly blocked: boolean; readonly schema: number }[] = [];
+    const run = runner.run.bind(runner);
+    runner.run = async (executable, args, options) => {
+      if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
+        const competingLease = await inferenceLease.tryAcquire();
+        try {
+          inferenceObservations.push({
+            blocked: competingLease === undefined,
+            schema: CanonicalSqliteStore.databaseVersion(databasePath),
+          });
+        } finally {
+          await competingLease?.release();
+        }
+      }
+      return run(executable, args, options);
+    };
     await expect(adapter.upgrade()).rejects.toThrow("registration and schema");
+    expect(inferenceObservations).toEqual([
+      { blocked: true, schema: DEFAULT_SQLITE_MIGRATIONS.length },
+      { blocked: true, schema: DEFAULT_SQLITE_MIGRATIONS.length - 1 },
+    ]);
+    const releasedInferenceLease = await inferenceLease.tryAcquire();
+    try {
+      expect(releasedInferenceLease).toBeDefined();
+    } finally {
+      await releasedInferenceLease?.release();
+    }
     expect(CanonicalSqliteStore.databaseVersion(databasePath)).toBe(
       DEFAULT_SQLITE_MIGRATIONS.length - 1,
     );
@@ -804,6 +833,84 @@ describe("Copilot operational adapter", () => {
     expect((await adapter.capabilities()).capabilities.every((capability) =>
       !capability.enabled,
     )).toBe(true);
+  });
+
+  it("refuses migration and plugin replacement while learning is active, then retries safely", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32",
+    });
+    await adapter.install();
+    await installPreviousSchema(root, databasePath);
+    const originalFingerprint = CanonicalSqliteStore.databaseFingerprint(databasePath);
+    const commandBoundary = runner.calls.length;
+    const inferenceLease = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dataRoot, "learning-inference"),
+    ).tryAcquire();
+    try {
+      expect(inferenceLease).toBeDefined();
+      await expect(adapter.upgrade()).rejects.toThrow(/learning|inference/iu);
+      expect(CanonicalSqliteStore.databaseVersion(databasePath))
+        .toBe(DEFAULT_SQLITE_MIGRATIONS.length - 1);
+      expect(CanonicalSqliteStore.databaseFingerprint(databasePath)).toBe(originalFingerprint);
+      expect(runner.calls.slice(commandBoundary).filter((command) =>
+        !command.endsWith(" --help") &&
+        /^copilot (?:plugin (?:uninstall|install|update)|plugin marketplace (?:add|remove|update)|plugins (?:enable|disable))/u.test(command),
+      )).toEqual([]);
+      expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
+    } finally {
+      await inferenceLease?.release();
+    }
+    await expect(adapter.upgrade()).resolves.toMatchObject({ status: "changed" });
+    expect(CanonicalSqliteStore.databaseVersion(databasePath)).toBe(DEFAULT_SQLITE_MIGRATIONS.length);
+    const data = new DatabaseSync(databasePath);
+    try {
+      expect(data.prepare("SELECT metric_name FROM metrics").all())
+        .toEqual([{ metric_name: "retained" }]);
+    } finally {
+      data.close();
+    }
+  });
+
+  it("refuses an upgrade before mutation when inference scratch ownership is unknown", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment: {}, platform: "win32",
+    });
+    await adapter.install();
+    await installPreviousSchema(root, databasePath);
+    const scratch = join(dataRoot, "temp", "learning-invalid");
+    await mkdir(scratch, { recursive: true });
+    const ownershipPath = join(scratch, ".provenloop-inference.json");
+    await writeFile(ownershipPath, "{}", "utf8");
+    const originalFingerprint = CanonicalSqliteStore.databaseFingerprint(databasePath);
+    const commandBoundary = runner.calls.length;
+    await expect(adapter.upgrade()).rejects.toThrow(/scratch ownership/iu);
+    expect(CanonicalSqliteStore.databaseVersion(databasePath))
+      .toBe(DEFAULT_SQLITE_MIGRATIONS.length - 1);
+    expect(CanonicalSqliteStore.databaseFingerprint(databasePath)).toBe(originalFingerprint);
+    expect(runner.calls.slice(commandBoundary).filter((command) =>
+      !command.endsWith(" --help") &&
+      /^copilot (?:plugin (?:uninstall|install|update)|plugin marketplace (?:add|remove|update)|plugins (?:enable|disable))/u.test(command),
+    )).toEqual([]);
+    expect(await readFile(ownershipPath, "utf8")).toBe("{}");
+    expect(await isExtensionShutdownRequested(dataRoot)).toBe(false);
+    const released = await new WindowsNamedPipeLeaseProvider(
+      await resolveWindowsProvenLoopLeaseName(dataRoot, "learning-inference"),
+    ).tryAcquire();
+    try {
+      expect(released).toBeDefined();
+    } finally {
+      await released?.release();
+    }
   });
 
   it.each(["capture-worker", "observations"] as const)(
@@ -1010,6 +1117,47 @@ describe("Copilot operational adapter", () => {
     await expect(access(dataRoot)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("keeps the Extension registered until background shutdown has finished", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const environment = {
+      LOCALAPPDATA: join(root, "local-app-data"),
+      SESSION_ID: "learning-maintenance-session",
+    };
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment, platform: "win32",
+    });
+    await adapter.install();
+    let finishStopping: (() => void) | undefined;
+    let reportStopping: (() => void) | undefined;
+    const stoppingStarted = new Promise<void>((resolveStarted) => { reportStopping = resolveStarted; });
+    const stopping = new Promise<void>((resolveStopping) => { finishStopping = resolveStopping; });
+    let stopped = false;
+    const result = await runInstalledCopilotExtension({
+      commandRunner: runner, copilotHome: join(root, "copilot-home"),
+      dataRoot, environment, signalSource: { once: () => undefined },
+      joinSession: async () => ({ on: () => undefined }),
+      onStopping: () => { reportStopping?.(); return stopping; },
+      onStopped: () => { stopped = true; },
+    });
+    expect(result).toMatchObject({ status: "started" });
+    const shutdown = await beginExtensionShutdown(dataRoot);
+    try {
+      await stoppingStarted;
+      await expect(waitForActiveExtensionsToStop(dataRoot, 50)).rejects.toThrow();
+      expect(stopped).toBe(false);
+      finishStopping?.();
+      await expect(waitForActiveExtensionsToStop(dataRoot, 2_000)).resolves.toBeUndefined();
+      expect(stopped).toBe(true);
+    } finally {
+      finishStopping?.();
+      await waitForActiveExtensionsToStop(dataRoot, 2_000);
+      await shutdown.cancel();
+    }
   });
 
   it("stops active Extension capture before purging the data root", async () => {

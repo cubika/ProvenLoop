@@ -208,11 +208,15 @@ and queue, artifacts, evaluation, integration, and logs in separate child
 directories. `%LOCALAPPDATA%\ProvenLoopRuntime\versions\<version>` contains
 installed code, not canonical user data.
 
-### Maintenance migrations — 0.10 preview
+### Maintenance migrations
 
-The current schema is 10. Existing older databases require explicit
+Current source uses schema 14; the published 0.11 preview uses schema 10. Existing older databases require explicit
 `provenloop upgrade`; ordinary runtime opens do not silently migrate them.
-Upgrade takes maintenance leases, waits for Extensions to stop, and retains
+Upgrade requests Extension shutdown and waits for background database users to finish.
+It holds the learning-inference lease through snapshot, migration, plugin replacement
+and any rollback. A busy learner or unverified inference-scratch cleanup stops the
+upgrade before migration; retry after cleanup finishes. New learning requests stay
+disabled while the maintenance shutdown barrier is present. Upgrade retains
 `data\backups\pre-upgrade-<id>.db` with its deletion key, manifest, and available
 runtime locator before changing schema. Failed integration replacement can
 restore that snapshot only when no intervening canonical writes occurred.
