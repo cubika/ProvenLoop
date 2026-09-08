@@ -4,7 +4,8 @@ import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as atomicRename from "../../packages/copilot-adapter/src/atomic-rename.js";
 
 import {
   readTrustedSessionContext,
@@ -16,6 +17,27 @@ import {
 } from "@provenloop/platform-windows";
 
 describe("trusted Session context", () => {
+  it("SYS-04 retains dirty context after a failed atomic replacement and reports background errors safely", async () => {
+    const root = await mkdtemp(join(process.cwd(), ".provenloop-context-"));
+    const errors: unknown[] = [];
+    const publisher = new TrustedSessionContextPublisher({ cwd: root, dataRoot: root, sessionId: "write-failure", repositoryId: "repo", branch: "main",
+      onError: (error) => { errors.push(error); throw new Error("Diagnostic callback failed."); } });
+    let replacement: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await publisher.start();
+      const failure = Object.assign(new Error("write refused"), { code: "ENOSPC" });
+      replacement = vi.spyOn(atomicRename, "replaceFileAtomically").mockRejectedValueOnce(failure);
+      publisher.updateWorkspace({ cwd: root, repositoryId: "repo", branch: "next" });
+      await vi.waitFor(() => expect(errors).toEqual([failure]));
+      expect((await readTrustedSessionContext(root, "write-failure"))?.branch).toBe("main");
+      await publisher.flush();
+      expect((await readTrustedSessionContext(root, "write-failure"))?.branch).toBe("next");
+    } finally {
+      replacement?.mockRestore();
+      await publisher.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("binds an active producer and invalidates approval when the workspace changes", async () => {
     const root = await mkdtemp(join(process.cwd(), ".provenloop-context-"));
     const now = new Date("2026-09-05T05:00:00.000Z");

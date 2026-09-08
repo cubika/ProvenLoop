@@ -7,9 +7,9 @@ import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { LearningCoordinator } from "@provenloop/host";
 
 const fixture = (variant = "valid") => {
-  const failedCommand = variant === "package-script" ? "npm run test:wrong" : "pnpm test";
-  const command = variant === "package-script" ? "npm run test:unit" : "npm test";
-  const mapper = new CopilotEventMapper({ adapterVersion: "1.0.84-1", sessionId: "shell-session", copyLimits: { maxStringChars: 16384 },
+  const failedCommand = variant === "reverse" ? "npm test" : variant === "package-script" ? "npm run test:wrong" : "pnpm test";
+  const command = variant === "reverse" ? "pnpm test" : variant === "package-script" ? "npm run test:unit" : "npm test";
+  const mapper = new CopilotEventMapper({ adapterVersion: "1.0.84-1", sessionId: variant === "reverse" ? "reverse-session" : "shell-session", copyLimits: { maxStringChars: 16384 },
     workspace: { repoId: "repo", repositoryState: "known_repo", cwd: "C:/repo", worktree: "C:/repo", branch: "main", commitSha: "a".repeat(40) } });
   const native: CopilotSessionEvent[] = [
     { id: "failed-start", parentId: null, type: "tool.execution_start", data: { toolCallId: "failed", toolName: "powershell", arguments: { command: failedCommand, cwd: "C:/repo" }, ...(variant === "mcp" ? { mcpServerName: "remote", mcpToolName: "powershell" } : {}) } },
@@ -60,6 +60,75 @@ const fixture = (variant = "valid") => {
 };
 
 describe("native shell correction learning", () => {
+  it("withholds opposite verified rules atomically and exposes a conflict even when retrieval selects one", async () => {
+    const store = new CanonicalSqliteStore(":memory:");
+    try {
+      for (const variant of ["valid", "reverse"]) {
+        const { events, proposal } = fixture(variant);
+        for (const envelope of events) store.ingestQueueItem(captureQueueItemSchema.parse({ schemaVersion: 1, queueItemId: `conflict-${envelope.event.eventId}`,
+          state: "pending", attemptCount: 0, failureCount: 0, createdAt: envelope.event.timestamp, updatedAt: envelope.event.timestamp, envelope }));
+        const coordinator = new LearningCoordinator({ store, enabled: async () => true, now: () => new Date("2026-09-08T00:01:00Z"),
+          lease: { tryAcquire: async () => ({ release: async () => undefined }) }, provider: { identity: { provider: "fixture", model: "fixture", version: "1" }, infer: async () => ({
+            schemaVersion: 1, proposals: [{ rule: proposal.rule, trigger: proposal.trigger, exclusions: proposal.exclusions, userSource: proposal.userSource,
+              failedOperationEventId: proposal.failedOperationEventId, retryOperationEventId: proposal.retryOperationEventId, completionEventId: proposal.completionEventId, shellPredicate: proposal.shellPredicate }],
+          }) } });
+        expect(await coordinator.run()).toMatchObject({ status: "evaluated", qualified: 1 });
+      }
+      const candidates = store.knowledgeCandidates();
+      expect(candidates).toHaveLength(2);
+      expect(candidates.every((candidate) => candidate.state === "disputed" && candidate.conflictsWith.length === 1)).toBe(true);
+      expect(store.learningReceipts()).toHaveLength(2);
+      expect(store.pendingLearningActivationIds()).toEqual([]);
+      for (const candidate of candidates) {
+        const evidence = store.knowledgeAdmissionEvidence([candidate]);
+        expect(evidence.learningReceipts).toHaveLength(2);
+        expect(new KnowledgeAdmissionPolicy().evaluate({ candidate, ...evidence }).admitted).toBe(false);
+      }
+      // A legacy active state must also fail admission when only one retrieval hit is selected.
+      store.upsertKnowledgeCandidates(candidates.map((candidate) => ({ ...candidate, state: "active", conflictsWith: [] })));
+      const selected = store.knowledgeCandidates()[0];
+      if (!selected) throw new Error("Missing candidate.");
+      expect(new KnowledgeAdmissionPolicy().evaluate({ candidate: selected, ...store.knowledgeAdmissionEvidence([selected]) }).admitted).toBe(false);
+      const withdrawn = store.knowledgeCandidates().find((candidate) => candidate.knowledgeId !== selected.knowledgeId);
+      if (!withdrawn) throw new Error("Missing conflicting candidate.");
+      store.upsertKnowledgeCandidates([{ ...withdrawn, state: "archived" }]);
+      expect(store.knowledgeAdmissionEvidence([selected]).learningReceipts).toHaveLength(1);
+      expect(new KnowledgeAdmissionPolicy().evaluate({ candidate: selected, ...store.knowledgeAdmissionEvidence([selected]) }).admitted).toBe(true);
+    } finally { store.close(); }
+  });
+  it.each(["preserved", "changed"])("finds delayed bound proof after later turns and requires its original timestamp (%s)", async (timestamp) => {
+    const { events, proposal } = fixture();
+    const store = new CanonicalSqliteStore(":memory:");
+    const proof = events.find((entry) => entry.event.eventType === "test.completed" && entry.event.exitCode === 0);
+    if (!proof) throw new Error("Missing proof fixture.");
+    const add = (envelope: CaptureEnvelope) => store.ingestQueueItem(captureQueueItemSchema.parse({ schemaVersion: 1, queueItemId: `late-${envelope.event.eventId}`,
+      state: "pending", attemptCount: 0, failureCount: 0, createdAt: envelope.event.timestamp, updatedAt: envelope.event.timestamp, envelope }));
+    const time = new Date("2026-09-08T00:10:00Z");
+    let calls = 0;
+    const coordinator = new LearningCoordinator({ store, enabled: async () => true, now: () => time,
+      lease: { tryAcquire: async () => ({ release: async () => undefined }) }, provider: { identity: { provider: "fixture", model: "fixture", version: "1" }, infer: async () => {
+        calls += 1; return { schemaVersion: 1, proposals: [{ rule: proposal.rule, trigger: proposal.trigger, exclusions: proposal.exclusions, userSource: proposal.userSource,
+          failedOperationEventId: proposal.failedOperationEventId, retryOperationEventId: proposal.retryOperationEventId, completionEventId: proposal.completionEventId, shellPredicate: proposal.shellPredicate }] };
+      } } });
+    try {
+      events.filter((entry) => entry !== proof).forEach(add);
+      expect(await coordinator.run()).toMatchObject({ status: "idle" });
+      for (let index = 0; index < 80; index += 1) {
+        add(createCaptureEnvelope({ adapter: "copilot-cli", adapterVersion: "1.0.84-1", sourceEventId: `later-${index}`, sessionId: "shell-session",
+          repoId: "repo", worktree: "C:/repo", repositoryState: "known_repo", timestamp: new Date(Date.parse("2026-09-08T00:01:00Z") + index * 1000).toISOString(),
+          eventType: index === 0 ? "prompt.submitted" : "agent.message", trust: index === 0 ? "user" : "model", content: { message: "A later unrelated task." } }));
+      }
+      for (const work of store.learningPromptWork(time, 128)) store.completeLearningPromptWork(work);
+      add(timestamp === "preserved" ? proof : { ...proof, event: { ...proof.event, timestamp: "2026-09-08T00:04:00Z" } });
+      const work = store.learningPromptWork(time, 128).find((entry) => entry.eventId === proposal.userSource.eventId);
+      expect(work).toBeDefined();
+      expect(work?.events.length).toBeLessThanOrEqual(128);
+      expect(work?.events.some((entry) => entry.event.eventId === proof.event.eventId)).toBe(true);
+      expect(await coordinator.run()).toMatchObject({ status: "evaluated", qualified: timestamp === "preserved" ? 1 : 0 });
+      expect(calls).toBe(1);
+      expect(store.learningReceipts()).toHaveLength(timestamp === "preserved" ? 1 : 0);
+    } finally { store.close(); }
+  });
   it("retains shell preparations until the actual test retry and defers partial windows", () => {
     const { events, proposal } = fixture("preparation");
     const retryIndex = events.findIndex((entry) => entry.event.eventId === proposal.retryOperationEventId);

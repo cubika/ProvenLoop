@@ -1,5 +1,5 @@
 import { resolve, join } from "node:path";
-import { prepareFrozenLearningEvaluation, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
+import { prepareFrozenLearningEvaluation, createGeneralLearningCorpus, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
   exportInstalledLearningCorpus, importInstalledLearningAcceptance, resolveLearningEvaluationCodeVersion,
   resolveLearningEvaluationExecutableDigest } from "../packages/evaluation/dist/index.js";
 import { CopilotLearningProvider, readCopilotAdapterState } from "../packages/copilot-adapter/dist/index.js";
@@ -12,12 +12,17 @@ const required = (name) => { const value = option(name); if (!value || value.sta
 const executableDigest = () => resolveLearningEvaluationExecutableDigest(process.cwd());
 const codeVersion = () => resolveLearningEvaluationCodeVersion(process.cwd());
 const allowed = new Set(["--out", "--prepared", "--data-root", "--max-requests", "--max-attempts", "--labels-a", "--labels-b",
-  "--run", "--review-a", "--review-b", "--maximum-windows", "--evidence", "--manifest", "--artifact-root"]);
+  "--run", "--review-a", "--review-b", "--maximum-windows", "--evidence", "--manifest", "--artifact-root", "--corpus"]);
 try {
   const command = args[0];
   for (let index = 1; index < args.length; index += 2) if (!allowed.has(args[index]) || !args[index + 1] || args[index + 1].startsWith("--")) throw new Error("Unknown option or missing value.");
   let result;
-  if (command === "prepare") result = await prepareFrozenLearningEvaluation({ outputDirectory: resolve(required("--out")) });
+  if (command === "prepare") {
+    const corpus = option("--corpus") ?? "default";
+    if (!["default", "general"].includes(corpus)) throw new Error("Unknown corpus; use default or general.");
+    result = await prepareFrozenLearningEvaluation({ outputDirectory: resolve(required("--out")),
+      ...(corpus === "general" ? { corpus: createGeneralLearningCorpus() } : {}) });
+  }
   else if (command === "capture") {
     const paths = resolveWindowsProvenLoopPaths(resolve(required("--data-root")));
     result = await exportInstalledLearningCorpus({ databasePath: paths.database, outputDirectory: resolve(required("--out")),
@@ -58,7 +63,7 @@ try {
   else if (command === "import-installed") result = await importInstalledLearningAcceptance({ evidencePath: required("--evidence"),
     artifactManifestPath: required("--manifest"), artifactRoot: required("--artifact-root"), expectedCodeVersion: await codeVersion(),
     expectedExecutableDigest: await executableDigest(), outputPath: resolve(required("--out")) });
-  else throw new Error("Use prepare --out DIR; capture --data-root DIR --out DIR; run --prepared DIR --out DIR --data-root DIR [--max-requests 40] [--max-attempts 1] [--labels-a FILE --labels-b FILE]; review --run DIR --review-a FILE --review-b FILE --out FILE; import-installed --evidence FILE --manifest FILE --artifact-root DIR --out FILE.");
+  else throw new Error("Use prepare --out DIR [--corpus default|general]; capture --data-root DIR --out DIR; run --prepared DIR --out DIR --data-root DIR [--max-requests 40] [--max-attempts 1] [--labels-a FILE --labels-b FILE]; review --run DIR --review-a FILE --review-b FILE --out FILE; import-installed --evidence FILE --manifest FILE --artifact-root DIR --out FILE.");
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Evaluation failed."); process.exitCode = 1;

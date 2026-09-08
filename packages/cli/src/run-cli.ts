@@ -1313,6 +1313,7 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
           jobs = store.learningJobs().map((job) => ({
             jobId: job.jobId, state: job.state, attempts: job.attempts, result: job.result,
             createdAt: job.createdAt, updatedAt: job.updatedAt, expiresAt: job.expiresAt,
+            pauseReason: job.pauseReason, retryAfter: job.retryAfter,
           }));
         } finally { store.close(); }
         io.log(JSON.stringify({

@@ -25,6 +25,8 @@ import {
   verificationProofEventIds,
 } from "./verification-proof.js";
 import { verifyLearningRecovery, renderLearningPredicate } from "./automatic-learning.js";
+import { sha256 } from "./digest.js";
+import { conflictingShellLearning } from "./shell-learning.js";
 
 export type KnowledgeAdmissionReason =
   | "content_mismatch"
@@ -367,14 +369,18 @@ const evaluateCandidate = (
     const receipt = context.learningReceipts.find((entry) => context.learningProposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === entry.proposalId && proposal.sourceDigests.length === candidate.sourceEvidenceIds.length && proposal.sourceDigests.every((source) => sourceEvidence.has(source.eventId))));
     const proposal = context.learningProposals.find((entry) => entry.knowledgeId === candidate.knowledgeId && entry.proposalId === receipt?.proposalId);
     const checked = proposal && receipt ? verifyLearningRecovery(proposal, [...context.envelopesById.values()], receipt.proves === "invocation_contract" ? [receipt.contract] : [], new Date(receipt.verifiedAt)) : undefined;
-    if (!checked) reasons.add("invalid_verification_evidence");
+    if (!checked || sha256(checked) !== sha256(receipt)) reasons.add("invalid_verification_evidence");
+    if (receipt?.proves === "repository_test_command" && context.learningReceipts.some((other) =>
+      other.proves === "repository_test_command" && other.proposalId !== receipt.proposalId && conflictingShellLearning(receipt, other))) {
+      reasons.add("unresolved_counterevidence");
+    }
     if (!proposal || candidate.content !== renderLearningPredicate(proposal)) reasons.add("content_mismatch");
     if (proposal && (candidate.scope !== "repository" || proposal.sourceDigests.some((source) => context.envelopesById.get(source.eventId)?.event.repoId !== candidate.scopeId))) reasons.add("scope_mismatch");
     if (proposal && (candidate.sourceEvidenceIds.length !== proposal.sourceDigests.length || proposal.sourceDigests.some((source) => !sourceEvidence.has(source.eventId)))) reasons.add("incomplete_proof_chain");
     if (candidate.sourceEvidenceIds.some((id) => context.recalledReferences.has(id))) reasons.add("recalled_knowledge_evidence");
     if (proposal && receipt) {
       const user = context.envelopesById.get(proposal.userSource.eventId);
-      const completion = context.envelopesById.get(proposal.completionEventId);
+      const completion = proposal.completionEventId === undefined ? undefined : context.envelopesById.get(proposal.completionEventId);
       if (context.allContextUseRecords.some((record) => record.sessionId === user?.event.sessionId && recordRecallsKnowledge(record, candidate.knowledgeId) &&
           Date.parse(record.createdAt) >= Date.parse(user?.event.timestamp ?? "") && Date.parse(record.createdAt) <= Date.parse(completion?.event.timestamp ?? ""))) reasons.add("recalled_knowledge_evidence");
     }

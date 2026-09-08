@@ -526,6 +526,8 @@ For a stable release, Wrong Injection must tighten to no more than 1%.
 
 ### 5.4 Correction Learning
 
+The [general correction-learning test catalog](general-learning-test-catalog.md) expands scenario coverage beyond tool-parameter recovery. It separates candidate discovery, qualification, applicability and observed behavior, and defines paired counterexamples without changing the release thresholds below.
+
 #### Initial automatic extraction acceptance
 
 The following Requirement IDs must enter the existing Evaluation/MVP Gate. These are new requirements, not existing runtime checks. Implementation cannot consist only of adding documentation checkboxes.

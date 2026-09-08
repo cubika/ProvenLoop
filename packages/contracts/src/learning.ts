@@ -24,23 +24,30 @@ export const shellLearningPredicateSchema = z.object({
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
   userSource: z.object({ eventId: identifierSchema, quote: text }).strict(),
-  failedOperationEventId: identifierSchema, retryOperationEventId: identifierSchema,
-  completionEventId: identifierSchema, predicate: learningPredicateSchema.optional(),
+  failedOperationEventId: identifierSchema.optional(), retryOperationEventId: identifierSchema.optional(),
+  completionEventId: identifierSchema.optional(), predicate: learningPredicateSchema.optional(),
   shellPredicate: shellLearningPredicateSchema.optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if ((value.predicate || value.shellPredicate) &&
+      (!value.failedOperationEventId || !value.retryOperationEventId || !value.completionEventId)) {
+    context.addIssue({ code: "custom", message: "Typed recovery requires failed, retry and completion operation references." });
+  }
+});
 export const learningInferenceResponseSchema = z.object({
   schemaVersion: z.literal(1), proposals: z.array(ruleProposalInputSchema).max(3),
 }).strict();
 export const learningJobSchema = z.object({
   schemaVersion: z.literal(1), jobId: identifierSchema, windowId: identifierSchema,
-  revision: sha256DigestSchema, state: z.enum(["pending", "running", "evaluated", "waiting_evidence", "paused", "failed", "cancelled", "archived"]),
+  revision: sha256DigestSchema, state: z.enum(["pending", "running", "evaluated", "waiting_evidence", "paused", "failed", "cancelled", "archived", "superseded"]),
   attempts: z.number().int().min(0).max(3), createdAt: isoTimestampSchema, updatedAt: isoTimestampSchema,
   expiresAt: isoTimestampSchema, deadline: isoTimestampSchema.optional(),
+  retryAfter: isoTimestampSchema.optional(),
+  pauseReason: z.enum(["signed_out", "rate_limited", "unavailable", "daily_budget", "host_stopped", "learning_disabled"]).optional(),
   provider: text.optional(), model: text.optional(), extractorVersion: text,
   result: z.enum(["no_rule", "candidate", "qualified", "error"]).optional(),
   error: z.string().max(512).optional(),
 }).strict();
-export const ruleProposalSchema = ruleProposalInputSchema.extend({
+export const ruleProposalSchema = ruleProposalInputSchema.safeExtend({
   schemaVersion: z.literal(1), proposalId: identifierSchema, jobId: identifierSchema,
   knowledgeId: identifierSchema, createdAt: isoTimestampSchema, expiresAt: isoTimestampSchema,
   sourceDigests: z.array(learningSourceSchema).min(1).max(32),

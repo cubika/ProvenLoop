@@ -561,6 +561,8 @@ const renderM2ReleaseReport = (
 | Run ID | \`${report.runId}\` |
 | Code version | \`${report.codeVersion}\` |
 | Release target | ${report.releaseTarget} |
+| Evaluation purpose | ${report.evaluationPurpose} |
+| Evidence kind | ${report.evidenceKind} |
 | Status | **${report.status.toUpperCase()}** |
 | Automatic learning acceptance | ${report.automaticLearning?.status ?? "insufficient_evidence"} |
 | Exit code | ${report.exitCode} |
@@ -697,9 +699,17 @@ export const runM2ReleaseGate = async (
         options.codeVersion ?? await resolveLearningEvaluationCodeVersion(cwd);
       codeVersion = validateCodeVersion(resolvedCodeVersion);
       const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
-      const automaticLearning = evaluateAutomaticLearningAcceptance(
-        await loadAutomaticLearningEvidence(options.automaticLearningEvidencePath), releaseTarget, codeVersion,
-      );
+      let automaticLearning: AutomaticLearningAcceptanceReport;
+      try {
+        const expected = options.automaticLearningEvidencePath === undefined ? undefined : {
+          codeVersion, executableDigest: await (await import("./mvp-release-gate.js")).resolveLearningEvaluationExecutableDigest(cwd),
+        };
+        automaticLearning = evaluateAutomaticLearningAcceptance(
+          await loadAutomaticLearningEvidence(options.automaticLearningEvidencePath, expected), releaseTarget, codeVersion,
+        );
+      } catch (error) {
+        throw new M2InputError("Automatic-learning evidence is invalid or its retained artifact binding could not be verified.", { cause: error });
+      }
       let dataset: CorrectionRecurrenceDataset;
       try {
         dataset = await loadCorrectionRecurrenceDataset(
@@ -748,7 +758,9 @@ export const runM2ReleaseGate = async (
         completedAt: now().toISOString(),
         correctionRecurrence,
         exitCode: status === "pass" ? 0 : 1,
-        limitations: [SYNTHETIC_REGRESSION_LIMITATION, ...checks
+        limitations: [SYNTHETIC_REGRESSION_LIMITATION,
+          "The M2 status and exit code describe synthetic correction-recurrence regression only; automatic-learning acceptance is reported separately.",
+          ...automaticLearning.checks.filter((check) => check.status !== "pass").map((check) => check.message), ...checks
           .filter((check) => check.status === "fail")
           .map((check) => check.message)],
         releaseTarget,

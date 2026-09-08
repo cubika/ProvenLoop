@@ -5,7 +5,6 @@ import {
 import {
   readdir,
   readFile,
-  rename,
   mkdir,
   rm,
   writeFile,
@@ -14,6 +13,7 @@ import {
   dirname,
   join,
 } from "node:path";
+import { replaceFileAtomically } from "./atomic-rename.js";
 
 import {
   PROVENLOOP_CAPABILITIES,
@@ -245,8 +245,12 @@ const atomicWrite = async (
     recursive: true,
   });
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporaryPath, content, "utf8");
-  await rename(temporaryPath, path);
+  try {
+    await writeFile(temporaryPath, content, "utf8");
+    await replaceFileAtomically(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 };
 
 export const readCopilotAdapterState = async (

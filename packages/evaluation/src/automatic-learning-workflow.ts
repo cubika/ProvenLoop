@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { type LearningWindow, type RuleProposal } from "@provenloop/contracts";
 import { validateLearningResponse, verifyLearningRecovery, sha256 } from "@provenloop/domain";
 import { frozenLearningCorpusSchema, createFrozenLearningCorpus, type FrozenLearningCorpus } from "./automatic-learning-corpus.js";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { buildLearningWindows } from "@provenloop/domain";
-import { evaluateAutomaticLearningAcceptance, automaticLearningEvidenceSchema } from "./automatic-learning-acceptance.js";
+import { evaluateAutomaticLearningAcceptance, automaticLearningEvidenceSchema, installedLearningArtifactManifestSchema } from "./automatic-learning-acceptance.js";
 import { verifyExternalReportArtifacts } from "./external-report-binding.js";
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -82,11 +82,27 @@ export interface FrozenLearningProvider {
   readonly identity: { readonly provider: string; readonly model: string; readonly version: string };
   infer(window: LearningWindow, options: { readonly signal: AbortSignal }): Promise<unknown>;
 }
+const rejectionReasonSchema = z.enum(["schema_invalid", "response_budget", "sensitive_content", "predicate_conflict",
+  "source_quote", "source_unknown", "operation_kind", "validation_unknown"]);
+const classifyValidationRejection = (error: unknown): z.infer<typeof rejectionReasonSchema> => {
+  if (error instanceof z.ZodError) return "schema_invalid";
+  if (!(error instanceof Error)) return "validation_unknown";
+  switch (error.message) {
+    case "Learning response exceeds byte budget.": return "response_budget";
+    case "Learning proposal contains sensitive content.": return "sensitive_content";
+    case "A proposal cannot mix shell and MCP predicates.": return "predicate_conflict";
+    case "Invalid user source quotation.": return "source_quote";
+    case "Proposal references an unknown source.": return "source_unknown";
+    case "Proposal operation references must identify failed/retry tool.started events and the retry tool.completed event.": return "operation_kind";
+    default: return "validation_unknown";
+  }
+};
 const attemptSchema = z.object({
   id: z.string(), caseId: z.string(), attempt: z.number().int().positive(), startedAt: timeSchema, completedAt: timeSchema,
   durationMs: z.number().nonnegative(), status: z.enum(["extracted", "no_rule", "provider_failed", "validation_failed", "timeout", "cancelled"]),
   proposalCount: z.number().int().nonnegative(), receiptCount: z.number().int().nonnegative(), inputDigest: digestSchema,
   outputDigest: digestSchema.nullable(), proposals: z.array(z.unknown()).max(3), receiptDigests: z.array(digestSchema),
+  rejectionReason: rejectionReasonSchema.optional(),
 }).strict();
 export const frozenLearningRunSchema = z.object({
   version: z.literal(1), evidenceKind: z.enum(["synthetic_provider_replay", "captured_provider_replay"]),
@@ -97,6 +113,46 @@ export const frozenLearningRunSchema = z.object({
   inputLabelDigests: z.array(digestSchema), inputLabelsFrozen: z.boolean(), ledgerDigest: digestSchema, complete: z.boolean(),
 }).strict();
 export type FrozenLearningRun = z.infer<typeof frozenLearningRunSchema>;
+
+const verifyRetainedRun = (run: FrozenLearningRun, corpus: FrozenLearningCorpus, ledger: string): void => {
+  if (digestText(ledger) !== run.ledgerDigest) throw new Error("Retained evidence changed.");
+  const entries = ledger.split("\n").filter(Boolean).map((line) => z.record(z.string(), z.unknown()).parse(JSON.parse(line)));
+  const header = entries[0];
+  const binding = { kind: "run_started", version: 1, corpusDigest: run.corpusDigest, startedAt: run.startedAt,
+    provider: run.provider, providerMode: run.providerMode, codeVersion: run.codeVersion, executableDigest: run.executableDigest,
+    maxRequests: run.maxRequests, maxAttempts: run.maxAttempts, inputLabelDigests: run.inputLabelDigests };
+  if (!header || Object.entries(binding).some(([key, value]) => sha256(header[key]) !== sha256(value)) ||
+      entries.length !== 1 + run.attempts.length * 2 || run.attempts.length > run.maxRequests ||
+      new Set(run.attempts.map((item) => item.id)).size !== run.attempts.length) {
+    throw new Error("Machine report does not match the retained attempt ledger.");
+  }
+  for (const [index, attempt] of run.attempts.entries()) {
+    const started = entries[1 + index * 2];
+    const completed = entries[2 + index * 2];
+    const source = corpus.cases.find((item) => item.id === attempt.caseId);
+    const expectedStarted = { kind: "attempt_started", id: attempt.id, caseId: attempt.caseId, attempt: attempt.attempt,
+      startedAt: attempt.startedAt, inputDigest: attempt.inputDigest };
+    if (sha256(started) !== sha256(expectedStarted) || !completed || completed.kind !== "attempt_completed" ||
+        !source || attempt.inputDigest !== sha256(source.window) || attempt.attempt > run.maxAttempts ||
+        attempt.proposalCount !== attempt.proposals.length || attempt.receiptCount !== attempt.receiptDigests.length ||
+        attempt.receiptCount > attempt.proposalCount || Date.parse(attempt.startedAt) < Date.parse(run.startedAt) ||
+        Date.parse(attempt.completedAt) < Date.parse(attempt.startedAt) || Date.parse(run.completedAt) < Date.parse(attempt.completedAt)) {
+      throw new Error("Machine report does not match the retained attempt ledger.");
+    }
+    const retained = { ...completed };
+    delete retained.kind;
+    if (sha256(attemptSchema.parse(retained)) !== sha256(attempt)) {
+      throw new Error("Machine report does not match the retained attempt ledger.");
+    }
+  }
+  const pending = corpus.cases.filter((item) => !run.attempts.some((attempt) => attempt.caseId === item.id)).map((item) => item.id);
+  const complete = pending.length === 0 && run.attempts.every((attempt) => attempt.status === "extracted" || attempt.status === "no_rule");
+  if (!exactIds(run.pendingCaseIds, pending) || run.complete !== complete ||
+      run.inputLabelsFrozen !== (run.inputLabelDigests.length === 2) ||
+      run.evidenceKind !== (corpus.sourceKind === "authored_replay" ? "synthetic_provider_replay" : "captured_provider_replay")) {
+    throw new Error("Machine report coverage does not match retained evidence.");
+  }
+};
 
 export const runFrozenLearningEvaluation = async (options: {
   readonly preparedDirectory: string; readonly outputDirectory: string; readonly provider: FrozenLearningProvider;
@@ -137,6 +193,7 @@ export const runFrozenLearningEvaluation = async (options: {
         options.signal?.addEventListener("abort", abort, { once: true });
         let timer: NodeJS.Timeout | undefined;
         let status: z.infer<typeof attemptSchema>["status"] = "provider_failed";
+        let rejectionReason: z.infer<typeof rejectionReasonSchema> | undefined;
         let proposals: RuleProposal[] = []; let receiptDigests: string[] = []; let outputDigest: string | null = null; let outputReceived = false;
         try {
           const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, deadlineMs); });
@@ -149,13 +206,15 @@ export const runFrozenLearningEvaluation = async (options: {
             createdAt: item.window.createdAt, expiresAt: new Date(Date.parse(item.window.createdAt) + 30 * 86_400_000).toISOString(), sourceDigests: item.window.sources }));
           receiptDigests = proposals.flatMap((proposal) => { const receipt = verifyLearningRecovery(proposal, item.window.events, item.contracts, now()); return receipt ? [sha256(receipt)] : []; });
           status = proposals.length === 0 ? "no_rule" : "extracted";
-        } catch {
+        } catch (error) {
           status = options.signal?.aborted ? "cancelled" : controller.signal.aborted ? "timeout" : outputReceived ? "validation_failed" : "provider_failed";
+          if (status === "validation_failed") rejectionReason = classifyValidationRejection(error);
         } finally { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); }
         const completedAt = now();
         const result = attemptSchema.parse({ id, caseId: item.id, attempt, startedAt: attemptStarted.toISOString(), completedAt: completedAt.toISOString(),
           durationMs: Math.max(0, completedAt.getTime() - attemptStarted.getTime()), status, proposalCount: proposals.length,
-          receiptCount: receiptDigests.length, inputDigest: sha256(item.window), outputDigest, proposals, receiptDigests });
+          receiptCount: receiptDigests.length, inputDigest: sha256(item.window), outputDigest, proposals, receiptDigests,
+          ...(rejectionReason === undefined ? {} : { rejectionReason }) });
         attempts.push(result); await ledgerWrite({ kind: "attempt_completed", ...result });
         if (status === "extracted" || status === "no_rule" || status === "cancelled") break;
       }
@@ -186,7 +245,8 @@ export const reviewFrozenLearningEvaluation = async (options: {
   const bytes = await readFile(join(options.runDirectory, "machine-report.json"), "utf8");
   const run = frozenLearningRunSchema.parse(JSON.parse(bytes));
   const corpus = frozenLearningCorpusSchema.parse(await readJson(join(options.runDirectory, "corpus.json")));
-  if (digestText(json(corpus)) !== run.corpusDigest || digestText(await readFile(join(options.runDirectory, "attempts.jsonl"), "utf8")) !== run.ledgerDigest) throw new Error("Retained evidence changed.");
+  if (digestText(json(corpus)) !== run.corpusDigest) throw new Error("Retained evidence changed.");
+  verifyRetainedRun(run, corpus, await readFile(join(options.runDirectory, "attempts.jsonl"), "utf8"));
   if (!run.inputLabelsFrozen) throw new Error("Input labels were not frozen before this run. Complete the independent input reviews and rerun.");
   const inputPaths = [0, 1].map((index) => join(options.runDirectory, "frozen-input-review-" + index + ".json"));
   const labels = await loadLabels(inputPaths, corpus, run.corpusDigest, run.startedAt);
@@ -202,10 +262,16 @@ export const reviewFrozenLearningEvaluation = async (options: {
     const x = reviews[0]?.windows.find((entry) => entry.id === item.id);
     const y = reviews[1]?.windows.find((entry) => entry.id === item.id);
     const attempt = run.attempts.findLast((entry) => entry.caseId === item.id);
-    const labelAgreed = a && b && a.reusable === b.reusable && a.qualified === b.qualified && a.activationProhibited === b.activationProhibited;
+    const labelAgreed = a && b && a.reusable === b.reusable && a.qualified === b.qualified &&
+      a.activationProhibited === b.activationProhibited && a.expectedRule === b.expectedRule && a.applicability === b.applicability;
     const resultAgreed = x && y && x.candidate !== null && x.candidate === y.candidate && x.correctRules !== null &&
       x.correctRules === y.correctRules && x.provenanceComplete !== null && x.provenanceComplete === y.provenanceComplete;
     if (resultAgreed && x.correctRules !== null && x.correctRules > (attempt?.proposalCount ?? 0)) throw new Error("Review correctness exceeds produced proposals.");
+    if (resultAgreed && ((x.candidate === "none" && (attempt?.proposalCount ?? 0) !== 0) ||
+        (x.candidate === "correct" && x.correctRules === 0) ||
+        (x.candidate === "incorrect" && (attempt?.proposalCount ?? 0) === 0))) {
+      throw new Error("Review candidate classification contradicts produced proposals.");
+    }
     return { id: item.id, reusable: labelAgreed ? a.reusable : null, qualified: labelAgreed ? a.qualified : null,
       candidate: resultAgreed ? x.candidate : "unknown", correctRules: resultAgreed ? x.correctRules : null,
       provenanceComplete: resultAgreed ? x.provenanceComplete : null, proposedRules: attempt?.proposalCount ?? 0,
@@ -215,14 +281,24 @@ export const reviewFrozenLearningEvaluation = async (options: {
   const discovered = positives.filter((item) => item.candidate === "correct" && item.provenanceComplete === true).length;
   const proposed = cases.reduce((sum, item) => sum + item.proposedRules, 0);
   const correct = cases.reduce((sum, item) => sum + (item.correctRules ?? 0), 0);
+  const tasks = corpus.tasks.map((item) => {
+    const a = labels[0]?.tasks.find((entry) => entry.id === item.id);
+    const b = labels[1]?.tasks.find((entry) => entry.id === item.id);
+    const agreed = a !== undefined && b !== undefined && a.applicable === b.applicable;
+    return { id: item.id, applicable: agreed ? a.applicable : null, disagreement: !agreed,
+      hostObserved: false, delivery: "unknown", compliance: "unknown" };
+  });
   const report = { version: 1, evidenceKind: run.evidenceKind, status: "insufficient_evidence", corpusDigest: run.corpusDigest,
     runDigest: digestText(bytes), reviewDigests: reviews.map((review) => digestText(json(review))),
-    inputReviewDigests: run.inputLabelDigests, cases, metrics: {
+    inputReviewDigests: run.inputLabelDigests, cases, tasks, metrics: {
       reusableOpportunities: positives.length, discoveryRecall: positives.length === 0 ? null : discovered / positives.length,
       proposedRules: proposed, precision: proposed === 0 ? null : correct / proposed,
       unresolvedReviews: cases.filter((item) => item.disagreement).length,
+      unresolvedTaskLabels: tasks.filter((item) => item.disagreement).length,
+      pendingTasks: tasks.length,
+      pendingWindows: run.pendingCaseIds.length,
       failedAttempts: run.attempts.filter((item) => !["extracted", "no_rule"].includes(item.status)).length,
-      nativeActivationRate: null, nativeDeliveryRate: null, nativeCompliance: null, nativeVisibleNotices: null },
+      nativeActivationRate: null, nativeDeliveryRate: null, nativeCompliance: null, nativeVisibleNotices: null, causalBenefit: null },
     acceptance: evaluateAutomaticLearningAcceptance(undefined),
     reason: "Adjudicated replay is an extraction measurement. It cannot establish installed activation, unprompted delivery, adoption, or visible feedback." };
   await writeNew(options.outputPath, report); return report;
@@ -254,9 +330,7 @@ export const importInstalledLearningAcceptance = async (options: {
   readonly expectedCodeVersion: string; readonly expectedExecutableDigest: string; readonly outputPath: string;
 }): Promise<unknown> => {
   const evidence = automaticLearningEvidenceSchema.parse(await readJson(options.evidencePath));
-  const manifest = z.object({ version: z.literal(1), producer: z.literal("provenloop-installed-observer"),
-    codeVersion: z.string(), executableDigest: digestSchema,
-    artifacts: z.array(z.object({ path: z.string(), sha256: digestSchema }).strict()).min(1) }).strict().parse(await readJson(options.artifactManifestPath));
+  const manifest = installedLearningArtifactManifestSchema.parse(await readJson(options.artifactManifestPath));
   if (evidence.evidenceKind !== "installed_controlled" || evidence.codeVersion !== options.expectedCodeVersion ||
       manifest.codeVersion !== options.expectedCodeVersion || manifest.executableDigest !== options.expectedExecutableDigest ||
       evidence.installedArtifactDigest !== options.expectedExecutableDigest) throw new Error("Installed observer evidence does not match the evaluated executable.");
@@ -267,6 +341,9 @@ export const importInstalledLearningAcceptance = async (options: {
     acceptance: evaluateAutomaticLearningAcceptance(evidence, "research", options.expectedCodeVersion),
     authority: "Artifact integrity verified; independent human claims and native-observer authenticity still require review. An edited manifest is not a signature." };
   await writeNew(options.outputPath, report);
-  await writeNew(options.outputPath + ".evidence.json", evidence);
+  const evidencePath = options.outputPath + ".evidence.json";
+  await writeNew(evidencePath, evidence);
+  await writeNew(evidencePath + ".artifacts.json", { version: 1, evidenceDigest: digestText(JSON.stringify(evidence)),
+    artifactRoot: relative(dirname(resolve(evidencePath)), resolve(options.artifactRoot)) || ".", manifest });
   return report;
 };

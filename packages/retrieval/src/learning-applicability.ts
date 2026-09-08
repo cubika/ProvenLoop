@@ -1,9 +1,20 @@
 import type { KnowledgeCandidate, RuleProposal, LearningRecoveryReceipt } from "@provenloop/contracts";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
+import { sha256 } from "@provenloop/domain";
 import type { KnowledgeRetrievalQuery } from "./types.js";
 
 const normalize = (text: string): string =>
   text.normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/gu, " ").trim();
+
+const workspaceIdentity = (path: string): string | undefined => {
+  const normalized = path.trim().replaceAll("\\", "/");
+  if (/^[a-z]:\//iu.test(normalized) || /^\/\/[^/]+\/[^/]+(?:\/|$)/u.test(normalized)) {
+    return win32.normalize(normalized).replace(/[\\]+$/u, "").toLocaleLowerCase("en-US");
+  }
+  return posix.isAbsolute(normalized) && !normalized.startsWith("//")
+    ? posix.normalize(normalized).replace(/\/+$/u, "") || "/"
+    : undefined;
+};
 
 export const learningApplicable = (
   candidate: KnowledgeCandidate,
@@ -25,10 +36,12 @@ export const learningApplicable = (
   const shellMatches = shell !== undefined && matchingSources.some((proposal) => {
     const predicate = proposal.shellPredicate;
     const receipt = receipts.find((entry) => entry.proposalId === proposal.proposalId && entry.proves === "repository_test_command");
+    const worktree = receipt?.proves === "repository_test_command" ? workspaceIdentity(receipt.worktree) : undefined;
     return predicate !== undefined && receipt?.proves === "repository_test_command" &&
+      sha256(receipt.predicate) === sha256(predicate) &&
       predicate.toolName === shell.toolName && [predicate.failedCommand, predicate.command].includes(shell.command.trim()) &&
       receipt.repoId === query.repositoryScopeId && receipt.branch === shell.branch && receipt.commitSha === shell.commitSha &&
-      win32.normalize(receipt.worktree).toLowerCase() === win32.normalize(shell.cwd).toLowerCase();
+      worktree !== undefined && worktree === workspaceIdentity(shell.cwd);
   });
   if (!mcpMatches && !shellMatches) return false;
   const guidance = normalize(candidate.content);

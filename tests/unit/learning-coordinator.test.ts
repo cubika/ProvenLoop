@@ -58,11 +58,13 @@ describe("automatic learning coordinator", () => {
       } } });
       expect(await coordinator.run()).toMatchObject({ status: "cancelled" });
       expect(aborted).toBe(true);
-      expect(f.store.learningJobs()[0]?.state).toBe("cancelled");
+      expect(f.store.learningJobs()[0]).toMatchObject({ state: "paused", attempts: 0, pauseReason: "host_stopped" });
       expect(f.store.learningProposals()).toEqual([]);
       expect(f.store.knowledgeCandidates()).toEqual([]);
       expect((await coordinator.run()).status).toBe("disabled");
       expect(f.calls()).toBe(1);
+      expect(await new LearningCoordinator(f.options).run()).toMatchObject({ status: "evaluated", proposals: 1 });
+      expect(f.calls()).toBe(2);
     } finally { f.store.close(); }
   });
   it("bounds correction windows to the actual failed operation and retry completion", () => {
@@ -78,6 +80,58 @@ describe("automatic learning coordinator", () => {
       const selected = windows.find((window) => window.createdAt === f.captured[2]?.event.timestamp);
       expect(selected?.events.map((entry) => entry.event.eventId)).toEqual(relevant.map((entry) => entry.event.eventId));
       expect(Buffer.byteLength(JSON.stringify(selected))).toBeLessThan(30 * 1024);
+    } finally { f.store.close(); }
+  });
+  it("resumes after consent is disabled during extraction without accepting the stale output", async () => {
+    const f = fixture(); let enabled = true;
+    try {
+      expect(await new LearningCoordinator({ ...f.options, enabled: async () => enabled, provider: { ...f.options.provider, infer: async () => {
+        enabled = false; return f.options.provider.infer();
+      } } }).run()).toMatchObject({ status: "disabled" });
+      expect(f.store.learningJobs()[0]).toMatchObject({ state: "paused", attempts: 0, pauseReason: "learning_disabled" });
+      expect(f.store.knowledgeCandidates()).toEqual([]);
+      enabled = true;
+      expect(await new LearningCoordinator({ ...f.options, enabled: async () => enabled }).run()).toMatchObject({ status: "evaluated" });
+    } finally { f.store.close(); }
+  });
+
+  it.each(["signed_out", "rate_limited", "unavailable"] as const)("pauses %s without exhausting extraction retries and still charges every dispatch", async (code) => {
+    const f = fixture(); let time = now(); let unavailable = true; let calls = 0;
+    const provider = { ...f.options.provider, infer: async () => {
+      calls += 1;
+      if (unavailable) throw Object.assign(new Error(`Provider ${code}.`), { code });
+      return f.options.provider.infer();
+    } };
+    const coordinator = new LearningCoordinator({ ...f.options, provider, now: () => time, dailyLimit: 4 });
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        expect(await coordinator.run()).toMatchObject({ status: "paused", reason: code });
+        const job = f.store.learningJobs()[0];
+        expect(job).toMatchObject({ state: "paused", attempts: 0, pauseReason: code });
+        expect(await coordinator.run()).toMatchObject({ status: "idle" });
+        expect(calls).toBe(attempt + 1);
+        time = new Date(job?.retryAfter ?? "");
+      }
+      unavailable = false;
+      expect(await coordinator.run()).toMatchObject({ status: "paused", reason: "daily_budget" });
+      expect(calls).toBe(4);
+      time = new Date(base + 86_400_000);
+      expect(await coordinator.run()).toMatchObject({ status: "evaluated", proposals: 1 });
+      expect(f.store.learningJobs()[0]?.attempts).toBe(1);
+      expect(calls).toBe(5);
+    } finally { f.store.close(); }
+  });
+
+  it("refuses a result that arrives after the original candidate expiry", async () => {
+    const f = fixture(); let time = now();
+    try {
+      const result = await new LearningCoordinator({ ...f.options, now: () => time, candidateDays: 1, provider: { ...f.options.provider, infer: async () => {
+        const response = await f.options.provider.infer(); time = new Date(base + 2 * 86_400_000); return response;
+      } } }).run();
+      expect(result).toMatchObject({ status: "cancelled", reason: "expired" });
+      expect(f.store.learningJobs()[0]?.state).toBe("archived");
+      expect(f.store.learningProposals()).toEqual([]);
+      expect(f.store.knowledgeCandidates()).toEqual([]);
     } finally { f.store.close(); }
   });
   it("purges sibling derived rules when deleting their shared learning job", async () => {
@@ -102,7 +156,7 @@ describe("automatic learning coordinator", () => {
       expect(f.store.rawEvents()).toHaveLength(5);
     } finally { f.store.close(); }
   });
-  it.each(["late_contract", "archived", "expired", "deleted", "revoked"] as const)("reevaluates without inference and respects %s", async (scenario) => {
+  it.each(["late_contract", "enrichment", "enrichment_revoked", "archived", "expired", "deleted", "revoked"] as const)("reevaluates without inference and respects %s", async (scenario) => {
     const store = new CanonicalSqliteStore(":memory:");
     const contractBody = { schemaVersion: 1 as const, serverName: "files", toolName: "read", version: "1", sourceSchemaDigest: sha256({ required: ["path"] }), requiredArguments: ["path"], absolutePathArguments: [] };
     const contract = { ...contractBody, digest: sha256(contractBody) };
@@ -142,20 +196,25 @@ describe("automatic learning coordinator", () => {
       const proposal = store.learningProposals()[0];
       const job = store.learningJobs()[0];
       if (scenario === "archived") store.upsertKnowledgeCandidates([{ ...candidate, state: "archived" }]);
-      if (scenario === "revoked") store.recordKnowledgeFeedback({ event: { schemaVersion: 1, feedbackId: "revoked-late-contract", kind: "revoke", source: "user", targetType: "knowledge", targetId: candidate.knowledgeId, evidenceRef: "real-user-revocation", timestamp: new Date(base + 6000).toISOString() } });
+      if (scenario === "revoked" || scenario === "enrichment_revoked") store.recordKnowledgeFeedback({ event: { schemaVersion: 1, feedbackId: "revoked-late-contract", kind: "revoke", source: "user", targetType: "knowledge", targetId: candidate.knowledgeId, evidenceRef: "real-user-revocation", timestamp: new Date(base + 6000).toISOString() } });
+      if (scenario.startsWith("enrichment")) {
+        expect(store.enrichRawEvent({ envelope: { ...completed, content: { message: "Recovered result body." } }, sourceDigest: "f".repeat(64) })).toMatchObject({ status: "enriched" });
+      }
       if (scenario === "expired") time = new Date(base + 31 * 86_400_000);
       if (scenario === "deleted") {
         const target = { targetType: "knowledge" as const, targetId: candidate.knowledgeId };
         const deletion = store.beginDeletion(target); store.deleteCanonicalTarget(deletion.deletionId, target);
       }
       available = true;
-      const result = await coordinator.run();
+      let result = await coordinator.run();
+      if (scenario === "enrichment") result = await coordinator.run();
       expect(calls).toBe(1);
-      if (scenario === "late_contract") {
+      if (scenario === "late_contract" || scenario === "enrichment") {
         expect(result).toMatchObject({ status: "evaluated", qualified: 1 });
         expect(store.knowledgeCandidates()[0]).toMatchObject({ state: "active", evidenceTier: "externally_verified", createdAt: candidate.createdAt, sourceEvidenceIds: candidate.sourceEvidenceIds });
-        expect(store.learningProposals()).toEqual([proposal]);
-        expect(store.learningJobs()[0]).toMatchObject({ attempts: job?.attempts, expiresAt: job?.expiresAt, state: "evaluated" });
+        if (scenario === "late_contract") expect(store.learningProposals()).toEqual([proposal]);
+        else expect(store.learningProposals()).toHaveLength(2);
+        expect(store.learningJobs().find((entry) => entry.state === "evaluated")).toMatchObject({ attempts: job?.attempts, expiresAt: job?.expiresAt, state: "evaluated" });
         expect(store.learningReceipts()).toHaveLength(1);
         expect((await coordinator.run()).status).toBe("idle");
         expect(store.learningReceipts()).toHaveLength(1);

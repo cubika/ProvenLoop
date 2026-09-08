@@ -4,6 +4,10 @@ The workflow freezes source windows before model execution and retains every att
 
 Run commands from the repository root after building the current source. Use an ignored directory such as `evaluation-output/` for artifacts.
 
+The [general correction-learning test catalog](general-learning-test-catalog.md) defines broader scenario families, paired counterexamples, verification boundaries and preview priorities. Use it when expanding beyond the current parameter-correction corpus; its proposed cases are not executed results.
+
+See the [2026-09-08 validation record](general-learning-validation.md) for executed stage checks, real-provider replay counts, fixes and remaining gaps. Use `prepare --corpus general` to freeze the authored semantic-correction corpus.
+
 ## Prepare and label
 
 ```powershell

@@ -2,15 +2,37 @@ import { shellRecoveryReceiptSchema, type CaptureEnvelope, type RuleProposal, ty
 import { sha256 } from "./digest.js";
 import { sameVerificationWorkspace } from "./verification-proof.js";
 import { validCapturedParent } from "./parent-bridge.js";
+import { posix, win32 } from "node:path";
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 // These forms are already classified as test.completed by the native command evidence bridge.
 export const supportedLearningTestCommand = (command: string): boolean => /^(?:npm|pnpm|yarn) (?:test|run test(?::[a-z0-9][a-z0-9_-]*)?)$/u.test(command);
 
+const workspaceIdentity = (path: string): string | undefined => {
+  const normalized = path.trim().replaceAll("\\", "/");
+  if (/^[a-z]:\//iu.test(normalized) || /^\/\/[^/]+\/[^/]+(?:\/|$)/u.test(normalized)) {
+    return win32.normalize(normalized).replace(/[\\]+$/u, "").toLocaleLowerCase("en-US");
+  }
+  return posix.isAbsolute(normalized) && !normalized.startsWith("//")
+    ? posix.normalize(normalized).replace(/\/+$/u, "") || "/"
+    : undefined;
+};
+
+/** Compare already-verified command receipts; their lifecycle and authority are checked by admission. */
+export const conflictingShellLearning = (left: ShellRecoveryReceipt, right: ShellRecoveryReceipt): boolean => {
+  const worktree = workspaceIdentity(left.worktree);
+  return worktree !== undefined && worktree === workspaceIdentity(right.worktree) &&
+    left.repoId === right.repoId && left.branch === right.branch && left.commitSha === right.commitSha &&
+    left.predicate.toolName === right.predicate.toolName && left.predicate.command !== right.predicate.command &&
+    [left.predicate.failedCommand, left.predicate.command].some((command) =>
+      [right.predicate.failedCommand, right.predicate.command].includes(command));
+};
+
 export const verifyShellRecovery = (proposal: RuleProposal, events: readonly CaptureEnvelope[], now: Date): ShellRecoveryReceipt | undefined => {
   const predicate = proposal.shellPredicate;
   if (!predicate || proposal.predicate || !supportedLearningTestCommand(predicate.command) ||
-      !supportedLearningTestCommand(predicate.failedCommand) || predicate.command === predicate.failedCommand) return undefined;
+      !supportedLearningTestCommand(predicate.failedCommand) || predicate.command === predicate.failedCommand ||
+      !proposal.failedOperationEventId || !proposal.retryOperationEventId || !proposal.completionEventId) return undefined;
   const byId = new Map(events.map((entry) => [entry.event.eventId, entry]));
   const failed = byId.get(proposal.failedOperationEventId), retry = byId.get(proposal.retryOperationEventId), completion = byId.get(proposal.completionEventId), user = byId.get(proposal.userSource.eventId);
   if (!failed || !retry || !completion || !user || user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
@@ -22,6 +44,9 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
   if (!failure || !proof || !user.event.repoId || !user.event.sessionId || !user.event.worktree || !user.event.branch ||
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(user.event.commitSha ?? "")) return undefined;
   const chain = [failed, failure, user, retry, completion];
+  const executionActors = new Set([failed, failure, retry, completion, proof].flatMap((entry) =>
+    entry.event.actorId === undefined ? [] : [entry.event.actorId]));
+  if (executionActors.size > 1 || executionActors.has("provenloop-internal")) return undefined;
   const complete = (entry: CaptureEnvelope): boolean => !entry.event.mcp && sameVerificationWorkspace(user, entry) &&
     entry.event.sessionId === user.event.sessionId && entry.event.branch === user.event.branch && entry.event.commitSha === user.event.commitSha &&
     entry.redaction.redactedPaths.length === 0 && entry.redaction.droppedPaths.length === 0 && entry.redaction.truncatedPaths.length === 0 &&
@@ -33,12 +58,20 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
       completion.event.operationId !== retry.event.operationId || completion.event.completionStatus !== "succeeded" || completion.event.exitCode !== 0 ||
       proof.event.completionStatus !== "succeeded" || proof.event.exitCode !== 0 || proof.event.evidence?.exitCode !== 0 ||
       proof.event.evidence.kind !== "command_verification" || proof.event.evidence.repositoryState !== "known_repo" ||
+      proof.event.evidence.operationId !== retry.event.operationId ||
       proof.event.evidence.commandFamily !== `${predicate.command.split(" ")[0]}-test`) return undefined;
   const before = record(failed.event.redactedArguments), after = record(retry.event.redactedArguments);
   if (before.command !== predicate.failedCommand || after.command !== predicate.command ||
       Object.keys(before).some((key) => !["command", "cwd", "mode", "detach", "description", "timeout_ms"].includes(key)) ||
       Object.keys(after).some((key) => !["command", "cwd", "mode", "detach", "description", "timeout_ms"].includes(key)) ||
       (after.mode !== undefined && after.mode !== "sync") || (after.detach !== undefined && after.detach !== false)) return undefined;
+  for (const [entry, args] of [[failed, before], [retry, after]] as const) {
+    const directory = typeof args.cwd === "string"
+      ? (/^[a-z]:[\\/]|^[\\/]{2}/iu.test(user.event.worktree) ? win32 : posix).resolve(user.event.worktree, args.cwd)
+      : undefined;
+    if (args.cwd !== undefined && (typeof args.cwd !== "string" ||
+        !sameVerificationWorkspace(user, { ...entry, event: { ...entry.event, worktree: directory } }))) return undefined;
+  }
   const relevant = (args: Record<string, unknown>) => Object.fromEntries(Object.entries(args).filter(([key]) => !["command", "description", "timeout_ms"].includes(key)));
   if (sha256(relevant(before)) !== sha256(relevant(after))) return undefined;
   const shellExit = (entry: CaptureEnvelope): Record<string, unknown> | undefined => {

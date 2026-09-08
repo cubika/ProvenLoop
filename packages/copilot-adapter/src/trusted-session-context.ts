@@ -2,10 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   open,
-  rename,
   rm,
 } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { replaceFileAtomically } from "./atomic-rename.js";
 
 import type { RepositoryState } from "@provenloop/contracts";
 import {
@@ -447,7 +447,9 @@ export class TrustedSessionContextPublisher {
     }
     this.#scheduled = setImmediate(() => {
       this.#scheduled = undefined;
-      void this.flush().catch(this.#options.onError);
+      void this.flush().catch((error: unknown) => {
+        try { this.#options.onError(error); } catch { /* Reporting cannot create an unhandled background rejection. */ }
+      });
     });
     this.#scheduled.unref();
   }
@@ -517,7 +519,10 @@ export class TrustedSessionContextPublisher {
         } finally {
           await file.close();
         }
-        await rename(temporary, this.#path);
+        await replaceFileAtomically(temporary, this.#path);
+      } catch (error) {
+        this.#dirty = true;
+        throw error;
       } finally {
         await rm(temporary, { force: true });
       }

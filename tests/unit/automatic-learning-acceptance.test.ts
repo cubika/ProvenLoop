@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   automaticLearningObservationIds,
   evaluateAutomaticLearningAcceptance,
   evaluateMvpReleaseReadiness,
+  importInstalledLearningAcceptance,
+  loadAutomaticLearningEvidence,
+  resolveLearningEvaluationExecutableDigest,
+  runM2ReleaseGate,
   type AutomaticLearningEvidence,
 } from "@provenloop/evaluation";
 
@@ -28,7 +36,7 @@ const fixture = (): AutomaticLearningEvidence => ({
     disposition: "completed", persistenceLatencyMs: i < 20 ? 120_000 : null, evidenceDigests: ["b".repeat(64)],
   })),
   tasks: Array.from({ length: 40 }, (_, i) => ({
-    id: `task-${i}`, applicable: i < 20, deliveredBeforeOperationWithoutReminder: i < 20,
+    id: `task-${i}`, scenario: i % 2 === 0 ? "native" : "mcp", applicable: i < 20, deliveredBeforeOperationWithoutReminder: i < 20,
     providedItems: i < 20 ? 1 : 0, incorrectItems: 0, hostObserved: true,
     compliance: i < 20 ? "compliant" : "unknown", evidenceDigests: ["c".repeat(64)],
   })),
@@ -36,8 +44,52 @@ const fixture = (): AutomaticLearningEvidence => ({
 });
 const check = (evidence: unknown, id: string, target: "research" | "stable" = "research"): string | undefined =>
   evaluateAutomaticLearningAcceptance(evidence, target, "test-version").checks.find((item) => item.checkId === id)?.status;
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+const artifactFixture = async () => {
+  const root = await mkdtemp(join(tmpdir(), "pl-acceptance-evidence-")); roots.push(root);
+  const evidence = fixture();
+  evidence.installedArtifactDigest = await resolveLearningEvaluationExecutableDigest(process.cwd());
+  const bytes = "Synthetic test observation, not independent human or native acceptance.";
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  for (const item of [...evidence.windows, ...evidence.tasks, ...evidence.observations]) item.evidenceDigests = [sha256];
+  const evidencePath = join(root, "evidence.json");
+  const artifactManifestPath = join(root, "artifacts.json");
+  await writeFile(join(root, "observation.txt"), bytes);
+  await writeFile(evidencePath, JSON.stringify(evidence));
+  await writeFile(artifactManifestPath, JSON.stringify({ version: 1, producer: "provenloop-installed-observer",
+    codeVersion: evidence.codeVersion, executableDigest: evidence.installedArtifactDigest, artifacts: [{ path: "observation.txt", sha256 }] }));
+  return { root, evidence, evidencePath, artifactManifestPath, artifactRoot: root,
+    expectedCodeVersion: evidence.codeVersion, expectedExecutableDigest: evidence.installedArtifactDigest, outputPath: join(root, "import.json") };
+};
 
 describe("automatic-learning acceptance arithmetic and evidence boundaries", () => {
+  it("UX-07 rejects plausible raw installed evidence at the M2 entry point", async () => {
+    const f = await artifactFixture();
+    expect(evaluateAutomaticLearningAcceptance(f.evidence).status).toBe("pass");
+    const result = await runM2ReleaseGate({ codeVersion: f.evidence.codeVersion, outputRoot: f.root, runId: "raw-evidence",
+      automaticLearningEvidencePath: f.evidencePath });
+    expect(result.report).toMatchObject({ status: "fail", exitCode: 2, checks: [{ checkId: "m2-input" }] });
+  });
+  it("UX-07 revalidates imported artifacts and executable binding when M2 consumes evidence", async () => {
+    const f = await artifactFixture();
+    await importInstalledLearningAcceptance(f);
+    const automaticLearningEvidencePath = f.outputPath + ".evidence.json";
+    const first = await runM2ReleaseGate({ codeVersion: f.evidence.codeVersion, outputRoot: f.root, runId: "valid-evidence", automaticLearningEvidencePath });
+    expect(first.report).toMatchObject({ status: "pass", automaticLearning: { status: "pass" }, evaluationPurpose: "regression" });
+    expect(await readFile(join(first.runDirectory, "m2-report.md"), "utf8")).toContain("Evaluation purpose | regression");
+    await expect(loadAutomaticLearningEvidence(automaticLearningEvidencePath, { codeVersion: f.evidence.codeVersion, executableDigest: "0".repeat(64) })).rejects.toThrow("do not match");
+    await writeFile(join(f.root, "observation.txt"), "Replaced after import.");
+    const changed = await runM2ReleaseGate({ codeVersion: f.evidence.codeVersion, outputRoot: f.root, runId: "changed-evidence", automaticLearningEvidencePath });
+    expect(changed.report).toMatchObject({ status: "fail", exitCode: 2 });
+  });
+  it("UX-07 rejects replacement evidence even when its artifact references stay unchanged", async () => {
+    const f = await artifactFixture();
+    await importInstalledLearningAcceptance(f);
+    at(f.evidence.tasks, 0).compliance = "noncompliant";
+    await writeFile(f.outputPath + ".evidence.json", JSON.stringify(f.evidence));
+    await expect(loadAutomaticLearningEvidence(f.outputPath + ".evidence.json")).rejects.toThrow("do not match");
+  });
   it("accepts the actual dirty-worktree code version and still rejects mismatched evidence", () => {
     const evidence = fixture();
     evidence.codeVersion = `${"a".repeat(40)}+dirty.${"b".repeat(16)}`;
@@ -69,21 +121,58 @@ describe("automatic-learning acceptance arithmetic and evidence boundaries", () 
     at(evidence.windows, 1).independentSourceId = at(evidence.windows, 0).independentSourceId;
     expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("fail");
   });
+  it("UX-07 rejects discovery labels that contradict produced rule counts", () => {
+    const evidence = fixture();
+    at(evidence.windows, 0).candidate = "none";
+    expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("fail");
+    at(evidence.windows, 0).candidate = "correct";
+    at(evidence.windows, 0).proposedRules = 0;
+    at(evidence.windows, 0).correctRules = 0;
+    expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("fail");
+  });
   it("accepts the arithmetic fixture but cannot treat synthetic provider evidence as installed acceptance", () => {
     const evidence = fixture();
     expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("pass");
     evidence.evidenceKind = "synthetic";
     expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("insufficient_evidence");
   });
+  it("UX-06/08 requires observed compliance in both supported scenarios without inventing a rate threshold", () => {
+    const evidence = fixture();
+    for (const task of evidence.tasks.filter((item) => item.applicable)) task.compliance = "noncompliant";
+    const failed = evaluateAutomaticLearningAcceptance(evidence);
+    expect(failed.status).toBe("fail");
+    expect(check(evidence, "M2-AUTO-004-observed-compliance")).toBe("fail");
+    expect(failed.metrics).toMatchObject({ noncompliantApplicableTasks: 20, compliantApplicableTasks: 0, causalBenefit: null });
+    at(evidence.tasks, 0).compliance = "compliant";
+    expect(check(evidence, "M2-AUTO-004-observed-compliance")).toBe("fail");
+    at(evidence.tasks, 1).compliance = "compliant";
+    expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("pass");
+    at(evidence.tasks, 1).deliveredBeforeOperationWithoutReminder = false;
+    expect(check(evidence, "M2-AUTO-004-observed-compliance")).toBe("fail");
+  });
+  it("UX-06 keeps missing later outcomes and scenario labels incomplete", () => {
+    const evidence = fixture();
+    at(evidence.tasks, 0).compliance = "unknown";
+    expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("insufficient_evidence");
+    expect(check(evidence, "M2-AUTO-007-label-completeness")).toBe("blocked");
+    expect(check(evidence, "M2-AUTO-004-observed-compliance")).toBe("blocked");
+    at(evidence.tasks, 0).compliance = "compliant";
+    delete at(evidence.tasks, 0).scenario;
+    expect(evaluateAutomaticLearningAcceptance(evidence).status).toBe("insufficient_evidence");
+  });
   it("keeps extraction misses in activation and applicable-task denominators", () => {
     const evidence = fixture();
     for (let i = 0; i < 2; i++) {
       at(evidence.windows, i).candidate = "none";
+      at(evidence.windows, i).proposedRules = 0;
+      at(evidence.windows, i).correctRules = 0;
       at(evidence.windows, i).active = false;
     }
     expect(check(evidence, "M2-AUTO-007-discovery-recall")).toBe("pass");
     expect(check(evidence, "M2-AUTO-007-activation-rate")).toBe("pass");
     at(evidence.windows, 2).candidate = "none";
+    at(evidence.windows, 2).proposedRules = 0;
+    at(evidence.windows, 2).correctRules = 0;
     at(evidence.windows, 2).active = false;
     expect(check(evidence, "M2-AUTO-007-discovery-recall")).toBe("fail");
     expect(check(evidence, "M2-AUTO-007-activation-rate")).toBe("fail");
@@ -111,8 +200,10 @@ describe("automatic-learning acceptance arithmetic and evidence boundaries", () 
   it("checks the exact precision and negative-abstention boundaries", () => {
     const evidence = fixture();
     at(evidence.windows, 0).correctRules = 0;
+    at(evidence.windows, 0).candidate = "incorrect";
     expect(check(evidence, "M2-AUTO-002-rule-precision")).toBe("pass");
     at(evidence.windows, 1).correctRules = 0;
+    at(evidence.windows, 1).candidate = "incorrect";
     expect(check(evidence, "M2-AUTO-002-rule-precision")).toBe("fail");
     evidence.tasks = evidence.tasks.slice(0, 20).concat(Array.from({ length: 100 }, (_, i) => ({
       ...at(evidence.tasks, 20), id: `negative-${i}`, providedItems: i < 2 ? 1 : 0,

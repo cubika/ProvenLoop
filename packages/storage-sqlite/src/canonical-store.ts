@@ -66,6 +66,8 @@ import {
   sanitizeDiagnostic,
   sha256,
   KnowledgeAdmissionPolicy,
+  validateLearningResponse,
+  conflictingShellLearning,
 } from "@provenloop/domain";
 import {
   resolveWindowsProvenLoopLeaseName,
@@ -646,6 +648,17 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         SELECT deduplication_key, 1, 0 FROM raw_events
         WHERE parse_status = 'supported' AND trust = 'user' AND event_type = 'prompt.submitted'
           AND session_id IS NOT NULL AND repo_id IS NOT NULL AND worktree IS NOT NULL;
+    `,
+  },
+  {
+    version: 13,
+    // Semantic proposals and resumable/superseded jobs require the current reader.
+    sql: `
+      CREATE INDEX learning_jobs_window_state ON learning_jobs(window_id,state);
+      CREATE INDEX learning_shell_scope ON learning_proposals(
+        json_extract(receipt_json, '$.repoId'), json_extract(receipt_json, '$.branch'),
+        json_extract(receipt_json, '$.commitSha'), json_extract(receipt_json, '$.predicate.toolName')
+      ) WHERE json_extract(receipt_json, '$.proves')='repository_test_command';
     `,
   },
 ] as const satisfies readonly SqliteMigration[];
@@ -2047,7 +2060,8 @@ export class CanonicalSqliteStore {
         ...this.#database.prepare("SELECT body_json FROM learning_jobs WHERE state='running' AND json_extract(body_json, '$.deadline') <= ? LIMIT ?").all(timestamp, limit),
       ].slice(0, limit)
       : this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE ${kind === "evidence" ? "state='waiting_evidence'" : "state IN ('pending','paused','failed') AND json_extract(body_json, '$.attempts') < 3"}
-         AND ${expiry} > ? ORDER BY updated_at, job_id LIMIT ?`).all(timestamp, limit);
+         AND ${expiry} > ? ${kind === "inference" ? "AND coalesce(json_extract(body_json, '$.retryAfter'), '') <= ?" : ""}
+         ORDER BY updated_at, job_id LIMIT ?`).all(...(kind === "inference" ? [timestamp, timestamp, limit] : [timestamp, limit]));
     return rows.map((row) => learningJobSchema.parse(JSON.parse(String(row.body_json))));
   }
 
@@ -2083,6 +2097,31 @@ export class CanonicalSqliteStore {
               AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id) <= (?,?)
             ORDER BY event_timestamp DESC, event_id DESC LIMIT 1`).get(...identity);
           if (previous) keys.add(String(previous.deduplication_key));
+          const effective = this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(changed.safe_envelope_json))));
+          const completionSource = effective.event.evidence?.sourceCompleteEventId;
+          if (completionSource) {
+            // Native derived proof may arrive long after another foreground turn has started.
+            const completion = this.#database.prepare(`SELECT event_timestamp,event_id FROM raw_events
+              WHERE adapter=? AND adapter_version=? AND session_id=? AND event_type='tool.completed' AND source_event_id=?`).get(
+              effective.event.adapter, effective.event.adapterVersion, effective.event.sessionId ?? "", completionSource);
+            if (completion) {
+              const prompt = this.#database.prepare(`SELECT deduplication_key FROM raw_events
+                WHERE parse_status='supported' AND trust='user' AND event_type='prompt.submitted'
+                  AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)<=(?,?)
+                ORDER BY event_timestamp DESC,event_id DESC LIMIT 1`).get(
+                String(changed.session_id), String(changed.repo_id), String(changed.worktree), String(completion.event_timestamp), String(completion.event_id));
+              if (prompt) keys.add(String(prompt.deduplication_key));
+            }
+          }
+          for (const prompt of this.#database.prepare(`SELECT DISTINCT raw_events.deduplication_key FROM learning_sources affected
+            JOIN learning_jobs ON learning_jobs.job_id=affected.job_id
+            JOIN learning_sources source ON source.job_id=affected.job_id
+            JOIN raw_events ON raw_events.event_id=source.event_id
+            WHERE affected.event_id=? AND learning_jobs.state NOT IN ('cancelled','archived')
+              AND NOT EXISTS (SELECT 1 FROM learning_jobs newer WHERE newer.window_id=learning_jobs.window_id AND newer.rowid>learning_jobs.rowid)
+              AND raw_events.trust='user' AND raw_events.event_type='prompt.submitted' LIMIT 128`).all(String(changed.event_id))) {
+            keys.add(String(prompt.deduplication_key));
+          }
           // A failed operation may support several adjacent user turns; do not stop at the first.
           const following = this.#database.prepare(`SELECT deduplication_key, trust, event_type FROM raw_events
             WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
@@ -2104,9 +2143,18 @@ export class CanonicalSqliteStore {
             AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
             AND (event_timestamp,event_id) ${direction === "before" ? "<" : ">="} (?,?)
           ORDER BY event_timestamp ${direction === "before" ? "DESC" : "ASC"}, event_id ${direction === "before" ? "DESC" : "ASC"} LIMIT 64`).all(...values);
-        const events = [...adjacent("before").reverse(), ...adjacent("after")].map((row) =>
+        const events = [...adjacent("before").reverse(), ...adjacent("after").slice(0, 32)].map((row) =>
           this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json)))));
-        return { deduplicationKey: String(prompt.deduplication_key), eventId: String(prompt.event_id), generation: Number(prompt.generation), events };
+        const additionalProofs = events.filter((entry) => entry.event.eventType === "tool.completed" && Date.parse(entry.event.timestamp) >= Date.parse(String(prompt.event_timestamp))).slice(0, 32).flatMap((completion) => {
+          // Native proof shares its completion source ID, so the existing source-identity index is sufficient.
+          const row = this.#database.prepare(`SELECT safe_envelope_json FROM raw_events WHERE adapter=? AND adapter_version=?
+            AND session_id=? AND event_type='test.completed' AND source_event_id=?`).get(
+            completion.event.adapter, completion.event.adapterVersion, completion.event.sessionId ?? "", completion.sourceEventId);
+          if (!row) return [];
+          const proof = this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))));
+          return events.some((entry) => entry.event.eventId === proof.event.eventId) ? [] : [proof];
+        });
+        return { deduplicationKey: String(prompt.deduplication_key), eventId: String(prompt.event_id), generation: Number(prompt.generation), events: [...events, ...additionalProofs] };
       });
       this.#database.exec("COMMIT;");
       return work;
@@ -2162,37 +2210,77 @@ export class CanonicalSqliteStore {
   }
 
   public learningProposals(knowledgeIds?: readonly string[]): readonly RuleProposal[] {
-    return this.#database.prepare("SELECT body_json FROM learning_proposals ORDER BY proposal_id").all()
-      .map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))))
-      .filter((entry) => knowledgeIds === undefined || knowledgeIds.includes(entry.knowledgeId));
+    const rows = knowledgeIds === undefined ? this.#database.prepare("SELECT body_json FROM learning_proposals ORDER BY proposal_id").all()
+      : [...new Set(knowledgeIds)].flatMap((id) => this.#database.prepare("SELECT body_json FROM learning_proposals WHERE knowledge_id=? ORDER BY proposal_id").all(id));
+    return rows.map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))));
   }
 
   public learningReceipts(knowledgeIds?: readonly string[]): readonly LearningRecoveryReceipt[] {
-    const ids = new Set(this.learningProposals(knowledgeIds).map((entry) => entry.proposalId));
-    return this.#database.prepare("SELECT proposal_id, receipt_json FROM learning_proposals WHERE receipt_json IS NOT NULL").all()
-      .filter((row) => ids.has(String(row.proposal_id)))
-      .map((row) => learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))));
+    const rows = knowledgeIds === undefined ? this.#database.prepare("SELECT receipt_json FROM learning_proposals WHERE receipt_json IS NOT NULL ORDER BY proposal_id").all()
+      : [...new Set(knowledgeIds)].flatMap((id) => this.#database.prepare("SELECT receipt_json FROM learning_proposals WHERE knowledge_id=? AND receipt_json IS NOT NULL ORDER BY proposal_id").all(id));
+    return rows.map((row) => learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))));
   }
 
-  public scheduleLearningWindow(input: LearningWindow, expiresAt: string): LearningJob | undefined {
+  #learningShellPeers(receipts: readonly LearningRecoveryReceipt[]): readonly { proposal: RuleProposal; receipt: LearningRecoveryReceipt }[] {
+    const peers = new Map<string, { proposal: RuleProposal; receipt: LearningRecoveryReceipt }>();
+    for (const receipt of receipts) {
+      if (receipt.proves !== "repository_test_command") continue;
+      const rows = this.#database.prepare(`SELECT proposal.body_json,proposal.receipt_json FROM learning_proposals proposal
+        JOIN knowledge_candidates candidate ON candidate.knowledge_id=proposal.knowledge_id
+        WHERE json_extract(proposal.receipt_json, '$.proves')='repository_test_command'
+          AND json_extract(proposal.receipt_json, '$.repoId')=?
+          AND json_extract(proposal.receipt_json, '$.branch')=? AND json_extract(proposal.receipt_json, '$.commitSha')=?
+          AND json_extract(proposal.receipt_json, '$.predicate.toolName')=?
+          AND json_extract(candidate.body_json, '$.state') IN ('active','disputed')`).all(
+        receipt.repoId, receipt.branch, receipt.commitSha, receipt.predicate.toolName);
+      for (const row of rows) {
+        const proposal = ruleProposalSchema.parse(JSON.parse(String(row.body_json)));
+        peers.set(proposal.proposalId, { proposal, receipt: learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))) });
+      }
+    }
+    return [...peers.values()];
+  }
+
+  public scheduleLearningWindow(input: LearningWindow, expiresAt: string, now = this.#now()): LearningJob | undefined {
     this.#assertNoRestoreBarrier();
     const window = learningWindowSchema.parse(input);
     if (this.hasActiveDeletion() || !this.learningSourcesCurrent(window)) return undefined;
     const existing = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? AND revision=?").get(window.windowId, window.revision);
     if (existing) return learningJobSchema.parse(JSON.parse(String(existing.body_json)));
     // A revision is not independent evidence and must not renew candidate expiry.
-    const first = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY created_at LIMIT 1").get(window.windowId);
+    const first = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY rowid LIMIT 1").get(window.windowId);
     const prior = first ? learningJobSchema.parse(JSON.parse(String(first.body_json))) : undefined;
-    if (prior && ["cancelled", "archived"].includes(prior.state)) return undefined;
+    if (this.#database.prepare("SELECT 1 FROM learning_jobs WHERE window_id=? AND state IN ('cancelled','archived') LIMIT 1").get(window.windowId)) return undefined;
+    const latest = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY rowid DESC LIMIT 1").get(window.windowId);
+    const previous = latest ? learningJobSchema.parse(JSON.parse(String(latest.body_json))) : undefined;
     const attempts = Number(this.#database.prepare("SELECT coalesce(max(json_extract(body_json, '$.attempts')),0) AS attempts FROM learning_jobs WHERE window_id=?").get(window.windowId)?.attempts);
-    const job = learningJobSchema.parse({ schemaVersion: 1, jobId: `learning-job-${sha256([window.windowId, window.revision]).slice(0, 24)}`,
+    const jobId = `learning-job-${sha256([window.windowId, window.revision]).slice(0, 24)}`;
+    // Reconciliation can fill missing proof without changing the extracted correction.
+    const saved = previous ? this.learningProposalsForJob(previous.jobId) : [];
+    const retained = previous && ["waiting_evidence", "superseded"].includes(previous.state)
+      ? saved.filter((proposal) => {
+        const candidate = this.knowledgeCandidates([proposal.knowledgeId])[0];
+        if (candidate?.state !== "candidate" || this.feedbackEvents(proposal.knowledgeId).some((entry) => entry.source === "user")) return false;
+        const { rule, trigger, exclusions, userSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate } = proposal;
+        try {
+          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate }] });
+          return true;
+        } catch { return false; }
+      }).map((proposal) => ruleProposalSchema.parse({ ...proposal, jobId, proposalId: `learning-proposal-${sha256([jobId, proposal.proposalId]).slice(0, 24)}`, sourceDigests: window.sources })) : [];
+    const job = learningJobSchema.parse({ schemaVersion: 1, jobId,
       windowId: window.windowId, revision: window.revision, state: "pending", attempts, createdAt: window.createdAt,
-      updatedAt: this.#now().toISOString(), expiresAt: prior?.expiresAt ?? expiresAt, extractorVersion: "correction-extractor-1" });
+      updatedAt: now.toISOString(), expiresAt: prior?.expiresAt ?? expiresAt, extractorVersion: "correction-extractor-1",
+      ...(saved.length ? { state: retained.length ? "waiting_evidence" : "evaluated", result: previous?.result } : {}),
+      ...(previous?.state === "paused" ? { state: "paused", retryAfter: previous.retryAfter, pauseReason: previous.pauseReason } : {}),
+    });
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       if (this.hasActiveDeletion() || !this.learningSourcesCurrent(window)) { this.#database.exec("ROLLBACK;"); return undefined; }
+      this.#database.prepare(`UPDATE learning_jobs SET state='superseded', body_json=json_set(body_json, '$.state', 'superseded')
+        WHERE window_id=? AND state NOT IN ('archived','cancelled','superseded')`).run(window.windowId);
       this.#database.prepare("INSERT OR IGNORE INTO learning_jobs VALUES (?,?,?,?,?,?,?,?)").run(job.jobId, job.windowId, job.revision, job.state, JSON.stringify(job), JSON.stringify(window), job.createdAt, job.updatedAt);
       for (const source of window.sources) this.#database.prepare("INSERT OR IGNORE INTO learning_sources VALUES (?,?,?)").run(job.jobId, source.eventId, source.digest);
+      for (const proposal of retained) this.#database.prepare("INSERT OR IGNORE INTO learning_proposals VALUES (?,?,?,?,NULL)").run(proposal.proposalId, job.jobId, proposal.knowledgeId, JSON.stringify(proposal));
       this.#database.exec("COMMIT;"); return job;
     } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
   }
@@ -2204,11 +2292,18 @@ export class CanonicalSqliteStore {
     });
   }
 
+  public learningSourcesExist(window: LearningWindow): boolean {
+    return window.sources.every((source) => this.#database.prepare("SELECT 1 FROM raw_events WHERE event_id=?").get(source.eventId) !== undefined);
+  }
+
   public transitionLearningJob(input: LearningJob, expectedState: LearningJob["state"]): boolean {
     this.#assertNoRestoreBarrier();
     const job = learningJobSchema.parse(input);
     if (this.hasActiveDeletion()) return false;
-    return Number(this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=? AND state=?").run(job.state, JSON.stringify(job), job.updatedAt, job.jobId, expectedState).changes) === 1;
+    // Advance the indexed queue clock on ties while retaining the actual observation time in the body.
+    return Number(this.#database.prepare(`UPDATE learning_jobs SET state=?,body_json=?,updated_at=CASE WHEN updated_at>=?
+      THEN strftime('%Y-%m-%dT%H:%M:%fZ',updated_at,'+0.001 seconds') ELSE ? END WHERE job_id=? AND state=?`)
+      .run(job.state, JSON.stringify(job), job.updatedAt, job.updatedAt, job.jobId, expectedState).changes) === 1;
   }
 
   public reserveLearningAttempt(now: Date, limit: number): boolean {
@@ -2233,7 +2328,7 @@ export class CanonicalSqliteStore {
     try {
       const window = this.learningWindow(job.jobId);
       const stored = this.#database.prepare("SELECT state FROM learning_jobs WHERE job_id=?").get(job.jobId);
-      if (!window || stored?.state !== (input.reevaluation ? "waiting_evidence" : "running") || this.hasActiveDeletion() || !this.learningSourcesCurrent(window) ||
+      if (!window || stored?.state !== (input.reevaluation ? "waiting_evidence" : "running") || Date.parse(job.updatedAt) >= Date.parse(job.expiresAt) || this.hasActiveDeletion() || !this.learningSourcesCurrent(window) ||
           candidates.some((item) => this.knowledgeDeletionBlocked(item.knowledgeId)) || this.knowledgeCandidatesWithUnavailableSources(candidates).size > 0) { this.#database.exec("ROLLBACK;"); return false; }
       if (input.reevaluation) {
         const priorRow = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE job_id=?").get(job.jobId);
@@ -2278,6 +2373,21 @@ export class CanonicalSqliteStore {
         }
         this.#database.prepare("INSERT INTO knowledge_candidates VALUES (?,?,?,?,?,?)").run(candidate.knowledgeId, candidate.schemaVersion, JSON.stringify(candidate), sha256(candidate), candidate.createdAt, candidate.validatedAt ?? candidate.createdAt);
         if (candidate.state === "active") this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
+      }
+      const shellPeers = this.#learningShellPeers(receipts);
+      for (const incoming of shellPeers) {
+        if (incoming.receipt.proves !== "repository_test_command" || !receipts.some((receipt) => receipt.receiptId === incoming.receipt.receiptId)) continue;
+        for (const peer of shellPeers) {
+          if (peer.receipt.proves !== "repository_test_command" || peer.proposal.knowledgeId === incoming.proposal.knowledgeId || !conflictingShellLearning(incoming.receipt, peer.receipt)) continue;
+          for (const [knowledgeId, conflictId] of [[incoming.proposal.knowledgeId, peer.proposal.knowledgeId], [peer.proposal.knowledgeId, incoming.proposal.knowledgeId]]) {
+            if (!knowledgeId || !conflictId) continue;
+            const existing = this.knowledgeCandidates([knowledgeId])[0];
+            if (!existing || !["active", "disputed"].includes(existing.state)) continue;
+            const disputed = { ...existing, state: "disputed", conflictsWith: [...new Set([...existing.conflictsWith, conflictId])] };
+            this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?").run(JSON.stringify(disputed), sha256(disputed), job.updatedAt, knowledgeId);
+            this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(knowledgeId);
+          }
+        }
       }
       this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=?").run(job.state, JSON.stringify(job), job.updatedAt, job.jobId);
       this.#database.exec("COMMIT;"); return true;
@@ -2465,6 +2575,8 @@ export class CanonicalSqliteStore {
     const restoreBarrier = await open(restoreBarrierPath, "wx");
     const requiredTombstones = new Map<string, DeletionOperation>();
     const requiredLearningSuppressions = new Set<string>();
+    const requiredUserFeedback = new Map<string, string>();
+    const requiredLifecycleStates = new Map<string, string>();
     let installedIncompleteDeletion = false;
     let requiredDeletionKey: string | undefined;
     const restoreId = randomUUID();
@@ -2495,6 +2607,14 @@ export class CanonicalSqliteStore {
       try {
         current = new DatabaseSync(targetPath);
         current.exec("BEGIN EXCLUSIVE;");
+        for (const row of current.prepare("SELECT feedback_id,body_json FROM feedback_events WHERE json_extract(body_json, '$.source')='user'").all()) {
+          requiredUserFeedback.set(String(row.feedback_id), sha256(JSON.parse(String(row.body_json))));
+        }
+        if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 3) {
+          for (const row of current.prepare("SELECT knowledge_id,body_json FROM knowledge_candidates WHERE json_extract(body_json, '$.state') IN ('archived','disputed','superseded')").all()) {
+            requiredLifecycleStates.set(String(row.knowledge_id), String(JSON.parse(String(row.body_json)).state));
+          }
+        }
         if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 11) {
           for (const row of current.prepare("SELECT target_digest FROM learning_suppressions").all()) requiredLearningSuppressions.add(String(row.target_digest));
         }
@@ -2654,6 +2774,21 @@ export class CanonicalSqliteStore {
             ? new Set(source.prepare("SELECT target_digest FROM learning_suppressions").all().map((row) => String(row.target_digest))) : new Set<string>();
           if (backupDeletionKey !== requiredDeletionKey || [...requiredLearningSuppressions].some((digest) => !available.has(digest))) {
             throw new InvalidCanonicalSchemaError("Backup is missing an installed learning deletion suppression.");
+          }
+        }
+        for (const [feedbackId, digest] of requiredUserFeedback) {
+          const row = source.prepare("SELECT body_json FROM feedback_events WHERE feedback_id=?").get(feedbackId);
+          if (!row || sha256(JSON.parse(String(row.body_json))) !== digest) {
+            throw new InvalidCanonicalSchemaError("Backup is missing an installed user knowledge control.");
+          }
+        }
+        for (const [knowledgeId, state] of requiredLifecycleStates) {
+          if (asNumber(source.prepare("PRAGMA user_version").get()?.user_version) < 3) {
+            throw new InvalidCanonicalSchemaError("Backup would reverse an installed knowledge lifecycle state.");
+          }
+          const row = source.prepare("SELECT body_json FROM knowledge_candidates WHERE knowledge_id=?").get(knowledgeId);
+          if (!row || JSON.parse(String(row.body_json)).state !== state) {
+            throw new InvalidCanonicalSchemaError("Backup would reverse an installed knowledge lifecycle state.");
           }
         }
         await backup(source, temporaryPath);
@@ -6172,9 +6307,12 @@ export class CanonicalSqliteStore {
             Date.parse(right.event.timestamp) ||
           left.event.eventId.localeCompare(right.event.eventId),
       );
+    const selectedProposals = this.learningProposals(candidates.map((entry) => entry.knowledgeId));
+    const selectedReceipts = this.learningReceipts(candidates.map((entry) => entry.knowledgeId));
+    const peers = this.#learningShellPeers(selectedReceipts);
     return {
-      learningProposals: this.learningProposals(candidates.map((entry) => entry.knowledgeId)),
-      learningReceipts: this.learningReceipts(candidates.map((entry) => entry.knowledgeId)),
+      learningProposals: [...new Map([...selectedProposals, ...peers.map((peer) => peer.proposal)].map((proposal) => [proposal.proposalId, proposal])).values()],
+      learningReceipts: [...new Map([...selectedReceipts, ...peers.map((peer) => peer.receipt)].map((receipt) => [receipt.receiptId, receipt])).values()],
       contextUseRecords: [...contextRows.values(), ...((candidates.some((entry) => entry.knowledgeId.startsWith("learning-knowledge-")))
         ? [...new Set(envelopes.map((entry) => entry.event.sessionId).filter((id): id is string => id !== undefined))]
           .flatMap((id) => this.#database.prepare("SELECT request_id,body_json FROM context_use_records WHERE session_id=?").all(id))

@@ -420,6 +420,22 @@ describe("canonical verification evidence", () => {
 });
 
 describe("canonical verified recovery", () => {
+  it.each(["revoke", "correct"] as const)("refuses an older backup that would undo the user %s control", async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), "provenloop-control-restore-")); roots.push(root);
+    const path = join(root, "canonical.db"); const snapshot = join(root, "before-control.db");
+    const store = new CanonicalSqliteStore(path);
+    try {
+      store.upsertKnowledgeCandidates([candidate]);
+      await store.backupTo(snapshot);
+      store.recordKnowledgeFeedback({ event: { schemaVersion: 1, feedbackId: `restore-${kind}`, kind, source: "user", targetType: "knowledge",
+        targetId: candidate.knowledgeId, evidenceRef: "current-user-control", timestamp: "2026-09-02T00:00:00.000Z" } });
+      store.upsertKnowledgeCandidates([{ ...candidate, state: kind === "revoke" ? "archived" : "disputed" }]);
+      await expect(CanonicalSqliteStore.restoreFromBackup(snapshot, path)).rejects.toThrow("user knowledge control");
+      expect(store.feedbackEvents(candidate.knowledgeId)).toHaveLength(1);
+      expect(store.knowledgeCandidates([candidate.knowledgeId])[0]?.state).toBe(kind === "revoke" ? "archived" : "disputed");
+    } finally { store.close(); }
+  });
+
   it("does not migrate an existing database merely because a worker or doctor opens it", async () => {
     const root = await mkdtemp(join(tmpdir(), "provenloop-migration-policy-"));
     roots.push(root);

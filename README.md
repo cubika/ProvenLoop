@@ -337,6 +337,7 @@ are regression evidence, not measurements of a user's actual productivity.
 
 - [Product design](docs/product-design.md)
 - [Product validation and quality evaluation](docs/product-validation.md)
+- [General correction-learning test catalog](docs/general-learning-test-catalog.md)
 - [Technical architecture](docs/architecture.md)
 - [Copilot event capture design](docs/copilot-event-capture-design.md)
 - [Implementation roadmap](docs/roadmap.md)

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
+import { verifyExternalReportArtifacts } from "./external-report-binding.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u);
@@ -43,13 +45,17 @@ const windowSchema = z.object({
   persistenceLatencyMs: z.number().nonnegative().nullable(),
   evidenceDigests: z.array(digest).min(1),
 }).strict().superRefine((value, context) => {
-  if (value.correctRules > value.proposedRules || (value.qualified === true && value.reusable !== true)) {
+  if (value.correctRules > value.proposedRules || (value.qualified === true && value.reusable !== true) ||
+      (value.candidate === "none" && value.proposedRules !== 0) ||
+      (value.candidate === "correct" && value.correctRules === 0) ||
+      (value.candidate === "incorrect" && value.proposedRules === 0)) {
     context.addIssue({ code: "custom", message: "Inconsistent independent window labels or rule counts." });
   }
 });
 
 const taskSchema = z.object({
   id: identifier,
+  scenario: z.enum(["native", "mcp"]).optional(),
   applicable: z.boolean().nullable(),
   deliveredBeforeOperationWithoutReminder: z.boolean().nullable(),
   providedItems: z.number().int().nonnegative(),
@@ -112,8 +118,49 @@ export interface AutomaticLearningAcceptanceReport {
   readonly evidenceDigest?: string;
 }
 
-export const loadAutomaticLearningEvidence = async (path?: string): Promise<unknown> =>
-  path === undefined ? undefined : JSON.parse(await readFile(path, "utf8")) as unknown;
+export const installedLearningArtifactManifestSchema = z.object({
+  version: z.literal(1), producer: z.literal("provenloop-installed-observer"),
+  codeVersion: z.string(), executableDigest: digest,
+  artifacts: z.array(z.object({ path: z.string(), sha256: digest }).strict()).min(1),
+}).strict();
+
+const importedEvidenceBindingSchema = z.object({
+  version: z.literal(1), evidenceDigest: digest, artifactRoot: z.string().min(1),
+  manifest: installedLearningArtifactManifestSchema,
+}).strict();
+
+const readBoundedJson = async (path: string): Promise<unknown> => {
+  const file = await open(path, "r");
+  try {
+    const details = await file.stat();
+    if (!details.isFile() || details.size > 16 * 1024 * 1024) {
+      throw new Error("Automatic-learning evidence must be a bounded file.");
+    }
+    return JSON.parse(await file.readFile("utf8")) as unknown;
+  } finally { await file.close(); }
+};
+
+export const loadAutomaticLearningEvidence = async (path?: string, expected?: {
+  readonly codeVersion: string; readonly executableDigest: string;
+}): Promise<AutomaticLearningEvidence | undefined> => {
+  if (path === undefined) return undefined;
+  const evidence = automaticLearningEvidenceSchema.parse(await readBoundedJson(path));
+  const binding = importedEvidenceBindingSchema.parse(await readBoundedJson(path + ".artifacts.json"));
+  if (evidence.evidenceKind !== "installed_controlled" ||
+      binding.evidenceDigest !== createHash("sha256").update(JSON.stringify(evidence)).digest("hex") ||
+      binding.manifest.codeVersion !== evidence.codeVersion ||
+      binding.manifest.executableDigest !== evidence.installedArtifactDigest ||
+      (expected !== undefined && (evidence.codeVersion !== expected.codeVersion ||
+        evidence.installedArtifactDigest !== expected.executableDigest))) {
+    throw new Error("Installed evidence, import binding and evaluated executable do not match.");
+  }
+  await verifyExternalReportArtifacts(binding.manifest.artifacts, [
+    ...evidence.windows.flatMap((item) => item.evidenceDigests),
+    ...evidence.tasks.flatMap((item) => item.evidenceDigests),
+    ...evidence.observations.flatMap((item) => item.evidenceDigests),
+  ], resolve(dirname(path), binding.artifactRoot));
+  return evidence;
+};
 
 export const evaluateAutomaticLearningAcceptance = (
   input: unknown,
@@ -169,7 +216,13 @@ export const evaluateAutomaticLearningAcceptance = (
     new Set(windows.map((item) => item.language)).size === 2);
   add("M2-AUTO-007-label-completeness", true, "Every frozen window/task needs independent labels and observed results; missing values remain unknown.",
     windows.every((item) => item.reusable !== null && item.qualified !== null && item.provenanceComplete !== null && item.active !== null && item.candidate !== "unknown") &&
-    tasks.every((item) => item.applicable !== null && item.hostObserved && item.deliveredBeforeOperationWithoutReminder !== null));
+    tasks.every((item) => item.applicable !== null && item.hostObserved && item.deliveredBeforeOperationWithoutReminder !== null &&
+      (item.applicable !== true || (item.scenario !== undefined && item.compliance !== "unknown"))));
+  add("M2-AUTO-004-observed-compliance", ["native", "mcp"].every((scenario) => applicable.some((item) =>
+    item.scenario === scenario && item.hostObserved && item.deliveredBeforeOperationWithoutReminder === true &&
+    item.providedItems > item.incorrectItems && item.compliance === "compliant")),
+    "Both native test-command and MCP-parameter later tasks must show observed compliance after timely, applicable delivery; delivery alone is not adoption.",
+    applicable.length > 0 && applicable.every((item) => item.scenario !== undefined && item.hostObserved && item.compliance !== "unknown"));
   add("M2-AUTO-005-complete-run", true, "All attempts must be retained; provider/host failures and queued, paused or timeout windows make controlled acceptance incomplete.",
     evidence.allAttemptsRetained && evidence.infrastructureFailureCount === 0 && windows.every((item) => item.disposition === "completed" || item.disposition === "not_scheduled"));
   ratio("M2-AUTO-007-discovery-recall", positives.filter((item) => item.candidate === "correct" && item.provenanceComplete).length, positives.length, 0.9, 20);
@@ -192,7 +245,14 @@ export const evaluateAutomaticLearningAcceptance = (
   }
   for (const compliance of ["compliant", "noncompliant", "unknown"] as const) {
     metrics[`${compliance}Tasks`] = tasks.filter((item) => item.compliance === compliance).length;
+    metrics[`${compliance}ApplicableTasks`] = applicable.filter((item) => item.compliance === compliance).length;
   }
+  for (const scenario of ["native", "mcp"] as const) {
+    for (const compliance of ["compliant", "noncompliant", "unknown"] as const) {
+      metrics[`${scenario}${compliance}Tasks`] = applicable.filter((item) => item.scenario === scenario && item.compliance === compliance).length;
+    }
+  }
+  metrics.causalBenefit = null;
   add("M2-AUTO-007-persistence-latency", p95 !== null && p95 <= 120_000,
     "Observed persistence latency p95 must be at most 120000 ms; missing, paused and queued observations cannot disappear.",
     latencies.length > 0 && qualified.filter((item) => item.active === true).every((item) => item.persistenceLatencyMs !== null));

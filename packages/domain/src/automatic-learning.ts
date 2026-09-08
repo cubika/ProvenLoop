@@ -7,6 +7,7 @@ import {
 import { sha256 } from "./digest.js";
 import { validCapturedParent } from "./parent-bridge.js";
 import { supportedLearningTestCommand, verifyShellRecovery } from "./shell-learning.js";
+import { containsPotentialSecret } from "./redaction.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -87,8 +88,8 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
           completion = entry;
           break;
         }
-        if (entry.event.eventType === "session.idle") {
-          if (!failed?.event.toolName) completion = entry;
+        if (entry.event.eventType === "session.idle" || entry.event.eventType === "agent.turn_completed") {
+          completion = entry;
           break;
         }
       }
@@ -122,18 +123,22 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
   const parsed = learningInferenceResponseSchema.parse(output);
   const sources = new Map(window.events.map((entry) => [entry.event.eventId, entry]));
   for (const proposal of parsed.proposals) {
+    if ([proposal.rule, proposal.trigger, ...proposal.exclusions, proposal.userSource.quote].some(containsPotentialSecret)) {
+      throw new Error("Learning proposal contains sensitive content.");
+    }
     if (proposal.predicate && proposal.shellPredicate) throw new Error("A proposal cannot mix shell and MCP predicates.");
     const user = sources.get(proposal.userSource.eventId);
     if (user?.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
         `learning-window-${sha256(user.event.eventId).slice(0, 24)}` !== window.windowId ||
         !user.content?.message?.includes(proposal.userSource.quote)) throw new Error("Invalid user source quotation.");
-    for (const id of [proposal.failedOperationEventId, proposal.retryOperationEventId, proposal.completionEventId]) {
-      if (!sources.has(id)) throw new Error("Proposal references an unknown source.");
-    }
-    if (sources.get(proposal.failedOperationEventId)?.event.eventType !== "tool.started" ||
-        sources.get(proposal.retryOperationEventId)?.event.eventType !== "tool.started" ||
-        sources.get(proposal.completionEventId)?.event.eventType !== "tool.completed") {
-      throw new Error("Proposal operation references must identify failed/retry tool.started events and the retry tool.completed event.");
+    for (const [id, expectedType] of [[proposal.failedOperationEventId, "tool.started"],
+      [proposal.retryOperationEventId, "tool.started"], [proposal.completionEventId, "tool.completed"]] as const) {
+      if (id === undefined) continue;
+      const source = sources.get(id);
+      if (!source) throw new Error("Proposal references an unknown source.");
+      if (source.event.eventType !== expectedType) {
+        throw new Error("Proposal operation references must identify failed/retry tool.started events and the retry tool.completed event.");
+      }
     }
   }
   return parsed;
@@ -150,7 +155,7 @@ export const renderLearningPredicate = (proposal: RuleProposal): string | undefi
 
 export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly CaptureEnvelope[], contracts: readonly LearningToolContract[], now: Date): McpRecoveryReceipt | undefined => {
   const predicate = proposal.predicate;
-  if (predicate === undefined) return undefined;
+  if (predicate === undefined || !proposal.failedOperationEventId || !proposal.retryOperationEventId || !proposal.completionEventId) return undefined;
   const contract = contracts.find((item) => item.digest === predicate.contractDigest && item.serverName === predicate.serverName && item.toolName === predicate.toolName);
   if (contract === undefined || sha256({ schemaVersion: contract.schemaVersion, serverName: contract.serverName, toolName: contract.toolName, version: contract.version, sourceSchemaDigest: contract.sourceSchemaDigest, requiredArguments: contract.requiredArguments, absolutePathArguments: contract.absolutePathArguments }) !== contract.digest) return undefined;
   if (!(predicate.kind === "required_argument" ? contract.requiredArguments : contract.absolutePathArguments).includes(predicate.argument)) return undefined;
@@ -160,9 +165,12 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
   const completion = byId.get(proposal.completionEventId);
   const user = byId.get(proposal.userSource.eventId);
   const failure = events.find((entry) => entry.event.eventType === "tool.failed" && entry.event.operationId === failed?.event.operationId && entry.event.sessionId === failed?.event.sessionId);
-  if (!failed || !retry || !completion || !user || !failure || user.event.trust !== "user" ||
+  if (!failed || !retry || !completion || !user || !failure || user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
+      !failed.event.operationId || !retry.event.operationId ||
       !user.content?.message?.includes(proposal.userSource.quote)) return undefined;
   const chain = [failed, failure, user, retry, completion];
+  const executionActors = new Set([failed, failure, retry, completion].flatMap((entry) => entry.event.actorId ? [entry.event.actorId] : []));
+  if (executionActors.size > 1 || executionActors.has("provenloop-internal")) return undefined;
   if (!user.event.sessionId || !user.event.repoId || !user.event.worktree || chain.some((entry) =>
     entry.event.sessionId !== user.event.sessionId || entry.event.repoId !== user.event.repoId ||
     entry.event.worktree !== user.event.worktree || entry.event.repositoryState !== "known_repo" ||
@@ -199,7 +207,10 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
       if (!parent || !validCapturedParent(child, parent)) return false;
       if (current === target) return true;
       if (!parent || parent.event.sessionId !== user.event.sessionId || parent.event.repoId !== user.event.repoId ||
-          parent.event.worktree !== user.event.worktree || Date.parse(parent.event.timestamp) > childTime ||
+          parent.event.worktree !== user.event.worktree || parent.event.repositoryState !== "known_repo" ||
+          parent.redaction.truncatedPaths.length > 0 || parent.redaction.droppedPaths.length > 0 || parent.redaction.redactedPaths.length > 0 ||
+          (parent.event.captureQuality?.truncatedFields.length ?? 0) > 0 || (parent.event.captureQuality?.omittedFields.length ?? 0) > 0 ||
+          Date.parse(parent.event.timestamp) > childTime ||
           parent.event.trust === "user" || parent.event.trust === "external-content") return false;
       childTime = Date.parse(parent.event.timestamp);
       child = parent;

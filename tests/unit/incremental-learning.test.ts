@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureQueueItemSchema } from "@provenloop/contracts";
-import { buildLearningWindows, createCaptureEnvelope } from "@provenloop/domain";
+import { buildLearningWindows, createCaptureEnvelope, sha256 } from "@provenloop/domain";
 import { LearningCoordinator } from "@provenloop/host";
 import { CanonicalSqliteStore, DEFAULT_SQLITE_MIGRATIONS, DatabaseSync } from "@provenloop/storage-sqlite";
 
@@ -139,6 +139,26 @@ describe("incremental automatic learning", () => {
     } finally { store.close(); }
   });
 
+  it("reschedules the latest superseded window when enriched evidence is beyond adjacent turns", () => {
+    const store = new CanonicalSqliteStore(":memory:");
+    try {
+      seedTurn(store, "original");
+      const prompt = required(store.episodeSourceEnvelopes().find((entry) => entry.sourceEventId === "original-prompt"));
+      const distant = item("distant-proof", "tool.completed", base + 200_000); store.ingestQueueItem(distant);
+      for (let index = 0; index < 80; index += 1) seedTurn(store, `between-${index}`, base + 2000 + index * 2000);
+      const capturedDistant = required(store.episodeSourceEnvelopes().find((entry) => entry.sourceEventId === "distant-proof"));
+      const sources = [prompt, capturedDistant].map((event) => ({ eventId: event.event.eventId, digest: sha256(event) }));
+      const job = required(store.scheduleLearningWindow({ schemaVersion: 1, windowId: `learning-window-${sha256(prompt.event.eventId).slice(0, 24)}`,
+        revision: sha256(sources), sessionId: "session", repoId: "repo", worktree: "C:/repo", createdAt: prompt.event.timestamp, sources, events: [prompt, capturedDistant] },
+      new Date(base + 86_400_000).toISOString()));
+      const time = new Date(base + 300_000);
+      for (let round = 0; round < 10; round += 1) for (const work of store.learningPromptWork(time, 128)) store.completeLearningPromptWork(work);
+      expect(store.enrichRawEvent({ envelope: { ...distant.envelope, content: { message: "Recovered exact result." } }, sourceDigest: "d".repeat(64) }).status).toBe("enriched");
+      store.transitionLearningJob({ ...job, state: "superseded" }, "pending");
+      expect(store.learningPromptWork(time, 128).some((work) => work.eventId === prompt.event.eventId)).toBe(true);
+    } finally { store.close(); }
+  });
+
   it("honors debounce and batch limits, and removes work when its source is deleted", () => {
     const store = new CanonicalSqliteStore(":memory:");
     try {
@@ -184,7 +204,7 @@ describe("incremental automatic learning", () => {
     expect(() => new CanonicalSqliteStore(path)).toThrow();
     const migrated = new CanonicalSqliteStore(path, { allowSchemaMigration: true });
     try {
-      expect(migrated.health().userVersion).toBe(12);
+      expect(migrated.health().userVersion).toBe(DEFAULT_SQLITE_MIGRATIONS.length);
       const work = migrated.learningPromptWork(now); expect(work).toHaveLength(1);
       migrated.completeLearningPromptWork(required(work[0]));
     } finally { migrated.close(); }
@@ -208,5 +228,44 @@ describe("incremental automatic learning", () => {
       expect(raw.prepare("SELECT count(*) AS n FROM learning_prompt_work").get()?.n).toBe(0);
       expect(raw.prepare("SELECT count(*) AS n FROM learning_event_changes").get()?.n).toBe(0);
     } finally { raw.close(); }
+  });
+
+  it("requires an explicit schema 13 upgrade and rejects older learning readers afterwards", async () => {
+    const root = await mkdtemp(join(tmpdir(), "learning-schema-13-")); roots.push(root);
+    const path = join(root, "canonical.db");
+    const oldMigrations = DEFAULT_SQLITE_MIGRATIONS.filter((migration) => migration.version < 13);
+    const prior = new CanonicalSqliteStore(path, { migrations: oldMigrations });
+    seedTurn(prior, "upgrade"); prior.close();
+    expect(() => new CanonicalSqliteStore(path)).toThrow("maintenance upgrade");
+    const upgraded = new CanonicalSqliteStore(path, { allowSchemaMigration: true });
+    try {
+      expect(upgraded.health().userVersion).toBe(13);
+      expect(upgraded.learningPromptWork(now)).toHaveLength(1);
+    } finally { upgraded.close(); }
+    expect(() => new CanonicalSqliteStore(path, { migrations: oldMigrations })).toThrow("newer than supported");
+  });
+
+  it("rotates bounded evidence and inference pages fairly when the clock does not advance", async () => {
+    const store = new CanonicalSqliteStore(":memory:");
+    try {
+      for (let index = 0; index < 35; index += 1) {
+        seedTurn(store, `fair-${index}`, base, `fair-session-${index}`);
+      }
+      const windows = buildLearningWindows(store.episodeSourceEnvelopes(), now);
+      expect(windows).toHaveLength(35);
+      for (const window of windows) store.scheduleLearningWindow(window, new Date(base + 86_400_000).toISOString(), now);
+      const first = store.learningJobsDue(now, "inference", 1)[0];
+      expect(first).toBeDefined();
+      if (!first) throw new Error("Missing pending job.");
+      store.transitionLearningJob({ ...first, state: "failed", attempts: 1, updatedAt: now.toISOString() }, "pending");
+      expect(store.learningJobsDue(now, "inference", 1)[0]?.jobId).not.toBe(first.jobId);
+      for (const job of store.learningJobs()) store.transitionLearningJob({ ...job, state: "waiting_evidence" }, job.state);
+      const firstPage = store.learningJobsDue(now, "evidence");
+      expect(firstPage).toHaveLength(32);
+      for (const job of firstPage) store.transitionLearningJob({ ...job, updatedAt: now.toISOString() }, "waiting_evidence");
+      const nextPage = store.learningJobsDue(now, "evidence");
+      expect(nextPage.slice(0, 3).every((job) => !firstPage.some((prior) => prior.jobId === job.jobId))).toBe(true);
+      expect(store.learningJobsDue(new Date(base + 86_400_000), "evidence")).toEqual([]);
+    } finally { store.close(); }
   });
 });
