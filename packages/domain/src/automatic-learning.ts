@@ -6,7 +6,7 @@ import {
 } from "@provenloop/contracts";
 import { sha256 } from "./digest.js";
 import { validCapturedParent } from "./parent-bridge.js";
-import { verifyShellRecovery } from "./shell-learning.js";
+import { supportedLearningTestCommand, verifyShellRecovery } from "./shell-learning.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -15,49 +15,106 @@ export const learningSourceDigest = (event: CaptureEnvelope): string => sha256(e
 
 export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Date): LearningWindow[] => {
   const bridgedSources = new Set(events.flatMap((entry) => entry.event.parentBridge?.map((bridge) => bridge.sourceEventId) ?? []));
+  const compare = (a: CaptureEnvelope, b: CaptureEnvelope): number =>
+    Date.parse(a.event.timestamp) - Date.parse(b.event.timestamp) || a.event.eventId.localeCompare(b.event.eventId);
   const ordered = [...events].filter((entry) => entry.event.actorId !== "provenloop-internal" && !bridgedSources.has(entry.sourceEventId))
-    .sort((a, b) => Date.parse(a.event.timestamp) - Date.parse(b.event.timestamp) || a.event.eventId.localeCompare(b.event.eventId));
-  const windows: LearningWindow[] = [];
-  for (let i = 0; i < ordered.length; i += 1) {
-    const user = ordered[i];
-    if (user === undefined || user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
-        !user.content?.message || !user.event.sessionId || !user.event.repoId || !user.event.worktree ||
-        user.event.repositoryState !== "known_repo") continue;
-    const same = (entry: CaptureEnvelope): boolean => entry.event.sessionId === user.event.sessionId &&
-      entry.event.repoId === user.event.repoId && entry.event.worktree === user.event.worktree;
-    const prior = ordered.slice(0, i).filter(same);
-    const latestFailure = prior.findLast((entry) => (entry.event.eventType === "tool.failed" || (entry.event.eventType === "tool.completed" && entry.event.exitCode !== undefined && entry.event.exitCode !== 0)) && entry.event.operationId !== undefined);
-    const failedStart = latestFailure === undefined ? -1 : prior.findLastIndex((entry) =>
-      entry.event.eventType === "tool.started" && entry.event.operationId === latestFailure.event.operationId &&
-      Date.parse(entry.event.timestamp) <= Date.parse(latestFailure.event.timestamp));
-    // Keep the actual failed operation and its causal response, not an earlier unrelated prompt.
-    const previous = failedStart >= 0 ? prior.slice(failedStart).slice(-12) : prior.slice(-8);
-    const following: CaptureEnvelope[] = [];
-    for (const entry of ordered.slice(i + 1)) {
-      if (!same(entry)) continue;
-      if (entry.event.trust === "user" || previous.length + following.length >= 31) break;
-      following.push(entry);
-      if (["tool.completed", "tool.failed"].includes(entry.event.eventType)) break;
-    }
-    // An ordinary turn is analyzed after an actual operation changes state, without keyword gates.
-    if (!following.some((entry) => ["tool.completed", "tool.failed", "session.idle"].includes(entry.event.eventType))) continue;
-    if (now.getTime() - Date.parse(following.at(-1)?.event.timestamp ?? user.event.timestamp) < 2_000) continue;
-    const selected = [...previous, user, ...following];
-    const completion = following.at(-1);
-    if (completion?.event.eventType === "tool.completed") {
-      for (const proof of ordered.filter((entry) => same(entry) && entry.event.eventType === "test.completed" && entry.event.operationId === completion.event.operationId && entry.event.evidence?.sourceCompleteEventId === completion.sourceEventId)) {
-        if (selected.length < 32 && !selected.includes(proof)) selected.push(proof);
-      }
-    }
-    const sources = selected.map((entry) => ({ eventId: entry.event.eventId, digest: learningSourceDigest(entry) }));
-    const window = learningWindowSchema.parse({
-      schemaVersion: 1, windowId: `learning-window-${sha256(user.event.eventId).slice(0, 24)}`,
-      revision: sha256(sources), sessionId: user.event.sessionId, repoId: user.event.repoId,
-      worktree: user.event.worktree, createdAt: user.event.timestamp, sources, events: selected,
-    });
-    windows.push(window);
+    .sort(compare);
+  const groups = new Map<string, CaptureEnvelope[]>();
+  for (const entry of ordered) {
+    const key = JSON.stringify([entry.event.sessionId, entry.event.repoId, entry.event.worktree]);
+    const group = groups.get(key) ?? [];
+    group.push(entry);
+    groups.set(key, group);
   }
-  return windows;
+  const windows: { user: CaptureEnvelope; window: LearningWindow }[] = [];
+  for (const group of groups.values()) {
+    const starts = new Map<string, number>();
+    const proofs = new Map<string, CaptureEnvelope[]>();
+    const proofKey = (entry: CaptureEnvelope, source: string | undefined): string => JSON.stringify([entry.event.operationId, source]);
+    for (const entry of group) {
+      if (entry.event.eventType !== "test.completed") continue;
+      const key = proofKey(entry, entry.event.evidence?.sourceCompleteEventId);
+      const matches = proofs.get(key) ?? [];
+      matches.push(entry);
+      proofs.set(key, matches);
+    }
+    let latestFailure: { entry: CaptureEnvelope; index: number; start: number | undefined } | undefined;
+    for (const [i, user] of group.entries()) {
+      if (user.event.eventType === "tool.started" && user.event.operationId !== undefined) starts.set(user.event.operationId, i);
+      if ((user.event.eventType === "tool.failed" || (user.event.eventType === "tool.completed" && user.event.exitCode !== undefined && user.event.exitCode !== 0)) && user.event.operationId !== undefined) {
+        latestFailure = { entry: user, index: i, start: starts.get(user.event.operationId) };
+      }
+      if (user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
+          !user.content?.message || !user.event.sessionId || !user.event.repoId || !user.event.worktree ||
+          user.event.repositoryState !== "known_repo") continue;
+      const recentFailure = latestFailure && i - latestFailure.index <= 12 ? latestFailure : undefined;
+      const failedStart = recentFailure?.start;
+      // Do not spend an inference attempt on a window that has already lost its failed operation.
+      if (failedStart !== undefined && i - failedStart > 12) continue;
+      const previous = group.slice(failedStart ?? Math.max(0, i - 8), i);
+      const failed = failedStart === undefined ? undefined : group[failedStart];
+      const before = record(failed?.event.redactedArguments);
+      const relatedRetry = (entry: CaptureEnvelope): boolean => {
+        if (!failed?.event.toolName) return true;
+        if (entry.event.toolName !== failed.event.toolName) return false;
+        if (failed.event.mcp) {
+          if (entry.event.mcp?.serverName !== failed.event.mcp.serverName || entry.event.mcp?.toolName !== failed.event.mcp.toolName ||
+              entry.event.mcp?.contractDigest !== failed.event.mcp.contractDigest) return false;
+          const argument = recentFailure?.entry.event.mcp?.failureArgument;
+          if (argument === undefined) return true;
+          const after = record(entry.event.redactedArguments);
+          const other = (args: Record<string, unknown>) => Object.fromEntries(Object.entries(args).filter(([key]) => key !== argument));
+          return after[argument] !== undefined && after[argument] !== null && sha256(before[argument]) !== sha256(after[argument]) && sha256(other(before)) === sha256(other(after));
+        }
+        const command = record(entry.event.redactedArguments).command;
+        return typeof before.command !== "string" || !supportedLearningTestCommand(before.command) ||
+          (!entry.event.mcp && typeof command === "string" && supportedLearningTestCommand(command) && command !== before.command);
+      };
+      const following: CaptureEnvelope[] = [];
+      const retries = new Set<string>();
+      const retryStarts = new Map<string, CaptureEnvelope>();
+      let completion: CaptureEnvelope | undefined;
+      for (let j = i + 1; j < group.length && previous.length + following.length < 31; j += 1) {
+        const entry = group[j];
+        if (!entry || entry.event.trust === "user") break;
+        following.push(entry);
+        if (entry.event.eventType === "tool.started" && entry.event.operationId !== undefined && relatedRetry(entry)) {
+          retries.add(entry.event.operationId);
+          retryStarts.set(entry.event.operationId, entry);
+        }
+        if (["tool.completed", "tool.failed"].includes(entry.event.eventType) &&
+            (!failed?.event.toolName || (entry.event.operationId !== undefined && retries.has(entry.event.operationId)))) {
+          completion = entry;
+          break;
+        }
+        if (entry.event.eventType === "session.idle") {
+          if (!failed?.event.toolName) completion = entry;
+          break;
+        }
+      }
+      // Preparatory tools and incomplete retries cannot consume the bounded inference budget.
+      if (!completion || now.getTime() - Date.parse(completion.event.timestamp) < 2_000) continue;
+      const selected = [...previous, user, ...following];
+      const nativeProofs = completion.event.eventType === "tool.completed" ? proofs.get(proofKey(completion, completion.sourceEventId)) ?? [] : [];
+      const retry = completion.event.operationId === undefined ? undefined : retryStarts.get(completion.event.operationId);
+      const command = record(retry?.event.redactedArguments).command;
+      if (retry && !retry.event.mcp && typeof command === "string" && supportedLearningTestCommand(command) &&
+          completion.event.completionStatus === "succeeded" && completion.event.exitCode === 0 &&
+          !nativeProofs.some((proof) => proof.event.evidence?.sourceStartEventId === retry.sourceEventId)) continue;
+      const additionalProofs = nativeProofs.filter((proof) => !selected.includes(proof));
+      if (selected.length + additionalProofs.length > 32) continue;
+      selected.push(...additionalProofs);
+      selected.sort(compare);
+      const sources = selected.map((entry) => ({ eventId: entry.event.eventId, digest: learningSourceDigest(entry) }));
+      const window = learningWindowSchema.parse({
+        schemaVersion: 1, windowId: `learning-window-${sha256(user.event.eventId).slice(0, 24)}`,
+        revision: sha256(sources), sessionId: user.event.sessionId, repoId: user.event.repoId,
+        worktree: user.event.worktree, createdAt: user.event.timestamp, sources, events: selected,
+      });
+      windows.push({ user, window });
+    }
+  }
+  return windows.sort((a, b) => compare(a.user, b.user)).map(({ window }) => window);
 };
 
 export const validateLearningResponse = (window: LearningWindow, output: unknown): ReturnType<typeof learningInferenceResponseSchema.parse> => {
@@ -152,11 +209,20 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
   };
   if (!traces(retry, user.event.eventId) || !traces(user, failure.event.eventId) ||
       !traces(failure, failed.event.eventId) || !traces(completion, retry.event.eventId)) return undefined;
-  if (events.filter((entry) => entry.event.eventType === "tool.started" && entry.event.toolName === retry.event.toolName && traces(entry, user.event.eventId)).length !== 1) return undefined;
+  // Only competing corrections before this result make the selected retry ambiguous.
+  // Later invocations do not change the immutable evidence for this invocation.
+  const competingRetries = events.filter((entry) => {
+    const args = record(entry.event.redactedArguments);
+    const other = Object.fromEntries(Object.entries(args).filter(([key]) => key !== predicate.argument));
+    return entry.event.eventType === "tool.started" && entry.event.toolName === retry.event.toolName && native(entry) &&
+      Date.parse(entry.event.timestamp) <= Date.parse(completion.event.timestamp) && valid(args[predicate.argument]) &&
+      sha256(other) === sha256(otherBefore) && traces(entry, user.event.eventId) && !traces(entry, completion.event.eventId);
+  });
+  if (competingRetries.length !== 1) return undefined;
   if (proposal.sourceDigests.some((source) => { const entry = byId.get(source.eventId); return !entry || learningSourceDigest(entry) !== source.digest; })) return undefined;
   if (chain.some((entry) => !proposal.sourceDigests.some((source) => source.eventId === entry.event.eventId))) return undefined;
   if (events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.operationId === retry.event.operationId &&
-      (entry.event.eventType === "tool.failed" || entry.event.completionStatus === "failed" || entry.event.mcp?.isError === true))) return undefined;
+      (entry.event.eventType === "tool.failed" || entry.event.completionStatus === "failed" || entry.event.mcp?.isError === true || entry.event.mcp?.resultType === "failure"))) return undefined;
   return mcpRecoveryReceiptSchema.parse({ schemaVersion: 1, receiptId: `mcp-recovery-${sha256([proposal.proposalId, contract.digest]).slice(0, 24)}`,
     proposalId: proposal.proposalId, predicate, contract, failureEventId: failure.event.eventId, userEventId: user.event.eventId,
     failedOperationEventId: failed.event.eventId, retryOperationEventId: retry.event.eventId, completionEventId: completion.event.eventId,

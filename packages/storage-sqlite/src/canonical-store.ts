@@ -130,6 +130,13 @@ export interface CanonicalEnrichmentResult {
   readonly reason?: string;
 }
 
+export interface LearningPromptWork {
+  readonly deduplicationKey: string;
+  readonly eventId: string;
+  readonly generation: number;
+  readonly events: readonly CaptureEnvelope[];
+}
+
 interface RestoreJournal {
   readonly formatVersion: 1;
   readonly pid: number;
@@ -595,6 +602,50 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
       CREATE INDEX learning_attempt_day ON learning_attempts(attempted_at);
       CREATE TABLE learning_notices (knowledge_id TEXT PRIMARY KEY REFERENCES knowledge_candidates(knowledge_id) ON DELETE CASCADE, claimed_at TEXT NOT NULL) STRICT;
       CREATE TABLE learning_suppressions (target_digest TEXT PRIMARY KEY) STRICT;
+    `,
+  },
+  {
+    version: 12,
+    sql: `
+      UPDATE raw_events SET event_timestamp=
+        strftime('%Y-%m-%dT%H:%M:%S', substr(event_timestamp,1,19) ||
+          CASE WHEN substr(event_timestamp,-1)='Z' THEN 'Z' ELSE substr(event_timestamp,-6) END) || '.' ||
+        CASE WHEN substr(event_timestamp,20,1)='.' THEN
+          substr(substr(event_timestamp,21,length(event_timestamp)-20-
+            CASE WHEN substr(event_timestamp,-1)='Z' THEN 1 ELSE 6 END) || '000',1,3)
+          ELSE '000' END || 'Z';
+      CREATE TABLE learning_event_changes (
+        deduplication_key TEXT PRIMARY KEY REFERENCES raw_events(deduplication_key) ON DELETE CASCADE
+      ) STRICT;
+      CREATE TABLE learning_prompt_work (
+        deduplication_key TEXT PRIMARY KEY REFERENCES raw_events(deduplication_key) ON DELETE CASCADE,
+        generation INTEGER NOT NULL,
+        not_before INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX learning_prompt_due ON learning_prompt_work(not_before);
+      CREATE INDEX raw_events_learning_context
+        ON raw_events(session_id, repo_id, worktree, event_timestamp, event_id)
+        WHERE parse_status = 'supported' AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal';
+      CREATE INDEX raw_events_learning_prompts
+        ON raw_events(session_id, repo_id, worktree, event_timestamp, event_id)
+        WHERE parse_status = 'supported' AND trust = 'user' AND event_type = 'prompt.submitted';
+      CREATE INDEX learning_jobs_state ON learning_jobs(state, updated_at, job_id);
+      CREATE INDEX learning_jobs_inference ON learning_jobs(updated_at, job_id)
+        WHERE state IN ('pending','paused','failed') AND json_extract(body_json, '$.attempts') < 3;
+      CREATE INDEX learning_jobs_expiry ON learning_jobs(json_extract(body_json, '$.expiresAt'))
+        WHERE state NOT IN ('archived', 'cancelled');
+      CREATE INDEX learning_proposal_job ON learning_proposals(job_id);
+      CREATE TABLE learning_notice_work (
+        knowledge_id TEXT PRIMARY KEY REFERENCES knowledge_candidates(knowledge_id) ON DELETE CASCADE
+      ) STRICT;
+      INSERT INTO learning_notice_work
+        SELECT knowledge_id FROM knowledge_candidates
+        WHERE knowledge_id LIKE 'learning-knowledge-%' AND json_extract(body_json, '$.state')='active'
+          AND knowledge_id NOT IN (SELECT knowledge_id FROM learning_notices);
+      INSERT INTO learning_prompt_work
+        SELECT deduplication_key, 1, 0 FROM raw_events
+        WHERE parse_status = 'supported' AND trust = 'user' AND event_type = 'prompt.submitted'
+          AND session_id IS NOT NULL AND repo_id IS NOT NULL AND worktree IS NOT NULL;
     `,
   },
 ] as const satisfies readonly SqliteMigration[];
@@ -1641,6 +1692,7 @@ interface ExpectedSqliteIndex {
   readonly name?: string;
   readonly origin: "c" | "pk" | "u";
   readonly unique?: boolean;
+  readonly partial?: boolean;
 }
 
 const RUNTIME_SCHEMA_INDEXES = {
@@ -1842,6 +1894,8 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   raw_events: [
+    { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_context", origin: "c", unique: false, partial: true },
+    { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_prompts", origin: "c", unique: false, partial: true },
     {
       columns: ["last_seen_at", "deduplication_key"],
       name: "raw_events_observed",
@@ -1983,21 +2037,123 @@ export class CanonicalSqliteStore {
       .map((row) => learningJobSchema.parse(JSON.parse(String(row.body_json))));
   }
 
+  public learningJobsDue(now: Date, kind: "maintenance" | "evidence" | "inference", limit = 32): readonly LearningJob[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 128) throw new RangeError("Invalid learning job page size.");
+    const timestamp = now.toISOString();
+    const expiry = "json_extract(body_json, '$.expiresAt')";
+    const rows = kind === "maintenance"
+      ? [
+        ...this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE state NOT IN ('archived','cancelled') AND ${expiry} <= ? LIMIT ?`).all(timestamp, limit),
+        ...this.#database.prepare("SELECT body_json FROM learning_jobs WHERE state='running' AND json_extract(body_json, '$.deadline') <= ? LIMIT ?").all(timestamp, limit),
+      ].slice(0, limit)
+      : this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE ${kind === "evidence" ? "state='waiting_evidence'" : "state IN ('pending','paused','failed') AND json_extract(body_json, '$.attempts') < 3"}
+         AND ${expiry} > ? ORDER BY updated_at, job_id LIMIT ?`).all(timestamp, limit);
+    return rows.map((row) => learningJobSchema.parse(JSON.parse(String(row.body_json))));
+  }
+
+  public learningProposalsForJob(jobId: string): readonly RuleProposal[] {
+    return this.#database.prepare("SELECT body_json FROM learning_proposals WHERE job_id=?").all(jobId)
+      .map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))));
+  }
+
+  public pendingLearningActivationIds(): readonly string[] {
+    return this.#database.prepare("SELECT knowledge_id FROM learning_notice_work ORDER BY rowid LIMIT 32").all()
+      .map((row) => String(row.knowledge_id));
+  }
+
+  // A durable worklist coalesces ingestion and enrichment without rereading historical bodies.
+  public learningPromptWork(now: Date, limit = 8, changeLimit = 128): readonly LearningPromptWork[] {
+    this.#assertNoRestoreBarrier();
+    if (![limit, changeLimit].every((value) => Number.isInteger(value) && value > 0 && value <= 128)) {
+      throw new RangeError("Invalid learning work page size.");
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      if (this.hasActiveDeletion()) { this.#database.exec("ROLLBACK;"); return []; }
+      const changes = this.#database.prepare(`SELECT raw_events.* FROM learning_event_changes
+        JOIN raw_events USING(deduplication_key) ORDER BY learning_event_changes.rowid LIMIT ?`).all(changeLimit);
+      const touch = this.#database.prepare(`INSERT INTO learning_prompt_work VALUES (?,1,?)
+        ON CONFLICT(deduplication_key) DO UPDATE SET generation=generation+1, not_before=max(not_before,excluded.not_before)`);
+      for (const changed of changes) {
+        if (changed.session_id !== null && changed.repo_id !== null && changed.worktree !== null) {
+          const keys = new Set<string>();
+          const identity = [String(changed.session_id), String(changed.repo_id), String(changed.worktree), String(changed.event_timestamp), String(changed.event_id)];
+          const previous = this.#database.prepare(`SELECT deduplication_key FROM raw_events
+            WHERE parse_status='supported' AND trust='user' AND event_type='prompt.submitted'
+              AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id) <= (?,?)
+            ORDER BY event_timestamp DESC, event_id DESC LIMIT 1`).get(...identity);
+          if (previous) keys.add(String(previous.deduplication_key));
+          // A failed operation may support several adjacent user turns; do not stop at the first.
+          const following = this.#database.prepare(`SELECT deduplication_key, trust, event_type FROM raw_events
+            WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
+              AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+              AND (event_timestamp,event_id) > (?,?) ORDER BY event_timestamp, event_id LIMIT 12`).all(...identity);
+          for (const prompt of following) {
+            if (prompt.trust === "user" && prompt.event_type === "prompt.submitted") keys.add(String(prompt.deduplication_key));
+          }
+          for (const key of keys) touch.run(key, Date.parse(String(changed.event_timestamp)) + 2_000);
+        }
+        this.#database.prepare("DELETE FROM learning_event_changes WHERE deduplication_key=?").run(String(changed.deduplication_key));
+      }
+      const prompts = this.#database.prepare(`SELECT raw_events.*, learning_prompt_work.generation FROM learning_prompt_work
+        JOIN raw_events USING(deduplication_key) WHERE not_before <= ? ORDER BY not_before, learning_prompt_work.rowid LIMIT ?`).all(now.getTime(), limit);
+      const work = prompts.map((prompt): LearningPromptWork => {
+        const values = [String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree), String(prompt.event_timestamp), String(prompt.event_id)];
+        const adjacent = (direction: "before" | "after") => this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
+          WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
+            AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+            AND (event_timestamp,event_id) ${direction === "before" ? "<" : ">="} (?,?)
+          ORDER BY event_timestamp ${direction === "before" ? "DESC" : "ASC"}, event_id ${direction === "before" ? "DESC" : "ASC"} LIMIT 64`).all(...values);
+        const events = [...adjacent("before").reverse(), ...adjacent("after")].map((row) =>
+          this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json)))));
+        return { deduplicationKey: String(prompt.deduplication_key), eventId: String(prompt.event_id), generation: Number(prompt.generation), events };
+      });
+      this.#database.exec("COMMIT;");
+      return work;
+    } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
+  }
+
+  public completeLearningPromptWork(work: LearningPromptWork, notBefore?: number): void {
+    this.#assertNoRestoreBarrier();
+    if (notBefore === undefined) {
+      this.#database.prepare("DELETE FROM learning_prompt_work WHERE deduplication_key=? AND generation=?").run(work.deduplicationKey, work.generation);
+    } else {
+      this.#database.prepare("UPDATE learning_prompt_work SET not_before=? WHERE deduplication_key=? AND generation=?").run(notBefore, work.deduplicationKey, work.generation);
+    }
+  }
+
+  #markLearningEventChange(deduplicationKey: string): void {
+    if (asNumber(this.#database.prepare("PRAGMA user_version").get()?.user_version) >= 12) {
+      this.#database.prepare("INSERT OR IGNORE INTO learning_event_changes VALUES (?)").run(deduplicationKey);
+    }
+  }
+
   public claimLearningActivationNotice(knowledgeId: string): boolean {
     this.#assertNoRestoreBarrier();
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       const candidate = this.knowledgeCandidates([knowledgeId])[0];
-      if (this.hasActiveDeletion() || !candidate || candidate.state !== "active" || candidate.evidenceTier !== "externally_verified" || !knowledgeId.startsWith("learning-knowledge-") ||
-          !new KnowledgeAdmissionPolicy().evaluate({ candidate, ...this.knowledgeAdmissionEvidence([candidate]) }).admitted) { this.#database.exec("ROLLBACK;"); return false; }
+      if (this.hasActiveDeletion()) { this.#database.exec("ROLLBACK;"); return false; }
+      if (!candidate || candidate.state !== "active" || candidate.evidenceTier !== "externally_verified" || !knowledgeId.startsWith("learning-knowledge-") ||
+          !new KnowledgeAdmissionPolicy().evaluate({ candidate, ...this.knowledgeAdmissionEvidence([candidate]) }).admitted) {
+        // Rotate ineligible entries so later valid notices still get a bounded turn.
+        this.#database.prepare("UPDATE learning_notice_work SET rowid=(SELECT coalesce(max(rowid),0)+1 FROM learning_notice_work) WHERE knowledge_id=?").run(knowledgeId);
+        this.#database.exec("COMMIT;"); return false;
+      }
       const claimed = Number(this.#database.prepare("INSERT OR IGNORE INTO learning_notices VALUES (?,?)").run(knowledgeId, this.#now().toISOString()).changes) === 1;
+      this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(knowledgeId);
       this.#database.exec("COMMIT;"); return claimed;
     } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
   }
 
   public releaseLearningActivationNotice(knowledgeId: string): void {
     this.#assertNoRestoreBarrier();
-    this.#database.prepare("DELETE FROM learning_notices WHERE knowledge_id=?").run(knowledgeId);
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      this.#database.prepare("DELETE FROM learning_notices WHERE knowledge_id=?").run(knowledgeId);
+      this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work SELECT knowledge_id FROM knowledge_candidates WHERE knowledge_id=?").run(knowledgeId);
+      this.#database.exec("COMMIT;");
+    } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
   }
 
   public learningWindow(jobId: string): LearningWindow | undefined {
@@ -2028,7 +2184,7 @@ export class CanonicalSqliteStore {
     const first = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY created_at LIMIT 1").get(window.windowId);
     const prior = first ? learningJobSchema.parse(JSON.parse(String(first.body_json))) : undefined;
     if (prior && ["cancelled", "archived"].includes(prior.state)) return undefined;
-    const attempts = this.learningJobs().filter((entry) => entry.windowId === window.windowId).reduce((maximum, entry) => Math.max(maximum, entry.attempts), 0);
+    const attempts = Number(this.#database.prepare("SELECT coalesce(max(json_extract(body_json, '$.attempts')),0) AS attempts FROM learning_jobs WHERE window_id=?").get(window.windowId)?.attempts);
     const job = learningJobSchema.parse({ schemaVersion: 1, jobId: `learning-job-${sha256([window.windowId, window.revision]).slice(0, 24)}`,
       windowId: window.windowId, revision: window.revision, state: "pending", attempts, createdAt: window.createdAt,
       updatedAt: this.#now().toISOString(), expiresAt: prior?.expiresAt ?? expiresAt, extractorVersion: "correction-extractor-1" });
@@ -2080,9 +2236,10 @@ export class CanonicalSqliteStore {
       if (!window || stored?.state !== (input.reevaluation ? "waiting_evidence" : "running") || this.hasActiveDeletion() || !this.learningSourcesCurrent(window) ||
           candidates.some((item) => this.knowledgeDeletionBlocked(item.knowledgeId)) || this.knowledgeCandidatesWithUnavailableSources(candidates).size > 0) { this.#database.exec("ROLLBACK;"); return false; }
       if (input.reevaluation) {
-        const priorJob = this.learningJobs().find((entry) => entry.jobId === job.jobId);
+        const priorRow = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE job_id=?").get(job.jobId);
+        const priorJob = priorRow ? learningJobSchema.parse(JSON.parse(String(priorRow.body_json))) : undefined;
         if (!priorJob || priorJob.attempts !== job.attempts || priorJob.expiresAt !== job.expiresAt || Date.parse(job.updatedAt) >= Date.parse(job.expiresAt)) { this.#database.exec("ROLLBACK;"); return false; }
-        const saved = this.learningProposals();
+        const saved = this.learningProposalsForJob(job.jobId);
         const feedback = this.feedbackEvents();
         if (proposals.some((proposal) => !saved.some((entry) => entry.proposalId === proposal.proposalId && sha256(entry) === sha256(proposal))) ||
             candidates.some((candidate) => {
@@ -2115,10 +2272,12 @@ export class CanonicalSqliteStore {
           const newReceipt = receipts.find((receipt) => proposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === receipt.proposalId));
           if (existing.state === "candidate" && candidate.state === "active" && !userControls && newReceipt && (input.reevaluation || !existing.sourceEvidenceIds.includes(newReceipt.userEventId))) {
             this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?").run(JSON.stringify(candidate), sha256(candidate), candidate.validatedAt ?? candidate.createdAt, candidate.knowledgeId);
+            this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
           }
           continue;
         }
         this.#database.prepare("INSERT INTO knowledge_candidates VALUES (?,?,?,?,?,?)").run(candidate.knowledgeId, candidate.schemaVersion, JSON.stringify(candidate), sha256(candidate), candidate.createdAt, candidate.validatedAt ?? candidate.createdAt);
+        if (candidate.state === "active") this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
       }
       this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=?").run(job.state, JSON.stringify(job), job.updatedAt, job.jobId);
       this.#database.exec("COMMIT;"); return true;
@@ -4463,7 +4622,7 @@ export class CanonicalSqliteStore {
           optionalText(event.branch),
           optionalText(event.worktree),
           optionalText(event.commitSha),
-          event.timestamp,
+          new Date(event.timestamp).toISOString(),
           event.trust,
           optionalText(safe.envelope.redaction.contentDigest),
           optionalText(event.resultDigest),
@@ -4475,6 +4634,7 @@ export class CanonicalSqliteStore {
           now,
         );
       this.#faultInjector?.("after_raw_event_insert");
+      if (parseStatus === "supported") this.#markLearningEventChange(expectedDeduplicationKey);
       if (unsupportedReason !== undefined) {
         this.#insertParserError(
           item.queueItemId,
@@ -4769,6 +4929,7 @@ export class CanonicalSqliteStore {
       this.#database.prepare(
         "UPDATE raw_events SET last_seen_at = ? WHERE deduplication_key = ?",
       ).run(observedAt, supplied.deduplicationKey);
+      this.#markLearningEventChange(supplied.deduplicationKey);
       this.#database.exec("COMMIT;");
       return { status: "enriched" };
     } catch (error) {
@@ -7433,6 +7594,10 @@ export class CanonicalSqliteStore {
                         index.name === "raw_events_time" ||
                         index.name === "context_use_time"
                       )) ||
+                      (expectedVersion < 12 && (
+                        index.name === "raw_events_learning_context" ||
+                        index.name === "raw_events_learning_prompts"
+                      )) ||
                       (expectedVersion < 10 && (
                         index.name === "raw_events_observed" ||
                         index.name === "context_use_observed"
@@ -7514,13 +7679,6 @@ export class CanonicalSqliteStore {
     ];
     for (const index of indexes) {
       const name = String(index.name);
-      if (
-        asNumber(index.partial) !== 0
-      ) {
-        throw new InvalidCanonicalSchemaError(
-          `SQLite table ${table} index ${name} is incompatible.`,
-        );
-      }
       const columns = database
         .prepare(`PRAGMA index_xinfo(${sqliteIdentifier(name)});`)
         .all() as readonly Readonly<Record<string, unknown>>[];
@@ -7532,6 +7690,7 @@ export class CanonicalSqliteStore {
       );
       const matchIndex = unmatched.findIndex(
         (expected) =>
+          asNumber(index.partial) === Number(expected.partial ?? false) &&
           expected.origin === String(index.origin) &&
           (
             expected.unique ?? true

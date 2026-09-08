@@ -73,9 +73,15 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
     (proof.event.parentBridge === undefined || (sha256(proof.event.parentBridge) === sha256(completion.event.parentBridge) &&
       proof.event.originalParentSourceEventId === completion.event.originalParentSourceEventId));
   if (!trace(failure, failed) || !trace(user, failure) || !trace(retry, user) || !trace(completion, retry) || !derivedCompletion) return undefined;
-  if (events.filter((entry) => entry.event.eventType === "tool.started" && entry.event.toolName === predicate.toolName && trace(entry, user)).length !== 1 ||
+  const competingRetries = events.filter((entry) => {
+    const args = record(entry.event.redactedArguments);
+    return entry.event.eventType === "tool.started" && entry.event.toolName === predicate.toolName && !entry.event.mcp &&
+      Date.parse(entry.event.timestamp) <= Date.parse(completion.event.timestamp) && args.command === predicate.command &&
+      sha256(relevant(args)) === sha256(relevant(before)) && trace(entry, user) && !trace(entry, completion);
+  });
+  if (competingRetries.length !== 1 ||
       events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.operationId === retry.event.operationId &&
-        (entry.event.completionStatus === "failed" || (entry.event.exitCode !== undefined && entry.event.exitCode !== 0)))) return undefined;
+        (entry.event.eventType === "tool.failed" || entry.event.completionStatus === "failed" || (entry.event.exitCode !== undefined && entry.event.exitCode !== 0)))) return undefined;
   if (proposal.sourceDigests.some((source) => !byId.has(source.eventId) || sha256(byId.get(source.eventId)) !== source.digest) ||
       [...chain, proof].some((entry) => !proposal.sourceDigests.some((source) => source.eventId === entry.event.eventId))) return undefined;
   return shellRecoveryReceiptSchema.parse({ schemaVersion: 1, receiptId: `shell-recovery-${sha256([proposal.proposalId, predicate]).slice(0, 24)}`, proposalId: proposal.proposalId, predicate,

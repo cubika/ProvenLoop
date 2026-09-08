@@ -24,6 +24,7 @@ export {
   type CanonicalEnrichmentResult,
   type CanonicalTimeRange,
   type CanonicalRangePage,
+  type LearningPromptWork,
   type QueueProcessingRecord,
   type SqliteMigration,
   type WorkEpisodeProjectionWriteResult,

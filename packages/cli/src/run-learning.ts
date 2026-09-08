@@ -41,9 +41,7 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
         }
       }
     }
-    const learned = store.learningProposals()
-        .filter((proposal) => store.knowledgeCandidates([proposal.knowledgeId])[0]?.state === "active")
-        .map((proposal) => proposal.knowledgeId);
+    const learned = store.pendingLearningActivationIds();
     return { ...result, learned };
   } finally { store.close(); }
 }

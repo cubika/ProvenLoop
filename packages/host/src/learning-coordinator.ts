@@ -35,10 +35,10 @@ export class LearningCoordinator {
     try {
       if (this.options.signal?.aborted || !await this.options.enabled() || store.hasActiveDeletion()) return { status: "disabled" };
       const time = now();
-      for (const job of store.learningJobs()) {
+      for (const job of store.learningJobsDue(time, "maintenance")) {
         if (Date.parse(job.expiresAt) <= time.getTime() && !["archived", "cancelled"].includes(job.state)) {
           store.transitionLearningJob({ ...job, state: "archived", updatedAt: time.toISOString() }, job.state);
-          for (const proposal of store.learningProposals().filter((entry) => entry.jobId === job.jobId)) {
+          for (const proposal of store.learningProposalsForJob(job.jobId)) {
             const candidate = store.knowledgeCandidates([proposal.knowledgeId])[0];
             if (candidate?.state === "candidate") store.upsertKnowledgeCandidates([{ ...candidate, state: "archived" }]);
           }
@@ -46,19 +46,23 @@ export class LearningCoordinator {
           store.transitionLearningJob({ ...job, state: job.attempts >= 3 ? "failed" : "pending", updatedAt: time.toISOString(), error: "Inference lease expired." }, "running");
         }
       }
-      for (const job of store.learningJobs().filter((entry) => entry.state === "waiting_evidence")) {
+      for (const job of store.learningJobsDue(time, "evidence")) {
         const window = store.learningWindow(job.jobId);
         if (!window || !store.learningSourcesCurrent(window)) {
           store.transitionLearningJob({ ...job, state: "cancelled", updatedAt: time.toISOString() }, "waiting_evidence");
           continue;
         }
-        const proposals = store.learningProposals().filter((entry) => entry.jobId === job.jobId &&
+        const proposals = store.learningProposalsForJob(job.jobId).filter((entry) =>
           store.knowledgeCandidates([entry.knowledgeId])[0]?.state === "candidate");
         const receipts = proposals.flatMap((proposal): LearningRecoveryReceipt[] => {
           const receipt = verifyLearningRecovery(proposal, window.events, this.options.contracts?.() ?? [], time);
           return receipt ? [receipt] : [];
         });
-        if (receipts.length === 0) continue;
+        if (receipts.length === 0) {
+          // Round-robin waiting candidates so one unprovable page cannot starve later evidence.
+          store.transitionLearningJob({ ...job, updatedAt: time.toISOString() }, "waiting_evidence");
+          continue;
+        }
         const qualified = proposals.filter((proposal) => receipts.some((receipt) => receipt.proposalId === proposal.proposalId));
         if (this.options.signal?.aborted || !await this.options.enabled()) return { status: "disabled" };
         const updated: LearningJob = { ...job, state: qualified.length === proposals.length ? "evaluated" : "waiting_evidence", updatedAt: time.toISOString(), result: "qualified" };
@@ -69,10 +73,19 @@ export class LearningCoordinator {
         } catch {
           // Current counterevidence or user controls can refuse promotion without another model attempt.
         }
+        store.transitionLearningJob({ ...job, updatedAt: time.toISOString() }, "waiting_evidence");
       }
-      const windows = buildLearningWindows(store.episodeSourceEnvelopes(), time);
-      for (const window of windows) store.scheduleLearningWindow(window, new Date(Date.parse(window.createdAt) + (this.options.candidateDays ?? 30) * 86_400_000).toISOString());
-      const pending = store.learningJobs().find((job) => ["pending", "paused", "failed"].includes(job.state) && job.attempts < 3 && Date.parse(job.expiresAt) > time.getTime());
+      for (const work of store.learningPromptWork(time)) {
+        const windowId = `learning-window-${sha256(work.eventId).slice(0, 24)}`;
+        const window = buildLearningWindows(work.events, time).find((entry) => entry.windowId === windowId);
+        if (window) {
+          store.scheduleLearningWindow(window, new Date(Date.parse(window.createdAt) + (this.options.candidateDays ?? 30) * 86_400_000).toISOString());
+        }
+        // Keep a debounced turn durable even when no more events arrive after this pass.
+        const unsettled = !window && work.events.some((entry) => Date.parse(entry.event.timestamp) > time.getTime() - 2_000);
+        store.completeLearningPromptWork(work, unsettled ? time.getTime() + 2_000 : undefined);
+      }
+      const pending = store.learningJobsDue(time, "inference", 1)[0];
       if (!pending) return { status: "idle" };
       if (this.options.signal?.aborted) return { status: "disabled" };
       const window = store.learningWindow(pending.jobId);

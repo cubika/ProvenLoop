@@ -36,7 +36,7 @@ const fixture = () => {
     predicate: { kind: "required_argument", serverName: "files", toolName: "read", argument: "path", contractDigest: contract.digest },
     sourceDigests: events.map((entry) => ({ eventId: entry.event.eventId, digest: learningSourceDigest(entry) })),
   };
-  return { contract, proposal, events, failed, failure, user, retry, completion };
+  return { contract, proposal, events, failed, failure, user, retry, completion, event };
 };
 const verify = (input: ReturnType<typeof fixture>, events = input.events, refreshSources = true) =>
   verifyMcpRecovery({ ...input.proposal, ...(refreshSources ? { sourceDigests: events.map((entry) => ({ eventId: entry.event.eventId, digest: learningSourceDigest(entry) })) } : {}) },
@@ -45,6 +45,53 @@ const replace = (events: CaptureEnvelope[], selected: CaptureEnvelope, patch: Pa
   events.map((entry) => entry === selected ? { ...entry, event: { ...entry.event, ...patch } } : entry);
 
 describe("typed MCP correction proof", () => {
+  it("waits through preparations and an unfinished MCP retry without spending a window", () => {
+    const input = fixture();
+    const preparation = input.event("prepare-start", 3, { operationId: "prepare", parentEventId: input.user.event.eventId,
+      content: { toolArguments: { path: "settings.json", format: "metadata" } } });
+    const prepared = input.event("prepare-result", 4, { eventType: "tool.completed", operationId: "prepare",
+      parentEventId: preparation.event.eventId, completionStatus: "succeeded", mcp: { ...preparation.event.mcp, serverName: "files", toolName: "read", isError: false } });
+    const retry = { ...input.retry, event: { ...input.retry.event, timestamp: "2026-09-01T00:00:05Z", parentEventId: prepared.event.eventId } };
+    const completion = { ...input.completion, event: { ...input.completion.event, timestamp: "2026-09-01T00:00:06Z" } };
+    const prefix = [input.failed, input.failure, input.user, preparation, prepared];
+    const now = new Date("2026-09-01T00:00:20Z");
+    expect(buildLearningWindows(prefix, now)).toEqual([]);
+    expect(buildLearningWindows([...prefix, retry], now)).toEqual([]);
+    const events = [...prefix, retry, completion];
+    const window = buildLearningWindows(events, now)[0];
+    expect(window?.events.map((entry) => entry.event.eventId)).toEqual(events.map((entry) => entry.event.eventId));
+    expect(verify(input, events)).toBeDefined();
+    const unrelated = input.event("other-session", 4, { sessionId: "other-session", eventType: "tool.failed" });
+    expect(buildLearningWindows([...events, unrelated].reverse(), now)).toEqual([window]);
+  });
+  it("retains MCP proof and its window when later ordinary invocations descend from the retry", () => {
+    const input = fixture();
+    const later = input.event("later-read", 5, { operationId: "later", parentEventId: input.completion.event.eventId,
+      content: { toolArguments: { path: "another.md" } } });
+    const now = new Date("2026-09-01T00:00:20Z");
+    expect(verify(input, [...input.events, later], false)).toBeDefined();
+    expect(buildLearningWindows([...input.events, later], now)).toEqual(buildLearningWindows(input.events, now));
+  });
+  it("accepts a same-timestamp descendant of the MCP result but rejects a causal peer", () => {
+    const input = fixture();
+    const later = input.event("same-time-read", 4, { operationId: "later", parentEventId: input.completion.event.eventId,
+      content: { toolArguments: { path: "another.md" } } });
+    expect(verify(input, [...input.events, later], false)).toBeDefined();
+    const peer = { ...later, event: { ...later.event, parentEventId: input.user.event.eventId } };
+    expect(verify(input, [...input.events, peer], false)).toBeUndefined();
+  });
+  it("rejects competing MCP corrections before the selected result and later counterevidence", () => {
+    const input = fixture();
+    const competing = input.event("competing-retry", 3.5, { operationId: "competing", parentEventId: input.user.event.eventId,
+      content: { toolArguments: { path: "another.md" } } });
+    expect(verify(input, [...input.events, competing])).toBeUndefined();
+    const contradiction = input.event("late-counterevidence", 8, { eventType: "tool.failed", operationId: input.retry.event.operationId,
+      parentEventId: input.retry.event.eventId, completionStatus: "failed", mcp: { ...input.retry.event.mcp, serverName: "files", toolName: "read", isError: true } });
+    expect(verify(input, [...input.events, contradiction], false)).toBeUndefined();
+    const typedFailure = input.event("late-typed-failure", 8, { eventType: "tool.completed", operationId: input.retry.event.operationId,
+      parentEventId: input.retry.event.eventId, mcp: { ...input.retry.event.mcp, serverName: "files", toolName: "read", resultType: "failure" } });
+    expect(verify(input, [...input.events, typedFailure], false)).toBeUndefined();
+  });
   it("renders admitted legacy digest applicability without treating the contract as a secret", async () => {
     const input = fixture();
     const receipt = verify(input);

@@ -18,7 +18,22 @@ const fixture = (variant = "valid") => {
     { id: "turn", parentId: "user", type: "assistant.turn_start", data: { turnId: "turn" } },
     { id: "retry-start", parentId: "turn", type: "tool.execution_start", data: { toolCallId: "retry", toolName: "powershell", arguments: { command, cwd: "C:/repo" }, ...(variant === "mcp" ? { mcpServerName: "remote", mcpToolName: "powershell" } : {}) } },
     { id: "retry-result", parentId: variant === "unrelated" ? "failed-result" : "retry-start", type: "tool.execution_complete", data: { toolCallId: "retry", success: true, result: variant === "text-only" ? { content: "All tests passed" } : { content: "Native shell result", contents: [{ type: "shell_exit", shellId: "two", cwd: variant === "outside" ? "C:/other" : "C:/repo", exitCode: variant === "failed" ? 1 : 0 }] } } },
-  ].map((event, i) => ({ ...event, timestamp: new Date(Date.UTC(2026, 8, 8, 0, 0, i)).toISOString() }));
+  ];
+  if (variant === "preparation" || variant === "overflow") {
+    let parentId = "turn";
+    const preparations: CopilotSessionEvent[] = [];
+    for (let i = 0; i < (variant === "overflow" ? 14 : 1); i += 1) {
+      const startId = `prepare-start-${i}`, resultId = `prepare-result-${i}`, toolCallId = `prepare-${i}`;
+      preparations.push({ id: startId, parentId, type: "tool.execution_start", data: { toolCallId, toolName: "powershell", arguments: { command: "Get-Content package.json", cwd: "C:/repo" } } },
+        { id: resultId, parentId: startId, type: "tool.execution_complete", data: { toolCallId, success: true, result: { contents: [{ type: "shell_exit", shellId: toolCallId, cwd: "C:/repo", exitCode: 0 }] } } });
+      parentId = resultId;
+    }
+    const retry = native[4];
+    if (!retry) throw new Error("Missing retry");
+    native[4] = { ...retry, parentId };
+    native.splice(4, 0, ...preparations);
+  }
+  for (const [i, event] of native.entries()) native[i] = { ...event, timestamp: new Date(Date.UTC(2026, 8, 8, 0, 0, i)).toISOString() };
   if (variant === "bridge") {
     const completion = native.at(-1);
     if (!completion) throw new Error("Missing completion");
@@ -45,6 +60,51 @@ const fixture = (variant = "valid") => {
 };
 
 describe("native shell correction learning", () => {
+  it("retains shell preparations until the actual test retry and defers partial windows", () => {
+    const { events, proposal } = fixture("preparation");
+    const retryIndex = events.findIndex((entry) => entry.event.eventId === proposal.retryOperationEventId);
+    const now = new Date("2026-09-08T00:01:00Z");
+    expect(buildLearningWindows(events.slice(0, retryIndex), now)).toEqual([]);
+    expect(buildLearningWindows(events.slice(0, retryIndex + 1), now)).toEqual([]);
+    const retryOperation = events[retryIndex]?.event.operationId;
+    expect(buildLearningWindows(events.filter((entry) => entry.event.eventType !== "test.completed" || entry.event.operationId !== retryOperation), now)).toEqual([]);
+    const window = buildLearningWindows(events, now)[0];
+    expect(window?.events.map((entry) => entry.event.eventId)).toEqual(expect.arrayContaining(events.map((entry) => entry.event.eventId)));
+    expect(verifyShellRecovery(proposal, events, now)).toBeDefined();
+    expect(buildLearningWindows([...events].reverse(), now)).toEqual([window]);
+    expect(buildLearningWindows(fixture("overflow").events, now)).toEqual([]);
+  });
+  it("keeps admitted shell evidence valid after later ordinary calls while rejecting competing retries", () => {
+    const { events, proposal } = fixture();
+    const retry = events.find((entry) => entry.event.eventId === proposal.retryOperationEventId);
+    const completion = events.find((entry) => entry.event.eventId === proposal.completionEventId);
+    if (!retry || !completion || !proposal.shellPredicate) throw new Error("Missing retry sources");
+    const now = new Date("2026-09-08T00:01:00Z");
+    for (const command of ["Get-Content package.json", proposal.shellPredicate.command]) {
+      const later = { ...retry, sourceEventId: "later-call", event: { ...retry.event, eventId: "later-call", operationId: "later",
+        timestamp: "2026-09-08T00:00:06Z", parentEventId: completion.event.eventId, redactedArguments: { command, cwd: "C:/repo" } } };
+      expect(verifyShellRecovery(proposal, [...events, later], now)).toBeDefined();
+      expect(buildLearningWindows([...events, later], now)).toEqual(buildLearningWindows(events, now));
+    }
+    const competing = { ...retry, sourceEventId: "competing-call", event: { ...retry.event, eventId: "competing-call", operationId: "competing", timestamp: "2026-09-08T00:00:04.500Z" } };
+    expect(verifyShellRecovery(proposal, [...events, competing], now)).toBeUndefined();
+    const contradiction = { ...completion, sourceEventId: "late-failure", event: { ...completion.event, eventId: "late-failure",
+      timestamp: "2026-09-08T00:00:08Z", completionStatus: "failed" as const, exitCode: 1 } };
+    expect(verifyShellRecovery(proposal, [...events, contradiction], now)).toBeUndefined();
+    const failedEvent = { ...contradiction, event: { ...contradiction.event, eventType: "tool.failed", completionStatus: undefined, exitCode: undefined } };
+    expect(verifyShellRecovery(proposal, [...events, failedEvent], now)).toBeUndefined();
+  });
+  it("accepts a same-timestamp descendant of the shell result but rejects a causal peer", () => {
+    const { events, proposal } = fixture();
+    const retry = events.find((entry) => entry.event.eventId === proposal.retryOperationEventId);
+    const completion = events.find((entry) => entry.event.eventId === proposal.completionEventId);
+    if (!retry || !completion) throw new Error("Missing retry sources");
+    const later = { ...retry, sourceEventId: "same-time-call", event: { ...retry.event, eventId: "same-time-call",
+      operationId: "later", parentEventId: completion.event.eventId, timestamp: completion.event.timestamp } };
+    expect(verifyShellRecovery(proposal, [...events, later], new Date())).toBeDefined();
+    const peer = { ...later, event: { ...later.event, parentEventId: retry.event.parentEventId } };
+    expect(verifyShellRecovery(proposal, [...events, peer], new Date())).toBeUndefined();
+  });
   it("binds derived verification directly while accepting exact legacy copied bridges", () => {
     const { proposal, events } = fixture("bridge");
     const completion = events.find((entry) => entry.event.eventId === proposal.completionEventId);
