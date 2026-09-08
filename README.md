@@ -61,11 +61,12 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-08):** `0.1.0-alpha.0.12` is the Windows Design
-Partner Preview evidence candidate. It adds opt-in natural-language correction
-learning, agent research/recovery provenance, incremental learning jobs and
-coordinated upgrade maintenance. See the
-[release notes](docs/releases/0.1.0-alpha.0.12.md) and
+**Version boundary (2026-09-08):** `0.1.0-alpha.0.13` is the Windows
+Design Partner Preview evidence candidate. It repairs Windows upgrade recovery
+with graceful MCP shutdown, narrowly verified legacy-helper cleanup and guarded
+in-place plugin refresh for directory-lock errors. It retains 0.12's opt-in
+correction/agent learning and incremental jobs. See the
+[release notes](docs/releases/0.1.0-alpha.0.13.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -77,10 +78,11 @@ M3-M5 targets; the diagram above is the long-term learning loop.
 **First-product requirement (2026-09-07):** ordinary natural-language corrections
 must automatically produce source-backed proposals, qualify supported low-risk
 rules, and enable later-task reuse without manual remember/retrieve instructions.
-The 0.12 runtime implements bounded extraction and supported native/MCP recovery
-qualification. Research and unsupported semantic findings remain candidates.
-Installed-host acceptance and controlled benefit remain open; see the
+Bounded extraction and supported native/MCP recovery qualification were introduced
+in 0.12 and are retained in 0.13. Research and unsupported semantic findings remain
+candidates. Installed-host acceptance and controlled benefit remain open; see the
 [validation record](docs/general-learning-validation.md) and [agent experience checks](docs/agent-experience-validation.md).
+Those records describe the earlier experiments, not new 0.13 acceptance results.
 
 ## Repository structure
 
@@ -153,7 +155,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -161,6 +163,14 @@ uses npm only as the local package installer. It does not contact
 `registry.npmjs.org`, `packagefeedproxy.microsoft.io`, or an Azure Artifacts
 feed for the ProvenLoop package. This preview is not being published to the
 public npm registry.
+
+Upgrading does not require closing every foreground Copilot session. ProvenLoop
+drains participating processes and targets only verified remaining plugin helpers.
+Old tools may disconnect: start a new session or use a host-supported reload to
+load the updated integration; hot reconnection is not guaranteed. Keep the prior
+runtime and recovery snapshots. Schema 14 is unchanged from 0.12; 0.11 used schema
+10. See [plugin process recovery](docs/plugin-process-recovery.md) for ownership,
+locked-directory recovery and the historical 0.12 repair record.
 
 Run a built-in evaluation fixture:
 
@@ -357,6 +367,7 @@ are regression evidence, not measurements of a user's actual productivity.
 - [Implementation roadmap](docs/roadmap.md)
 - [Executable implementation checklist](docs/implementation-checklist.md)
 - [0.1.0 Alpha release plan](docs/release-0.1-alpha-plan.md)
+- [Plugin process and locked-directory recovery](docs/plugin-process-recovery.md)
 - [Competitive and Copilot investigation](docs/research/competitive-analysis.md)
 - [Self-improving agent research](docs/research/self-improving-agents.md)
 
@@ -377,11 +388,12 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.12`, an evidence-collection prerelease, not M0/MVP approval |
+| Preview candidate | `0.1.0-alpha.0.13`, an evidence-collection prerelease, not M0/MVP approval |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
 | M2 implementation | User/agent extraction, native recovery proofs, incremental jobs, conflict/expiry/deletion controls, and observational summaries |
 | Regression evidence | 24 Episode association pairs, 32 Branch Continuation pairs, and 24 Correction Recurrence pairs are synthetic fixtures, not field-effect measurements |
+| Local 0.13 validation | Windows / Node.js 22.18.0: lint, typecheck, 902 unit tests, 269 integration tests, packed-artifact verification and Windows PowerShell 5.1 installer dry run passed |
 | Release evidence | Windows/platform, latency, provider-degradation, remote-upgrade, and controlled-effect qualifications remain separate open gates |
 | Future M3-M6 | Delayed Outcome linking, Retrospective, evaluated Playbooks, and additional Agent adapters |
 
@@ -390,6 +402,8 @@ worker process boundaries—not a new local microservice system. SQLite owns
 domain state; FTS and observations are rebuildable projections.
 For batch-level implementation and outstanding validation, see the
 [implementation checklist](docs/implementation-checklist.md) and
-[blockers](docs/implementation-blockers.md). Prior source regression results do
-not certify new versioned artifacts; their validation and publication must
-be verified separately.
+[blockers](docs/implementation-blockers.md). The
+[0.13 validation record](docs/releases/0.1.0-alpha.0.13.md#verification-scope-and-remaining-evidence)
+includes native process-preservation and directory-lock fixtures and installed
+bundled-CLI error-32 recovery. These local results do not certify remote CI,
+published assets, a real user's 0.13 upgrade or controlled benefit.

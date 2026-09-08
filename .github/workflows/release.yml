@@ -28,6 +28,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+        env:
+          PROVENLOOP_PROCESS_FIXTURE: "1"
       - run: npm run test:integration
       - run: npm run package:verify
       - shell: powershell

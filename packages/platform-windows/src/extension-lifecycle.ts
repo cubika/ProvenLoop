@@ -43,7 +43,7 @@ export class ExtensionShutdownTimeoutError extends Error {
 
   public constructor() {
     super(
-      "Cannot purge while a ProvenLoop Extension is active. Close Copilot and retry.",
+      "A ProvenLoop extension process has not stopped. Retry owned-plugin cleanup; the Copilot session does not need to be closed.",
     );
   }
 }

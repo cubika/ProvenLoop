@@ -12,6 +12,9 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { cancelLearningScratch } from "./inference-supervisor.js";
+import { stopPluginProcesses } from "./stop-plugin-processes.js";
+import { refreshPluginFiles } from "./refresh-plugin-files.js";
+import { bundledPluginAssets } from "./plugin-assets.js";
 import {
   join,
   parse as parsePath,
@@ -136,8 +139,12 @@ const GIT_COMMAND_TIMEOUT_MS = 5_000;
 const STATE_LEASE_TIMEOUT_MS = 5_000;
 const STATE_LEASE_RETRY_DELAY_MS = 25;
 const EXTENSION_SHUTDOWN_TIMEOUT_MS = 6_000;
+const INCOMPLETE_UPGRADE_RECOVERY_ERROR =
+  "Schema upgrade recovery is incomplete; review the retained snapshot before resuming.";
 
 export interface CopilotCliAdapterOptions {
+  readonly stopOwnedPluginProcesses?: () => Promise<unknown>;
+  readonly refreshLockedPlugin?: () => Promise<{ rollback(): Promise<void> }>;
   readonly upgradeDrainTimeoutMs?: number;
   readonly cliBinPath?: string;
   readonly commandRunner?: CommandRunner;
@@ -346,6 +353,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
   readonly #platform: NodeJS.Platform;
   readonly #writeLocalMarketplaceAssets: boolean;
   readonly #upgradeDrainTimeoutMs: number;
+  readonly #stopOwnedPluginProcesses: () => Promise<unknown>;
+  readonly #refreshLockedPlugin: () => Promise<{ rollback(): Promise<void> }>;
   #storageMaintenanceActive = false;
 
   public constructor(options: CopilotCliAdapterOptions) {
@@ -378,6 +387,37 @@ implements AgentAdapter<CopilotEventMappingResult> {
     this.#cliBinPath =
       options.cliBinPath ??
       fileURLToPath(new URL("../../cli/dist/bin.js", import.meta.url));
+    this.#stopOwnedPluginProcesses = options.stopOwnedPluginProcesses ?? (async () => {
+      // Injected command runners use isolated fake hosts; production enumerates only this plugin's processes.
+      if (options.commandRunner !== undefined || this.#platform !== "win32") return;
+      const localAppData = this.#environment.LOCALAPPDATA?.trim();
+      if (!localAppData) {
+        throw new Error("LOCALAPPDATA is required to stop owned plugin processes.");
+      }
+      return stopPluginProcesses({
+        dataRoot: this.#paths.root,
+        copilotHome: this.#copilotHome,
+        localAppData,
+        cliBinPath: this.#cliBinPath,
+        marketplaceName: this.#marketplaceName,
+      });
+    });
+    this.#refreshLockedPlugin = options.refreshLockedPlugin ?? (async () => {
+      const backupRoot = join(this.#paths.data, "backups", "plugin-refresh");
+      await mkdir(backupRoot, { recursive: true });
+      return refreshPluginFiles({
+        pluginRoot: join(
+          this.#copilotHome, "installed-plugins",
+          this.#marketplaceName, COPILOT_PLUGIN_NAME,
+        ),
+        copilotHome: this.#copilotHome,
+        assets: bundledPluginAssets(),
+        version: PROVENLOOP_VERSION,
+        marketplaceName: this.#marketplaceName,
+        marketplaceSource: this.#marketplaceSource,
+        backupRoot,
+      });
+    });
     const localAppData =
       options.environment === undefined
         ? process.env.LOCALAPPDATA?.trim()
@@ -517,6 +557,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
       await cancelLearningScratch(join(this.#paths.root, "temp"));
       shutdown = await beginExtensionShutdown(this.#paths.root);
       await waitForActiveExtensionsToStop(this.#paths.root, EXTENSION_SHUTDOWN_TIMEOUT_MS);
+      await this.#stopOwnedPluginProcesses();
+      await waitForActiveExtensionsToStop(this.#paths.root, EXTENSION_SHUTDOWN_TIMEOUT_MS);
       this.#storageMaintenanceActive = true;
       return await this.#upgradeInMaintenance();
     } finally {
@@ -590,6 +632,8 @@ implements AgentAdapter<CopilotEventMappingResult> {
     const migratedDigest = snapshotPath === undefined ? undefined :
       CanonicalSqliteStore.databaseFingerprint(this.#paths.database);
     let replacementStarted = false;
+    let refreshedInPlace = false;
+    let inPlaceRecovery: { rollback(): Promise<void> } | undefined;
     try {
       if (
         registration.marketplaceRegistered && marketplaceSourceMatches(
@@ -609,44 +653,72 @@ implements AgentAdapter<CopilotEventMappingResult> {
       }
       replacementStarted = true;
       if (registration.pluginInstalled) {
-      await this.#runRequired(
-        [
-          "plugin",
-          "uninstall",
-          this.#pluginReference(),
-        ],
-        "plugin uninstall before upgrade",
-      );
+        try {
+          await this.#runRequired(
+            ["plugin", "uninstall", this.#pluginReference()],
+            "plugin uninstall before upgrade",
+          );
+        } catch (error) {
+          if (
+            this.#platform !== "win32" ||
+            !(error instanceof CopilotCommandError) ||
+            !/\bos error (?:5|32)\b|Access is denied|being used by another process/iu.test(error.message)
+          ) {
+            throw error;
+          }
+          replacementStarted = false;
+          inPlaceRecovery = await this.#refreshLockedPlugin();
+          refreshedInPlace = true;
+        }
       }
-      if (registration.marketplaceRegistered) {
-      await this.#runRequired(
-        [
-          "plugin",
-          "marketplace",
-          "remove",
-          this.#marketplaceName,
-        ],
-        "marketplace replacement before upgrade",
-      );
+      if (!refreshedInPlace && registration.marketplaceRegistered) {
+        await this.#runRequired(
+          ["plugin", "marketplace", "remove", this.#marketplaceName],
+          "marketplace replacement before upgrade",
+        );
       }
-      await this.#ensureMarketplaceRegistered();
-      await this.#runRequired(
-        [
-          "plugin",
-          "install",
-          this.#pluginReference(),
-        ],
-        "plugin installation after marketplace upgrade",
-      );
+      if (!refreshedInPlace) {
+        await this.#ensureMarketplaceRegistered();
+        await this.#runRequired(
+          ["plugin", "install", this.#pluginReference()],
+          "plugin installation after marketplace upgrade",
+        );
+      }
       await this.#assertInstalledPluginVersion();
       await this.#ensurePluginEnabled();
-      const state = stateWith(stateBefore, this.#now(), {
+      const verifiedRegistration = await this.#requireRegistrationStatus();
+      if (
+        !verifiedRegistration.pluginEnabled ||
+        !verifiedRegistration.marketplaceRegistered ||
+        !marketplaceSourceMatches(
+          verifiedRegistration.marketplaceSource, this.#marketplaceSource,
+        )
+      ) {
+        throw new Error("The upgraded ProvenLoop registration could not be verified.");
+      }
+      const store = new CanonicalSqliteStore(this.#paths.database);
+      try {
+        if (store.health().quickCheck !== "ok") {
+          throw new Error("The upgraded ProvenLoop database failed SQLite integrity validation.");
+        }
+      } finally {
+        store.close();
+      }
+      let state = stateWith(stateBefore, this.#now(), {
         detectedCopilotVersion: version,
         installed: true,
         marketplaceRegistered: true,
         pluginEnabled: true,
         pluginInstalled: true,
       });
+      for (const capability of PROVENLOOP_CAPABILITIES) {
+        const persisted = state.capabilities[capability];
+        if (persisted.lastError === INCOMPLETE_UPGRADE_RECOVERY_ERROR) {
+          state = setPersistedCapability(
+            state, capability, { enabled: persisted.enabled }, this.#now(),
+          );
+        }
+      }
       await this.#writeState(state);
       await this.#writeRuntimeLocator();
       return {
@@ -654,15 +726,18 @@ implements AgentAdapter<CopilotEventMappingResult> {
         status: "changed",
       };
     } catch (error) {
-      if (!replacementStarted && snapshotPath === undefined) {
+      if (!replacementStarted && snapshotPath === undefined && inPlaceRecovery === undefined) {
         throw error;
       }
       let restorationError: unknown;
+      let canonicalDataChanged = false;
       try {
+        await inPlaceRecovery?.rollback();
         if (snapshotPath !== undefined) {
           if (
             CanonicalSqliteStore.databaseFingerprint(this.#paths.database) !== migratedDigest
           ) {
+            canonicalDataChanged = true;
             let safeState = stateBefore;
             for (const capability of PROVENLOOP_CAPABILITIES) {
               safeState = setPersistedCapability(safeState, capability, {
@@ -683,7 +758,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
             }),
           });
         }
-        if (replacementStarted) {
+        if (replacementStarted && !refreshedInPlace) {
           await this.#restoreRegistration(registration);
         }
         await this.#writeState(stateBefore);
@@ -691,12 +766,12 @@ implements AgentAdapter<CopilotEventMappingResult> {
         restorationError = restoreError;
       }
       if (restorationError !== undefined) {
-        if (snapshotPath !== undefined) {
+        if (snapshotPath !== undefined && !canonicalDataChanged) {
           let paused = stateBefore;
           for (const capability of PROVENLOOP_CAPABILITIES) {
             paused = setPersistedCapability(paused, capability, {
               enabled: false,
-              lastError: "Schema upgrade recovery is incomplete; review the retained snapshot before resuming.",
+              lastError: INCOMPLETE_UPGRADE_RECOVERY_ERROR,
             }, this.#now());
           }
           await this.#writeState(paused);
@@ -749,7 +824,10 @@ implements AgentAdapter<CopilotEventMappingResult> {
             registration.marketplaceSource,
             this.#marketplaceSource,
           ) ||
-          registration.pluginVersion !== PROVENLOOP_VERSION
+          registration.pluginVersion !== PROVENLOOP_VERSION ||
+          Object.values(state.capabilities).some((capability) =>
+            capability.lastError === INCOMPLETE_UPGRADE_RECOVERY_ERROR,
+          )
         )
       ) {
         const result = await this.#upgrade();

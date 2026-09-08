@@ -1,6 +1,7 @@
 import {
   cp,
   mkdir,
+  readFile,
   rm,
 } from "node:fs/promises";
 import {
@@ -61,6 +62,13 @@ const codeVersion =
   }`;
 const releaseDefines = {
   __PROVENLOOP_CODE_VERSION__: JSON.stringify(codeVersion),
+  __PROVENLOOP_PLUGIN_ASSETS__: JSON.stringify(Object.fromEntries(await Promise.all([
+    "plugin.json", ".mcp.json", "extensions/event-capture/extension.mjs",
+    "scripts/mcp-launcher.ps1", "skills/provenloop-context/SKILL.md",
+  ].map(async (path) => [
+    path,
+    await readFile(resolve(repositoryRoot, "plugins", "provenloop", path), "utf8"),
+  ])))),
 };
 
 await Promise.all([

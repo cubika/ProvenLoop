@@ -1,22 +1,24 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.12 evidence candidate; quality-release acceptance remains open
+**Status:** 0.13 local validation complete; remote CI, publication and quality-release acceptance remain open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-08
 
-**Evidence candidate:** `0.1.0-alpha.0.12` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.13` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.12 release notes](releases/0.1.0-alpha.0.12.md).
+[0.13 release notes](releases/0.1.0-alpha.0.13.md).
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
-storage/capture repairs are included alongside opt-in user/agent learning and
-coordinated maintenance in the 0.12 candidate scope. Checked
-engineering items below refer to previously recorded work; the versioned 0.12
-artifacts require a fresh retained validation and publication record.
+storage/capture repairs are included alongside opt-in user/agent learning inherited
+from 0.12. The 0.13 scope adds graceful MCP shutdown, narrowly verified legacy-helper
+cleanup, guarded Windows locked-directory refresh and state-preserving recovery.
+Checked engineering items below refer to recorded work, including the local 0.13
+regression and packaged-runtime results in section 14. Remote CI, publication and
+tag/source/asset binding require separate verification.
 
 ## 1. Goal
 
@@ -52,8 +54,8 @@ additional requirement, not a box that packaging work can close.
 
 ### Included
 
-The list describes the release target. Bounded extraction is implemented in 0.12;
-installed-host acceptance and controlled benefit remain open.
+The list describes the release target. Bounded extraction was implemented in 0.12
+and is retained in 0.13; installed-host acceptance and controlled benefit remain open.
 
 - GitHub Copilot CLI adapter;
 - non-blocking Extension event capture;
@@ -91,10 +93,10 @@ returning success-shaped placeholders.
 
 ## 3. Intended installation experience
 
-The Alpha should support:
+The candidate's versioned installation command is:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
@@ -105,10 +107,15 @@ verified before installation.
 
 The bootstrap installer must check prerequisites, verify the Release SHA-256,
 install the local tarball without registry resolution, register the Copilot
-integration, enable the in-scope learning capabilities, run Doctor, and clean
-all temporary package files.
+integration, enable in-scope capabilities on a fresh install unless opted out,
+preserve existing settings on upgrade, run Doctor, and clean all temporary package
+files. Background inference requires separate explicit learning consent.
+Version-match verification and a stale inherited PATH must not override
+`-NoAutoCollect` or re-enable disabled capabilities. Same-version verification
+enters maintenance recovery only for the exact recognized stale schema-recovery
+diagnostics.
 
-The 0.10 preview is not being published to the public npm registry. A separate
+The 0.13 preview is not being published to the public npm registry. A separate
 public npm channel or a future governed Azure Artifacts path is not part of
 this publication. If O365 internal distribution later uses Azure Artifacts, the
 expected model is an approved producer pipeline and Feed, normally Common,
@@ -218,6 +225,31 @@ plugins\
 - [ ] Verify user-owned Copilot experimental settings are restored exactly.
 
 This work closes F0-003 only after a real two-version remote upgrade succeeds.
+
+### 0.13 upgrade-recovery boundary
+
+Upgrade must drain learning, worker, observation, projection and MCP database
+leases, request graceful shutdown and await registered participants before targeted
+cleanup of remaining legacy helpers. Legacy ownership requires exact runtime-slot
+or launcher identity, or bounded parent startup-log attestation for extension
+bootstraps. Foreground Copilot, current ancestors and unrelated processes are
+excluded; unknown ownership never authorizes termination.
+
+If Windows uninstall still returns access/sharing errors 5 or 32, recovery may
+refresh only the strict known plugin layout from verified bundled assets. Backups,
+configuration ownership and concurrent-edit guards are required; no held-directory
+deletion/rename, invented Copilot `source_sha`, or silent rollback failure is allowed.
+After verified registration and SQLite `quick_check`, only the recognized generic
+stale schema-recovery error may clear. Preserve capability states, learning consent,
+unrelated errors, canonical-data-changed review warnings and snapshots. Outer failure
+handling must not overwrite that specific review warning. Future capabilities remain
+unavailable.
+
+Schema remains 14, as in 0.12; published 0.11 used schema 10. Foreground Copilot
+work need not all close for upgrade, but old tools may disconnect and require a
+new session or host-supported reload. Hot reconnection is not guaranteed.
+The [recovery record](plugin-process-recovery.md) describes a prior manual 0.12
+repair; it is not a 0.13 live-host test or closure of the remote-upgrade gate.
 
 ## 7. Workstream C: M0 acceptance evidence contract
 
@@ -573,6 +605,45 @@ reporting or evidence integrity
 Software signing and Winget packaging may follow the first private Alpha, but a
 public Windows release should not distribute unsigned mutable binaries without
 an explicit warning and checksum.
+
+### Candidate-specific verification to retain
+
+Local validation completed on Windows with Node.js 22.18.0: lint, typecheck,
+902/902 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
+skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
+Windows PowerShell 5.1 `install.ps1 -DryRun` passed. The
+[release notes](releases/0.1.0-alpha.0.13.md#verification-scope-and-remaining-evidence)
+record the coverage. Checked items below are local engineering results, not
+remote CI, publication, real-user upgrade evidence or M0/MVP acceptance:
+
+- [x] MCP shutdown finishes accepted work, exits the protocol loop and reports
+  lifecycle inspection failures explicitly.
+- [x] Process cleanup selects exact owned helpers, rejects stale/ambiguous
+  identity and ancestry, and preserves host and unrelated processes in controlled
+  local fixtures.
+- [x] Run native owned-MCP and legacy-extension preservation fixtures in the
+  standard local unit suite with `PROVENLOOP_PROCESS_FIXTURE=1`.
+- [x] Legacy extension evidence is bounded and matched to the live parent.
+- [x] Locked-file refresh handles partial writes and rollback failures, protects
+  file/config ownership and external edits, and rejects unexpected layouts.
+- [x] Exercise a native Windows directory handle that denies delete sharing.
+- [x] Adapter regression covers graceful-before-legacy ordering, both Windows
+  uninstall errors, failed verification rollback and state-preserving retries.
+- [x] Bootstrap verification covers the target runtime with stale inherited PATH,
+  an already-version-matched plugin, diagnostic-gated maintenance recovery and
+  `-NoAutoCollect`.
+- [x] Run `install.ps1 -DryRun` under Windows PowerShell 5.1.
+- [x] Complete local lint, typecheck, unit, integration and packed-artifact
+  validation for the 0.13 source and tarball.
+- [x] Drive an `os error 32` uninstall failure through the installed bundled CLI
+  in package smoke, verify every refreshed asset against exact embedded/source
+  release bytes, and preserve unrelated configuration and `source_sha` semantics.
+- [ ] Retain remote CI/release results, including the native process fixture in
+  the standard unit suite.
+- [ ] Retain a version-bound installed-host upgrade/recovery observation separately
+  from mocked, synthetic and prior manual recovery records.
+- [ ] Verify the GitHub Release tarball, checksum and tag/source binding after
+  publication without creating a public npm dependency.
 
 ## 15. Release decision
 

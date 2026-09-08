@@ -108,3 +108,4 @@ export {
   type TrustedSessionContextPublisherOptions,
   type TrustedSessionWorkspace,
 } from "./trusted-session-context.js";
+export { stopPluginProcesses } from "./stop-plugin-processes.js";

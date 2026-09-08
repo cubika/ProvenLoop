@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.12",
+    [string]$Version = "0.1.0-alpha.0.13",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -353,7 +353,25 @@ try {
     }
     Write-Success "Installed ProvenLoop $Version"
 
-    if ($existingInstallation) {
+    Write-Step "Checking the target runtime integration state"
+    $targetStatus = (& $provenLoopCommand status | Out-String) | ConvertFrom-Json
+    Require-Success "Target integration status"
+    $existingInstallation = $existingInstallation -or ($targetStatus.installed -eq $true)
+    $alreadyCurrent = (
+        $targetStatus.installed -eq $true -and
+        $targetStatus.pluginInstalled -eq $true -and
+        $targetStatus.pluginVersion -eq $Version -and
+        $targetStatus.marketplaceSource -eq "cubika/ProvenLoop#v$Version"
+    )
+    if ($alreadyCurrent) {
+        Write-Step "Verifying the existing version-matched integration"
+        $verificationArguments = @("install")
+        if ($NoAutoCollect) {
+            $verificationArguments += "--no-auto-collect"
+        }
+        & $provenLoopCommand @verificationArguments
+        Require-Success "ProvenLoop integration verification"
+    } elseif ($existingInstallation) {
         Write-Step "Upgrading the Copilot integration"
         & $provenLoopCommand upgrade
         Require-Success "ProvenLoop integration upgrade"

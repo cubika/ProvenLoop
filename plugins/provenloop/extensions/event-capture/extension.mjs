@@ -25,7 +25,7 @@ const runtime = JSON.parse(
 if (
   runtime.product !== "ProvenLoopRuntime" ||
   runtime.schemaVersion !== 1 ||
-  runtime.version !== "0.1.0-alpha.0.12" ||
+  runtime.version !== "0.1.0-alpha.0.13" ||
   typeof runtime.dataRoot !== "string" ||
   !isAbsolute(runtime.dataRoot) ||
   typeof runtime.extensionModuleUrl !== "string" ||
@@ -42,4 +42,5 @@ const {
 await runProvenLoopCopilotExtension({
   dataRoot: runtime.dataRoot,
   joinSession,
+  onStopped: () => { process.exit(0); },
 });

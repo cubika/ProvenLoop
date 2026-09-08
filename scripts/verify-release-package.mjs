@@ -17,6 +17,7 @@ import {
   pathToFileURL,
 } from "node:url";
 import { spawn } from "node:child_process";
+import { applyEdits, modify, parse } from "jsonc-parser";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -341,6 +342,11 @@ public static class Program
         }
         else if (command == "plugin uninstall provenloop@provenloop-marketplace")
         {
+            if (Environment.GetEnvironmentVariable("PROVENLOOP_FAKE_PLUGIN_LOCK") == "1")
+            {
+                Console.Error.WriteLine("The plugin directory is in use. (os error 32)");
+                return 1;
+            }
             state.Remove("plugin");
             state.Remove("enabled");
         }
@@ -596,6 +602,56 @@ public static class Program
   );
   if (!await pathExists(retainedDataPath)) {
     throw new Error("Upgrade did not preserve local data.");
+  }
+  const pluginRoot = join(
+    smokeEnvironment.COPILOT_HOME, "installed-plugins",
+    "provenloop-marketplace", "provenloop",
+  );
+  const pluginAssets = Object.fromEntries(await Promise.all([
+    "plugin.json", ".mcp.json", "scripts/mcp-launcher.ps1",
+    "extensions/event-capture/extension.mjs", "skills/provenloop-context/SKILL.md",
+  ].map(async (name) => [
+    name,
+    await readFile(join(repositoryRoot, "plugins", "provenloop", name), "utf8"),
+  ])));
+  for (const [name, contents] of Object.entries(pluginAssets)) {
+    await mkdir(dirname(join(pluginRoot, name)), { recursive: true });
+    await writeFile(join(pluginRoot, name), `${contents}\n`);
+  }
+  const configPath = join(smokeEnvironment.COPILOT_HOME, "config.json");
+  await writeFile(configPath, JSON.stringify({
+    untouched: "preserve",
+    installedPlugins: [{
+      name: "provenloop", marketplace: "provenloop-marketplace",
+      cache_path: pluginRoot, version: expectedVersion, source_sha: "old-source",
+    }],
+  }));
+  const settingsBeforeRefresh = await readFile(settingsPath, "utf8");
+  await writeFile(settingsPath, applyEdits(settingsBeforeRefresh, modify(
+    settingsBeforeRefresh,
+    ["extraKnownMarketplaces", "provenloop-marketplace"],
+    { source: { source: "github", repo: "cubika/ProvenLoop", ref: `v${expectedVersion}` } },
+    {},
+  )));
+  smokeEnvironment.PROVENLOOP_FAKE_PLUGIN_LOCK = "1";
+  try {
+    requireSuccess(await runInstalledCli(["upgrade"]), "packaged locked-directory recovery");
+    for (const [name, contents] of Object.entries(pluginAssets)) {
+      if (await readFile(join(pluginRoot, name), "utf8") !== contents) {
+        throw new Error(`Packaged recovery did not restore the exact bundled asset ${name}.`);
+      }
+    }
+    const refreshedConfig = JSON.parse(await readFile(configPath, "utf8"));
+    if (
+      refreshedConfig.untouched !== "preserve" ||
+      refreshedConfig.installedPlugins[0]?.source_sha !== undefined ||
+      parse(await readFile(settingsPath, "utf8")).theme !== "dark"
+    ) {
+      throw new Error("Packaged recovery altered unrelated configuration or fabricated source_sha.");
+    }
+  } finally {
+    delete smokeEnvironment.PROVENLOOP_FAKE_PLUGIN_LOCK;
+    await writeFile(settingsPath, settingsBeforeRefresh);
   }
   requireSuccess(
     await runInstalledCli([

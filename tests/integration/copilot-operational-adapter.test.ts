@@ -20,8 +20,11 @@ import { LocalMcpToolHandlers } from "@provenloop/cli";
 
 import {
   CopilotCliAdapter,
+  readCopilotAdapterState,
   registerInternalCopilotSession,
   runInstalledCopilotExtension,
+  setPersistedCapability,
+  writeCopilotAdapterState,
   type CommandRunOptions,
   type CommandResult,
   type CommandRunner,
@@ -836,6 +839,15 @@ describe("Copilot operational adapter", () => {
     expect((await adapter.capabilities()).capabilities.every((capability) =>
       !capability.enabled,
     )).toBe(true);
+    const reviewError = "Upgrade recovery requires review; canonical data changed after migration.";
+    const statePath = resolveWindowsProvenLoopPaths(dataRoot).adapterState;
+    expect((await readCopilotAdapterState(statePath, new Date())).capabilities.capture.lastError)
+      .toBe(reviewError);
+    runner.run = run;
+    runner.pluginVersion = PROVENLOOP_VERSION;
+    await expect(adapter.upgrade()).resolves.toMatchObject({ status: "changed" });
+    expect((await readCopilotAdapterState(statePath, new Date())).capabilities.capture)
+      .toEqual({ enabled: false, lastError: reviewError });
   });
 
   it("times out before migration and plugin replacement while learning is active, then retries safely", async () => {
@@ -915,6 +927,153 @@ describe("Copilot operational adapter", () => {
     } finally {
       await released?.release();
     }
+  });
+  it("stops owned plugin processes before file replacement and leaves migration untouched if cleanup fails", async () => {
+    const root = await createTemporaryDirectory(); const dataRoot = join(root, "data-root");
+    const databasePath = join(dataRoot, "data", "provenloop.db"); const runner = new FakeCommandRunner();
+    let refuse = true; let cleaned = false;
+    const adapter = new CopilotCliAdapter({ commandRunner: runner, copilotHome: join(root, "copilot-home"), dataRoot, environment: {}, platform: "win32",
+      stopOwnedPluginProcesses: async () => {
+        expect(await isExtensionShutdownRequested(dataRoot)).toBe(true);
+        if (refuse) throw new Error("Cannot verify owned plugin process identity");
+        cleaned = true;
+      } });
+    await adapter.install(); await installPreviousSchema(root, databasePath);
+    const before = CanonicalSqliteStore.databaseFingerprint(databasePath);
+    await expect(adapter.upgrade()).rejects.toThrow("Cannot verify owned plugin process");
+    expect(CanonicalSqliteStore.databaseFingerprint(databasePath)).toBe(before);
+    expect(runner.pluginInstalled).toBe(true);
+    refuse = false; const run = runner.run.bind(runner);
+    runner.run = async (exe, args, options) => {
+      if (args.slice(0, 2).join(" ") === "plugin uninstall") expect(cleaned).toBe(true);
+      return run(exe, args, options);
+    };
+    expect(await adapter.upgrade()).toMatchObject({ status: "changed" });
+  });
+  it("lets participating processes drain before stopping legacy helpers", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const runner = new FakeCommandRunner();
+    let cleaned = false;
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      environment: {},
+      platform: "win32",
+      stopOwnedPluginProcesses: async () => { cleaned = true; },
+    });
+    await adapter.install();
+    const active = await registerActiveExtension(dataRoot, "draining-runtime");
+    const upgrading = adapter.upgrade();
+    try {
+      await expect.poll(() => isExtensionShutdownRequested(dataRoot)).toBe(true);
+      expect(cleaned).toBe(false);
+    } finally {
+      await active.release();
+    }
+    await expect(upgrading).resolves.toMatchObject({ status: "changed" });
+    expect(cleaned).toBe(true);
+  });
+
+  it.each([
+    "Access is denied. (os error 5)",
+    "The process cannot access the file because it is being used by another process. (os error 32)",
+  ])("refreshes verified plugin files on %s without retrying uninstall", async (stderr) => {
+    const root = await createTemporaryDirectory(); const runner = new FakeCommandRunner();
+    let refreshed = false; let rolledBack = false;
+    const adapter = new CopilotCliAdapter({ commandRunner: runner, copilotHome: join(root, "copilot-home"), dataRoot: join(root, "data"), environment: {}, platform: "win32",
+      refreshLockedPlugin: async () => { refreshed = true; runner.pluginVersion = PROVENLOOP_VERSION; runner.marketplaceSource = releaseMarketplaceSource; return { rollback: async () => { rolledBack = true; } }; } });
+    await adapter.install(); runner.pluginVersion = "0.1.0-alpha.0.10";
+    runner.failures.set("copilot plugin uninstall provenloop@provenloop-marketplace", { exitCode: 1, stdout: "", stderr });
+    const result = await adapter.upgrade();
+    expect(result.status).toBe("changed"); expect(refreshed).toBe(true); expect(rolledBack).toBe(false);
+    expect(runner.pluginInstalled).toBe(true); expect(runner.pluginVersion).toBe(PROVENLOOP_VERSION);
+  });
+  it("rolls back an in-place refresh if later plugin verification fails without another uninstall", async () => {
+    const root = await createTemporaryDirectory(); const runner = new FakeCommandRunner();
+    let rolledBack = false;
+    const adapter = new CopilotCliAdapter({ commandRunner: runner, copilotHome: join(root, "copilot-home"), dataRoot: join(root, "data"), environment: {}, platform: "win32",
+      refreshLockedPlugin: async () => ({ rollback: async () => { rolledBack = true; } }) });
+    await adapter.install(); runner.pluginVersion = "0.1.0-alpha.0.10";
+    runner.failures.set("copilot plugin uninstall provenloop@provenloop-marketplace", { exitCode: 1, stdout: "", stderr: "Access is denied. (os error 5)" });
+    const start = runner.calls.length;
+    await expect(adapter.upgrade()).rejects.toThrow("prior integration was restored");
+    expect(rolledBack).toBe(true);
+    expect(runner.calls.slice(start).filter((call) => call === "copilot plugin uninstall provenloop@provenloop-marketplace")).toHaveLength(1);
+  });
+
+  it("does not repeat uninstall when locked-file recovery cannot prove ownership", async () => {
+    const root = await createTemporaryDirectory();
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot: join(root, "data-root"),
+      environment: {},
+      platform: "win32",
+      refreshLockedPlugin: async () => {
+        throw new Error("Cannot safely refresh an unverified plugin registration.");
+      },
+    });
+    await adapter.install();
+    runner.failures.set("copilot plugin uninstall provenloop@provenloop-marketplace", {
+      exitCode: 1, stdout: "", stderr: "Windows sharing violation (os error 32)",
+    });
+    const start = runner.calls.length;
+    await expect(adapter.upgrade()).rejects.toThrow("Cannot safely refresh");
+    expect(runner.calls.slice(start).filter((call) =>
+      call === "copilot plugin uninstall provenloop@provenloop-marketplace",
+    )).toHaveLength(1);
+    expect(runner.pluginInstalled).toBe(true);
+  });
+
+  it("clears stale recovery errors only after a verified retry without enabling capabilities or inference", async () => {
+    const root = await createTemporaryDirectory();
+    const dataRoot = join(root, "data-root");
+    const runner = new FakeCommandRunner();
+    const adapter = new CopilotCliAdapter({
+      commandRunner: runner,
+      copilotHome: join(root, "copilot-home"),
+      dataRoot,
+      environment: {},
+      platform: "win32",
+    });
+    await adapter.install();
+    const paths = resolveWindowsProvenLoopPaths(dataRoot);
+    const now = new Date();
+    let state = await readCopilotAdapterState(paths.adapterState, now);
+    state = {
+      ...state,
+      automaticLearning: {
+        consentedAt: now.toISOString(), disclosureVersion: 1,
+        enabled: false, notificationsEnabled: false,
+      },
+    };
+    for (const capability of ["retrieval", "outcome_learning"] as const) {
+      state = setPersistedCapability(state, capability, {
+        enabled: false,
+        lastError: "Schema upgrade recovery is incomplete; review the retained snapshot before resuming.",
+      }, now);
+    }
+    state = setPersistedCapability(state, "external_research", {
+      enabled: false,
+      lastError: "An unrelated error still needs review.",
+    }, now);
+    await writeCopilotAdapterState(paths.adapterState, state);
+    runner.failures.set("copilot plugin marketplace update provenloop-marketplace", {
+      exitCode: 1, stdout: "", stderr: "Network unavailable",
+    });
+    await expect(adapter.upgrade()).rejects.toThrow("Network unavailable");
+    expect(await readCopilotAdapterState(paths.adapterState, now)).toEqual(state);
+
+    await expect(adapter.install()).resolves.toMatchObject({ status: "changed" });
+    const recovered = await readCopilotAdapterState(paths.adapterState, now);
+    expect(recovered.capabilities.retrieval).toEqual({ enabled: false });
+    expect(recovered.capabilities.outcome_learning).toEqual({ enabled: false });
+    expect(recovered.capabilities.capture.enabled).toBe(state.capabilities.capture.enabled);
+    expect(recovered.capabilities.external_research).toEqual(state.capabilities.external_research);
+    expect(recovered.automaticLearning).toEqual(state.automaticLearning);
   });
 
   it.each(["capture-worker", "observations"] as const)(

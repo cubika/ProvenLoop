@@ -2,6 +2,65 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.13] - 2026-09-08
+
+Windows Design Partner Preview focused on Windows upgrade recovery.
+Retains 0.12's automatic-learning features with separate explicit inference
+consent. M0/MVP remain No-Go; `0.1.0-alpha.1` remains an unapproved target.
+
+### Fixed
+
+- Register MCP shutdown participants, drain accepted requests and exit the
+  protocol loop; report lifecycle failures explicitly. Upgrade drains active
+  learning, worker, observation and projection/database leases, requests graceful
+  shutdown, and waits for participants before cleaning up remaining legacy helpers.
+- Match exact ProvenLoop MCP runtime slots, launchers and log-attested extension
+  bootstrap identities, including numeric runtime-slot versions. Recheck owner,
+  parent, path and creation identity; exclude foreground Copilot, current
+  ancestors and unrelated processes. Unknown ownership never permits termination;
+  no broad name-based or process-tree kill is used.
+- Recover from Windows plugin-directory uninstall errors 5 and 32 by refreshing
+  only the strict known plugin layout from verified bundled assets. Preserve
+  backups and unrelated configuration, guard against concurrent edits, and
+  report rollback failures. Do not rename/delete the held directory or invent
+  Copilot `source_sha` metadata.
+- After verified plugin registration and SQLite `quick_check`, clear only the
+  recognized generic stale schema-recovery error without enabling disabled
+  capabilities or granting learning consent. Retain unrelated errors,
+  canonical-data-changed review warnings and recovery snapshots, including through outer failure handling;
+  future capabilities remain unavailable.
+- Probe the target runtime even when inherited PATH is stale. Verify an
+  already-version-matched installation instead of uninstalling it, while
+  respecting `-NoAutoCollect`. Same-version verification enters maintenance recovery
+  only when the exact recognized stale schema-recovery diagnostics remain.
+
+### Local validation
+
+Windows / Node.js 22.18.0 validation passed lint, typecheck, all 902 unit tests
+across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no skipped tests, all 269
+integration tests across 25 files, `package:verify`, and Windows PowerShell 5.1
+`install.ps1 -DryRun`.
+
+The installed bundled-CLI smoke drives an `os error 32` uninstall failure through
+recovery, verifies every refreshed asset against exact embedded/source release
+bytes, and checks unrelated configuration and `source_sha` semantics. Native
+owned-MCP and legacy-extension preservation fixtures and a native directory handle
+denying delete sharing are included. These are controlled local checks, not a
+real user's 0.13 upgrade.
+
+### Upgrade and release boundaries
+
+Schema remains 14, as in 0.12; published 0.11 used schema 10. Existing foreground
+Copilot work need not all close for upgrade, but old ProvenLoop tools may
+disconnect and require a new session or host-supported reload. Hot reconnection
+is not guaranteed. Runtime switching alone is not a database rollback.
+
+The retained manual 0.12 recovery is historical evidence, not an observed 0.13
+upgrade. Remote CI and GitHub Release tarball/checksum publication require their
+own retained results; this preview has no public npm publication.
+See the [0.13 release notes](docs/releases/0.1.0-alpha.0.13.md) and
+[plugin process recovery](docs/plugin-process-recovery.md).
+
 ## [0.1.0-alpha.0.12] - 2026-09-08
 
 Windows Design Partner Preview with opt-in automatic learning and coordinated
@@ -33,10 +92,11 @@ upgrade maintenance. M0/MVP remain No-Go; controlled benefit is unproved.
 
 ### Migration
 
-SQLite schema 14 replaces published 0.11's schema 10. Close Sessions using
-older previews before this first migration, then restart after upgrade. The
-new pause/drain protocol requires participating runtime code; it does not
-hot-reload old MCP processes. Retain the verified snapshot and prior runtime.
+SQLite schema 14 replaced published 0.11's schema 10. The 0.12 migration guidance
+required closing Sessions using older previews and restarting afterward. That
+historical procedure is superseded for upgrades using 0.13 by targeted helper
+recovery. The pause/drain protocol still requires participating runtime code; it
+does not hot-reload old MCP processes. Retain the verified snapshot and prior runtime.
 See the [0.12 release notes](docs/releases/0.1.0-alpha.0.12.md).
 
 ## [0.1.0-alpha.0.11] - 2026-09-07

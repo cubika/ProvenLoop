@@ -11,7 +11,7 @@
 | npm | `>=11` |
 | GitHub Copilot CLI | `>=1.0.71` |
 | Automatic retrieval hooks | Copilot CLI `1.0.84-1`, with repository approval |
-| ProvenLoop | `0.1.0-alpha.0.12` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.13` evidence candidate |
 
 The relaxed Node.js/npm ranges apply starting with `0.1.0-alpha.0.11`. Older
 tagged installers and tarballs retain their original requirements; use the new
@@ -24,13 +24,20 @@ The runtime also suppresses only SQLite's experimental-feature notice
 during SQLite module loading, including the background search reader. Other
 warnings and SQLite errors remain visible.
 
-The URL below targets the `0.1.0-alpha.0.12` Windows Design Partner Preview.
-It includes opt-in learning from ordinary corrections and captured agent
-investigation, native recovery verification, Knowledge review and local
-observations. Learning and capture recovery both use bounded work.
-See the [release notes](releases/0.1.0-alpha.0.12.md). M0/MVP remain No-Go for
-quality release; `0.1.0-alpha.1` is still an unapproved target. Documentation and
-prior source tests do not certify new-version artifacts or controlled benefit.
+The URLs below target the `0.1.0-alpha.0.13` Windows Design Partner Preview.
+The preview repairs Windows upgrade shutdown and locked-directory recovery, and
+retains 0.12's opt-in learning from ordinary corrections and captured agent
+investigation, native recovery verification, Knowledge review and local observations.
+See the [release notes](releases/0.1.0-alpha.0.13.md). M0/MVP remain No-Go for
+quality release; `0.1.0-alpha.1` is still an unapproved target.
+
+Local 0.13 validation passed on Windows with Node.js 22.18.0: lint, typecheck,
+902/902 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
+skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
+Windows PowerShell 5.1 `install.ps1 -DryRun`. Native process-preservation and
+directory-lock fixtures and installed bundled-CLI error-32 recovery are included.
+These checks do not establish remote CI, publication, a real user's 0.13 upgrade
+or controlled benefit; see the release notes for the exact coverage boundary.
 
 The earlier `0.1.0-alpha.0.8` and `0.1.0-alpha.0.9` tags remain immutable.
 Package smoke stopped 0.8 publication; a real-runtime source context assertion
@@ -50,12 +57,14 @@ does not bundle Node.js.
 For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release.
 
-Before upgrading an existing 0.11 or earlier installation, close every Copilot
-Session that loaded its plugin. Reopen Sessions after the schema 10 to 14
-migration; those older processes cannot use the new maintenance protocol.
+Upgrading does not require closing every foreground Copilot session, including
+hosts that loaded 0.11 or earlier. The 0.13 upgrade coordinates participating
+runtimes and retires only ownership-verified legacy ProvenLoop helpers. Old tools
+may disconnect; load the updated integration in a new session or through a
+host-supported reload. See [Upgrade](#upgrade) before migrating an older data root.
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
 ```
 
 The installer:
@@ -74,29 +83,37 @@ The installer:
 
 Background model requests stay disabled until you explicitly enable automatic
 learning. Capability switches alone do not provide inference consent.
+The bootstrap probes the exact target runtime's existing state even when the
+current process inherited a stale PATH. An already-version-matched plugin goes
+through verification rather than unnecessary uninstall/reinstall. Same-version
+verification enters maintenance recovery only if the exact recognized stale
+schema-recovery diagnostics remain.
 
 Install without automatic event collection:
 
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1)
 )) -NoAutoCollect
 ```
+
+Repeated installation and version-match verification respect `-NoAutoCollect`;
+they do not override that choice by re-enabling collection.
 
 Install without retrieval or correction learning:
 
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1)
 )) -NoLearning
 ```
 
 For a manual tarball installation (without the bootstrap's orchestration):
 
 ```powershell
-$version = "0.1.0-alpha.0.12"
+$version = "0.1.0-alpha.0.13"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $downloadRoot = New-Item -ItemType Directory -Force .\.provenloop\downloads
 $package = Join-Path $downloadRoot.FullName "provenloop-cli-$version.tgz"
@@ -157,12 +174,13 @@ Keep the previous runtime slot and stop
 on any failed command before editing PATH.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.12` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.13` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
-Capture and the background worker are enabled automatically. To install
-without collecting any events:
+Fresh installation enables capture and the background worker unless collection
+is opted out; upgrades preserve existing capability settings. To install without
+collecting any events:
 
 ```powershell
 provenloop install --no-auto-collect
@@ -170,14 +188,15 @@ provenloop install --no-auto-collect
 
 ## Upgrade
 
-To upgrade from `0.1.0-alpha.0.11` or an earlier published candidate, first
-close all Copilot Sessions that loaded that preview. Retain the previous
-runtime slot and recovery snapshots. Run the versioned 0.12 bootstrap, then
-start new Sessions after success. It stages the new runtime in a separate slot,
+To upgrade from a published candidate, retain the previous runtime slot and
+recovery snapshots, then run the versioned 0.13 bootstrap. Foreground Copilot
+work can remain open; only verified ProvenLoop helpers are eligible for targeted
+cleanup. Load the updated tools in a new session or through a host-supported
+reload after success. The bootstrap stages the new runtime in a separate slot,
 performs the integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
 ```
 
 For a manually downloaded and verified release tarball, use the same
@@ -186,7 +205,7 @@ global prefix or an unqualified `provenloop` command, because either can select
 an older runtime:
 
 ```powershell
-$version = "0.1.0-alpha.0.12"
+$version = "0.1.0-alpha.0.13"
 $runtimeSlot = Join-Path `
   $env:LOCALAPPDATA `
   "ProvenLoopRuntime\versions\$version"
@@ -225,21 +244,42 @@ installed code, not canonical user data.
 
 ### Maintenance migrations
 
-The 0.12 runtime uses schema 14; published 0.11 uses schema 10. Existing older
+The 0.13 upgrade retires verified old ProvenLoop helper processes before plugin
+replacement. It matches exact MCP runtime slots, launchers and attested extension
+bootstrap PIDs using Windows owner, parent, path and creation identity. Foreground
+Copilot, current ancestors and unrelated processes are excluded. Legacy extension
+ownership additionally requires bounded parent startup-log evidence. Unknown
+ownership never permits termination; no broad name-based or process-tree kill is
+used. If ownership cannot support safe recovery, the operation fails explicitly.
+
+If directory uninstall still returns Windows access/sharing errors
+(`os error 5` or `os error 32`) after helpers exit, the strict known five-file
+layout can be refreshed in place from verified bundled assets. Recovery backs up
+the files and the two affected host configuration documents, checks registration
+ownership and concurrent edits, preserves unrelated settings, and verifies the
+updated registration. It neither deletes nor renames the held directory and does
+not invent Copilot `source_sha` metadata. Rollback errors remain explicit.
+See [plugin process recovery](plugin-process-recovery.md) for the recovery contract
+and the separately labeled historical 0.12 manual repair.
+
+Both 0.12 and 0.13 use schema 14; published 0.11 uses schema 10. Existing older
 databases require explicit `provenloop upgrade`; ordinary runtime opens do not
 silently migrate them. Old readers reject schema 14, which includes the new
 learning job and source-role formats.
 
-The following coordination applies to Sessions already running a participating
-runtime. Upgrade first pauses new ProvenLoop MCP requests and background work.
-It waits up to 15 seconds for current learning, capture, observation and MCP calls
-to release their database leases. A drain timeout removes the maintenance barrier
-before any migration or Extension shutdown, so existing sessions can continue.
+The following coordination applies to sessions running a participating runtime.
+Upgrade first pauses new ProvenLoop MCP requests and background work. It waits up
+to 15 seconds for current learning, worker, observation, projection and MCP work
+to release its database leases. A drain timeout removes the maintenance barrier
+before any migration or participant shutdown, so existing sessions can continue.
 While paused, Context returns a temporary maintenance result; Explain and Feedback
 report a retryable maintenance error. Degraded observation paths do not write data.
 
-After draining, upgrade stops ProvenLoop Extensions and holds every database lease
-through snapshot, migration, plugin replacement and any rollback. Unknown inference
+After draining, upgrade requests graceful shutdown and awaits registered
+participants before targeted cleanup of remaining legacy helpers. Participating
+MCP servers finish accepted requests, exit their protocol loop and report shutdown
+failures explicitly. Upgrade holds the database leases through snapshot, migration,
+plugin replacement and any rollback. Unknown inference
 scratch ownership stops the upgrade before migration. Upgrade retains
 `data\backups\pre-upgrade-<id>.db` with its deletion key, manifest, and available
 runtime locator before changing schema. Failed integration replacement can
@@ -247,11 +287,20 @@ restore that snapshot only when no intervening canonical writes occurred.
 Otherwise it preserves data/snapshots and pauses capabilities for review.
 Do not delete the recovery journal or force the old runtime to open new data.
 
-Participating Copilot Sessions can remain open while this coordination runs.
-The host remains open, but ProvenLoop capture pauses when its Extension stops.
-After successful upgrade, restart affected Sessions to load the new plugin/runtime.
-Old MCP processes are not hot-reloaded. Sessions started with 0.11 or earlier
-lack the new admission gate and must close before the first upgrade to 0.12.
+After successful verified plugin registration and SQLite `quick_check`, recovery
+clears only the recognized generic stale schema-recovery `lastError`. It preserves
+each capability's enabled/disabled state and automatic-learning consent; clearing an
+error does not resume a disabled capability or make future features available.
+Unrelated errors and the canonical-data-changed review warning remain for review;
+outer failure handling must not replace that specific warning with a generic error.
+Recovery snapshots are retained.
+
+Foreground Copilot sessions can remain open, but ProvenLoop capture pauses when
+its Extension stops. Old MCP connections may disconnect and are not hot-reloaded.
+Start a new session or use a host-supported reload when you need the updated
+plugin/runtime; automatic hot reconnection is not guaranteed. Legacy runtimes
+lack the new admission gate and are handled by narrowly verified helper cleanup,
+not by requiring every foreground session to close.
 
 ## Automatic capture and recovery
 
@@ -285,7 +334,8 @@ provenloop disable correction_learning
 provenloop enable correction_learning
 ```
 
-Disabled capabilities report their state explicitly. They do not return
+Disabled capabilities report their state explicitly. Unsupported future
+capabilities remain unavailable, including after upgrade recovery. Neither returns
 success-shaped placeholder results.
 
 Disabling the worker while leaving capture enabled preserves pending work but
@@ -362,8 +412,9 @@ provenloop learning unmute
 Disabling learning prevents subsequent result submission; it does not establish
 that every active process has already finished cleanup. Upgrade maintenance
 waits for the learner's full database lifetime and cleanup before migration.
-See the [0.12 release notes](releases/0.1.0-alpha.0.12.md) for real provider
-experiment results and their limits.
+See the historical [0.12 release notes](releases/0.1.0-alpha.0.12.md) for the
+inherited learning features' provider experiments and their limits. Those results
+are not new 0.13 installed-host acceptance or evidence of controlled benefit.
 
 ## First useful use
 
@@ -549,7 +600,7 @@ pipeline to the designated producer Feed, normally Common, with consumption
 through Enzyme. Direct publication to Enzyme is not assumed without approval
 from its owners.
 
-This 0.12 preview is not being published to the public npm registry. Any separate
+This 0.13 preview is not being published to the public npm registry. Any separate
 public/developer npm channel is not an installation dependency for this preview.
 
 This decision is recorded in

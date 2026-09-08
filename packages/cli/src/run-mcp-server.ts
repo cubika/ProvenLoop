@@ -31,6 +31,8 @@ import {
 } from "@provenloop/domain";
 import {
   isUpgradeMaintenanceActive,
+  isExtensionShutdownRequested,
+  registerActiveExtension,
   resolveWindowsProvenLoopDataRoot,
   resolveWindowsProvenLoopLeaseName,
   resolveWindowsProvenLoopPaths,
@@ -87,6 +89,7 @@ export interface McpToolHandlers {
 }
 
 export interface McpServerOptions {
+  readonly lifecycle?: boolean;
   readonly cwd?: string;
   readonly dataRoot?: string;
   readonly handlers?: McpToolHandlers;
@@ -1224,13 +1227,44 @@ export const runMcpServer = async (
             workflowScopeId: options.workflowScopeId,
           }),
     });
+  let registration: Awaited<ReturnType<typeof registerActiveExtension>> | undefined;
+  if (options.lifecycle ?? (io.input === process.stdin && options.handlers === undefined)) {
+    registration = await registerActiveExtension(root, `mcp-${process.pid}-${randomUUID()}`);
+  }
   const input = createInterface({
     crlfDelay: Infinity,
     input: io.input,
   });
   const pending = new Set<Promise<void>>();
-  await new Promise<void>((resolve) => {
+  let stopTimer: NodeJS.Timeout | undefined;
+  let lifecycleCheck: Promise<void> | undefined;
+  let loopError: Error | undefined;
+  let stopping = false;
+  const stopInput = (): void => {
+    stopping = true;
+    input.close();
+    io.input.pause();
+  };
+  if (registration) {
+    stopTimer = setInterval(() => {
+      if (lifecycleCheck !== undefined) return;
+      lifecycleCheck = isExtensionShutdownRequested(root)
+        .then((requested) => {
+          if (requested) stopInput();
+        })
+        .catch((error: unknown) => {
+          loopError ??= new Error("MCP shutdown status could not be verified.", {
+            cause: error,
+          });
+          stopInput();
+        })
+        .finally(() => { lifecycleCheck = undefined; });
+    }, 100);
+    stopTimer.unref();
+  }
+  const running = new Promise<void>((resolve) => {
     input.on("line", (line) => {
+      if (stopping) return;
       const handling = (async () => {
         if (line.trim().length === 0) {
           return;
@@ -1351,12 +1385,32 @@ export const runMcpServer = async (
         }
       })();
       pending.add(handling);
-      void handling.finally(() => {
-        pending.delete(handling);
-      });
+      void handling.then(
+        () => { pending.delete(handling); },
+        (error: unknown) => {
+          pending.delete(handling);
+          loopError ??= new Error("MCP protocol processing failed.", { cause: error });
+          stopInput();
+        },
+      );
+    });
+    input.once("error", (error: Error) => {
+      loopError ??= new Error("MCP input failed.", { cause: error });
+      stopInput();
     });
     input.once("close", () => {
-      void Promise.all([...pending]).then(() => resolve());
+      stopping = true;
+      void Promise.allSettled([...pending]).then(() => resolve());
     });
   });
+  try {
+    await running;
+    clearInterval(stopTimer);
+    await lifecycleCheck;
+    if (loopError !== undefined) throw loopError;
+  } finally {
+    clearInterval(stopTimer);
+    stopInput();
+    await registration?.release();
+  }
 };
