@@ -1,5 +1,5 @@
-import type { LearningWindow, LearningJob, LearningToolContract, RuleProposal, McpRecoveryReceipt } from "@provenloop/contracts";
-import { buildLearningWindows, validateLearningResponse, verifyMcpRecovery, learningKnowledgeCandidate, sha256, sanitizeDiagnostic } from "@provenloop/domain";
+import type { LearningWindow, LearningJob, LearningToolContract, RuleProposal, LearningRecoveryReceipt } from "@provenloop/contracts";
+import { buildLearningWindows, validateLearningResponse, verifyLearningRecovery, learningKnowledgeCandidate, sha256, sanitizeDiagnostic } from "@provenloop/domain";
 import type { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
 
@@ -54,8 +54,8 @@ export class LearningCoordinator {
         }
         const proposals = store.learningProposals().filter((entry) => entry.jobId === job.jobId &&
           store.knowledgeCandidates([entry.knowledgeId])[0]?.state === "candidate");
-        const receipts = proposals.flatMap((proposal): McpRecoveryReceipt[] => {
-          const receipt = verifyMcpRecovery(proposal, window.events, this.options.contracts?.() ?? [], time);
+        const receipts = proposals.flatMap((proposal): LearningRecoveryReceipt[] => {
+          const receipt = verifyLearningRecovery(proposal, window.events, this.options.contracts?.() ?? [], time);
           return receipt ? [receipt] : [];
         });
         if (receipts.length === 0) continue;
@@ -92,6 +92,7 @@ export class LearningCoordinator {
       const providerSignal = this.options.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, this.options.signal]);
       let timer: NodeJS.Timeout | undefined;
       let abortListener: (() => void) | undefined;
+      let inference: Promise<unknown> | undefined;
       try {
         // Only the separate inference lease is held here; SQLite/projection/ingestion leases are free.
         const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Learning inference deadline exceeded.")); }, deadlineMs); });
@@ -101,7 +102,8 @@ export class LearningCoordinator {
           if (providerSignal.aborted) abortListener();
           else providerSignal.addEventListener("abort", abortListener, { once: true });
         });
-        const output = await Promise.race([provider.infer(window, { signal: providerSignal }), timeout, aborted]);
+        inference = provider.infer(window, { signal: providerSignal });
+        const output = await Promise.race([inference, timeout, aborted]);
         clearTimeout(timer);
         if (providerSignal.aborted || !await this.options.enabled() || !store.learningSourcesCurrent(window) || store.hasActiveDeletion()) {
           store.transitionLearningJob({ ...running, state: "cancelled", updatedAt: now().toISOString() }, "running");
@@ -109,12 +111,12 @@ export class LearningCoordinator {
         }
         const parsed = validateLearningResponse(window, output);
         const proposals: RuleProposal[] = parsed.proposals.map((entry) => {
-          const identity = sha256([window.repoId, entry.predicate ?? [entry.rule, entry.trigger]]);
+          const identity = sha256([window.repoId, entry.shellPredicate ? [entry.shellPredicate, window.events.find((event) => event.event.eventId === entry.userSource.eventId)?.event.commitSha] : entry.predicate ?? [entry.rule, entry.trigger]]);
           return { ...entry, schemaVersion: 1, proposalId: `learning-proposal-${sha256([running.jobId, entry]).slice(0, 24)}`, jobId: running.jobId,
             knowledgeId: `learning-knowledge-${identity.slice(0, 24)}`, createdAt: window.createdAt, expiresAt: running.expiresAt, sourceDigests: window.sources };
         });
-        const receipts = proposals.flatMap((proposal): McpRecoveryReceipt[] => {
-          const receipt = verifyMcpRecovery(proposal, window.events, this.options.contracts?.() ?? [], now());
+        const receipts = proposals.flatMap((proposal): LearningRecoveryReceipt[] => {
+          const receipt = verifyLearningRecovery(proposal, window.events, this.options.contracts?.() ?? [], now());
           return receipt ? [receipt] : [];
         });
         const candidates = proposals.map((proposal) => learningKnowledgeCandidate(window, proposal, receipts.find((entry) => entry.proposalId === proposal.proposalId)));
@@ -130,6 +132,14 @@ export class LearningCoordinator {
       } finally {
         clearTimeout(timer);
         if (abortListener) providerSignal.removeEventListener("abort", abortListener);
+        if (providerSignal.aborted && inference) {
+          let grace: NodeJS.Timeout | undefined;
+          const settled = await Promise.race([
+            inference.then(()=>true,()=>true),
+            new Promise<boolean>((resolve)=>{grace=setTimeout(()=>resolve(false),8000);}),
+          ]).finally(()=>clearTimeout(grace));
+          if (!settled) await Promise.reject(new Error("Inference cancellation cleanup is still pending."));
+        }
       }
     } finally { await lease.release(); }
   }

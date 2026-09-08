@@ -12,9 +12,10 @@ const window = (): LearningWindow => {
   return { schemaVersion: 1, windowId: "window", revision: sha256(event), sessionId: "s", repoId: "r", worktree: "C:\repo", createdAt: "2026-09-07T00:00:00.000Z", events: [event], sources: [{ eventId: event.event.eventId, digest: sha256(event) }] };
 };
 describe("isolated Copilot learning provider", () => {
-  it("removes only aged owned scratch directories before the next leased inference", async () => {
+  it("removes only marker-verified orphan scratch before the next leased inference", async () => {
     const root=await mkdtemp(join(tmpdir(),"provenloop-learning-test-"));roots.push(root);
     const orphan=join(root,"learning-old123");await mkdir(orphan);await writeFile(join(orphan,"session"),"old excerpt");
+    await writeFile(join(orphan,".provenloop-inference.json"),JSON.stringify({product:"ProvenLoop",root,directory:orphan,nonce:"orphan",supervisorPid:2147483647}));
     await utimes(orphan,new Date(0),new Date(0));await mkdir(join(root,"unrelated"));
     const provider=new CopilotLearningProvider({temporaryRoot:root,enabled:async()=>true,runner:{run:async()=>({exitCode:0,stdout:JSON.stringify({schemaVersion:1,proposals:[]}),stderr:""})}});
     await provider.infer(window(),{signal:new AbortController().signal});expect(await readdir(root)).toEqual(["unrelated"]);

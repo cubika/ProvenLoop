@@ -253,6 +253,10 @@ export const classifyVerificationCommand = (command: string): CommandVerificatio
       (second === "test" || (second === "run" && words[2] === "test"))) {
     return { commandFamily: `${first}-test`, eventType: "test.completed" };
   }
+  if ((first === "npm" || first === "pnpm" || first === "yarn") && second === "run" &&
+      words.length === 3 && /^test:[a-z0-9][a-z0-9_-]*$/u.test(words[2] ?? "")) {
+    return { commandFamily: `${first}-test`, eventType: "test.completed" };
+  }
   if ((first === "npm" || first === "pnpm" || first === "yarn") &&
       second === "run" && (words[2] === "build" || words[2] === "lint" || words[2] === "typecheck")) {
     return {

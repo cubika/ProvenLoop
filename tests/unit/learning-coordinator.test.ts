@@ -37,6 +37,15 @@ const fixture = () => {
 };
 
 describe("automatic learning coordinator", () => {
+  it("retains the inference lease until cancelled provider cleanup settles", async () => {
+    const f=fixture();const stopped=new AbortController();let release=false;let finish:()=>void=()=>undefined;let started:()=>void=()=>undefined;
+    const entered=new Promise<void>((resolve)=>{started=resolve;});
+    try {
+      const running=new LearningCoordinator({...f.options,signal:stopped.signal,lease:{tryAcquire:async()=>({release:async()=>{release=true;}})},provider:{...f.options.provider,infer:async()=>{started();await new Promise<void>((resolve)=>{finish=resolve;});return {schemaVersion:1,proposals:[]};}}}).run();
+      await entered;stopped.abort();await new Promise<void>((resolve)=>setImmediate(resolve));expect(release).toBe(false);
+      finish();expect(await running).toMatchObject({status:"cancelled"});expect(release).toBe(true);
+    } finally {f.store.close();}
+  });
   it("cancels a running provider on host shutdown without committing its response", async () => {
     const f = fixture();
     const stopped = new AbortController();

@@ -2,10 +2,11 @@ import { posix, win32 } from "node:path";
 import {
   learningInferenceResponseSchema, learningWindowSchema, mcpRecoveryReceiptSchema,
   type CaptureEnvelope, type LearningWindow, type LearningToolContract,
-  type RuleProposal, type McpRecoveryReceipt, type KnowledgeCandidate,
+  type RuleProposal, type McpRecoveryReceipt, type LearningRecoveryReceipt, type KnowledgeCandidate,
 } from "@provenloop/contracts";
 import { sha256 } from "./digest.js";
 import { validCapturedParent } from "./parent-bridge.js";
+import { verifyShellRecovery } from "./shell-learning.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -25,7 +26,7 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
     const same = (entry: CaptureEnvelope): boolean => entry.event.sessionId === user.event.sessionId &&
       entry.event.repoId === user.event.repoId && entry.event.worktree === user.event.worktree;
     const prior = ordered.slice(0, i).filter(same);
-    const latestFailure = prior.findLast((entry) => entry.event.eventType === "tool.failed" && entry.event.operationId !== undefined);
+    const latestFailure = prior.findLast((entry) => (entry.event.eventType === "tool.failed" || (entry.event.eventType === "tool.completed" && entry.event.exitCode !== undefined && entry.event.exitCode !== 0)) && entry.event.operationId !== undefined);
     const failedStart = latestFailure === undefined ? -1 : prior.findLastIndex((entry) =>
       entry.event.eventType === "tool.started" && entry.event.operationId === latestFailure.event.operationId &&
       Date.parse(entry.event.timestamp) <= Date.parse(latestFailure.event.timestamp));
@@ -42,6 +43,12 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
     if (!following.some((entry) => ["tool.completed", "tool.failed", "session.idle"].includes(entry.event.eventType))) continue;
     if (now.getTime() - Date.parse(following.at(-1)?.event.timestamp ?? user.event.timestamp) < 2_000) continue;
     const selected = [...previous, user, ...following];
+    const completion = following.at(-1);
+    if (completion?.event.eventType === "tool.completed") {
+      for (const proof of ordered.filter((entry) => same(entry) && entry.event.eventType === "test.completed" && entry.event.operationId === completion.event.operationId && entry.event.evidence?.sourceCompleteEventId === completion.sourceEventId)) {
+        if (selected.length < 32 && !selected.includes(proof)) selected.push(proof);
+      }
+    }
     const sources = selected.map((entry) => ({ eventId: entry.event.eventId, digest: learningSourceDigest(entry) }));
     const window = learningWindowSchema.parse({
       schemaVersion: 1, windowId: `learning-window-${sha256(user.event.eventId).slice(0, 24)}`,
@@ -58,6 +65,7 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
   const parsed = learningInferenceResponseSchema.parse(output);
   const sources = new Map(window.events.map((entry) => [entry.event.eventId, entry]));
   for (const proposal of parsed.proposals) {
+    if (proposal.predicate && proposal.shellPredicate) throw new Error("A proposal cannot mix shell and MCP predicates.");
     const user = sources.get(proposal.userSource.eventId);
     if (user?.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
         `learning-window-${sha256(user.event.eventId).slice(0, 24)}` !== window.windowId ||
@@ -75,6 +83,7 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
 };
 
 export const renderLearningPredicate = (proposal: RuleProposal): string | undefined => {
+  if (proposal.shellPredicate && !proposal.predicate) return `Use ${proposal.shellPredicate.command} instead of ${proposal.shellPredicate.failedCommand} for this repository's tests at the verified revision.`;
   const p = proposal.predicate;
   if (p === undefined) return undefined;
   return p.kind === "required_argument"
@@ -154,11 +163,14 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
     sourceDigests: proposal.sourceDigests, verifiedAt: now.toISOString(), proves: "invocation_contract" });
 };
 
-export const learningKnowledgeCandidate = (window: LearningWindow, proposal: RuleProposal, receipt?: McpRecoveryReceipt): KnowledgeCandidate => ({
-  schemaVersion: 1, knowledgeId: proposal.knowledgeId, topicKey: `learning:${sha256([window.repoId, proposal.predicate ?? proposal.trigger]).slice(0, 24)}`,
+export const verifyLearningRecovery = (proposal: RuleProposal, events: readonly CaptureEnvelope[], contracts: readonly LearningToolContract[], now: Date): LearningRecoveryReceipt | undefined =>
+  proposal.shellPredicate ? verifyShellRecovery(proposal, events, now) : verifyMcpRecovery(proposal, events, contracts, now);
+
+export const learningKnowledgeCandidate = (window: LearningWindow, proposal: RuleProposal, receipt?: LearningRecoveryReceipt): KnowledgeCandidate => ({
+  schemaVersion: 1, knowledgeId: proposal.knowledgeId, topicKey: `learning:${sha256([window.repoId, proposal.shellPredicate ?? proposal.predicate ?? proposal.trigger]).slice(0, 24)}`,
   kind: "semantic", scope: "repository", scopeId: window.repoId,
   content: receipt ? renderLearningPredicate(proposal) ?? proposal.rule : proposal.rule,
-  appliesWhen: receipt ? [`Calling ${receipt.predicate.serverName}/${receipt.predicate.toolName} under its verified tool contract.`] : [proposal.trigger],
+  appliesWhen: receipt?.proves === "repository_test_command" ? [`Running ${receipt.predicate.failedCommand} or ${receipt.predicate.command} in the verified repository revision.`] : receipt ? [`Calling ${receipt.predicate.serverName}/${receipt.predicate.toolName} under its verified tool contract.`] : [proposal.trigger],
   nonApplicability: receipt ? ["Other repositories, tools, or contract versions; semantic correctness of returned data."] : proposal.exclusions, conflictsWith: [],
   sourceEpisodeIds: [], sourceEvidenceIds: proposal.sourceDigests.map((item) => item.eventId),
   createdAt: proposal.createdAt, ...(receipt ? { validatedAt: receipt.verifiedAt } : { expiresAt: proposal.expiresAt }),

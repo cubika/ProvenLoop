@@ -94,6 +94,7 @@ const distinct = <T>(input: readonly T[]): T[] =>
   [...new Set(input)];
 
 const searchTerms = (request: ContextRequest): readonly string[] => {
+  const shellTerms = request.shellInvocation === undefined ? [] : normalizedTokens(request.shellInvocation.command).slice(0, 8);
   const toolTerms = request.toolInvocation === undefined ? [] : normalizedTokens(
     `${request.toolInvocation.serverName} ${request.toolInvocation.toolName}`,
   ).slice(0, 8);
@@ -110,7 +111,7 @@ const searchTerms = (request: ContextRequest): readonly string[] => {
         ...prompt.slice(0, Math.ceil(available / 2)),
         ...prompt.slice(-Math.floor(available / 2)),
       ];
-  return distinct([...toolTerms, ...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
+  return distinct([...shellTerms, ...toolTerms, ...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
 };
 
 const overlapRatio = (
@@ -1096,7 +1097,9 @@ export class ContextRetrievalService {
               (receipt) => receipt.proposalId === proposal.proposalId,
             ).map((receipt) => ({
               receiptId: receipt.receiptId, proves: receipt.proves,
-              contractDigest: receipt.contract.digest, contractVersion: receipt.contract.version,
+              ...(receipt.proves === "invocation_contract"
+                ? { contractDigest: receipt.contract.digest, contractVersion: receipt.contract.version }
+                : { nativeVerificationEventId: receipt.nativeVerificationEventId, branch: receipt.branch, commitSha: receipt.commitSha }),
               failedOperationEventId: receipt.failedOperationEventId,
               retryOperationEventId: receipt.retryOperationEventId,
               completionEventId: receipt.completionEventId,
@@ -1517,6 +1520,7 @@ export class ContextRetrievalService {
           now,
           text: terms.join(" "),
           ...(request.toolInvocation === undefined ? {} : { toolInvocation: request.toolInvocation }),
+          ...(request.shellInvocation === undefined ? {} : { shellInvocation: request.shellInvocation }),
           ...(request.projectInstructions === undefined ? {} : { projectInstructions: request.projectInstructions }),
           ...(request.branch === undefined
             ? {}

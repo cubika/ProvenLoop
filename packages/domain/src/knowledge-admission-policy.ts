@@ -11,7 +11,7 @@ import {
   type FeedbackEvent,
   type KnowledgeCandidate,
   type WorkEpisode,
-  type RuleProposal, type McpRecoveryReceipt,
+  type RuleProposal, type LearningRecoveryReceipt,
 } from "@provenloop/contracts";
 import {
   directKnowledgeCounterevidence,
@@ -24,7 +24,7 @@ import {
   verificationOutcome,
   verificationProofEventIds,
 } from "./verification-proof.js";
-import { verifyMcpRecovery, renderLearningPredicate } from "./automatic-learning.js";
+import { verifyLearningRecovery, renderLearningPredicate } from "./automatic-learning.js";
 
 export type KnowledgeAdmissionReason =
   | "content_mismatch"
@@ -45,7 +45,7 @@ export type KnowledgeAdmissionReason =
 
 export interface KnowledgeAdmissionInput {
   readonly learningProposals?: readonly RuleProposal[];
-  readonly learningReceipts?: readonly McpRecoveryReceipt[];
+  readonly learningReceipts?: readonly LearningRecoveryReceipt[];
   readonly candidate: KnowledgeCandidate;
   readonly contextUseRecords?: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
@@ -57,7 +57,7 @@ export interface KnowledgeAdmissionInput {
 
 export interface KnowledgeAdmissionBatchInput {
   readonly learningProposals?: readonly RuleProposal[];
-  readonly learningReceipts?: readonly McpRecoveryReceipt[];
+  readonly learningReceipts?: readonly LearningRecoveryReceipt[];
   readonly candidates: readonly KnowledgeCandidate[];
   readonly contextUseRecords?: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
@@ -215,7 +215,7 @@ export const refreshKnowledgeAdmissionDecision = (
 
 interface PreparedKnowledgeAdmissionContext {
   readonly learningProposals: readonly RuleProposal[];
-  readonly learningReceipts: readonly McpRecoveryReceipt[];
+  readonly learningReceipts: readonly LearningRecoveryReceipt[];
   readonly allContextUseRecords: readonly ContextUseRecord[];
   readonly correctionKeysBySourceEventId: ReadonlyMap<
     string,
@@ -366,7 +366,7 @@ const evaluateCandidate = (
   if (candidate.topicKey.startsWith("learning:") || candidate.knowledgeId.startsWith("learning-knowledge-")) {
     const receipt = context.learningReceipts.find((entry) => context.learningProposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === entry.proposalId && proposal.sourceDigests.length === candidate.sourceEvidenceIds.length && proposal.sourceDigests.every((source) => sourceEvidence.has(source.eventId))));
     const proposal = context.learningProposals.find((entry) => entry.knowledgeId === candidate.knowledgeId && entry.proposalId === receipt?.proposalId);
-    const checked = proposal && receipt ? verifyMcpRecovery(proposal, [...context.envelopesById.values()], [receipt.contract], new Date(receipt.verifiedAt)) : undefined;
+    const checked = proposal && receipt ? verifyLearningRecovery(proposal, [...context.envelopesById.values()], receipt.proves === "invocation_contract" ? [receipt.contract] : [], new Date(receipt.verifiedAt)) : undefined;
     if (!checked) reasons.add("invalid_verification_evidence");
     if (!proposal || candidate.content !== renderLearningPredicate(proposal)) reasons.add("content_mismatch");
     if (proposal && (candidate.scope !== "repository" || proposal.sourceDigests.some((source) => context.envelopesById.get(source.eventId)?.event.repoId !== candidate.scopeId))) reasons.add("scope_mismatch");

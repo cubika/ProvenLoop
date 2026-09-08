@@ -301,7 +301,7 @@ const updateFramedDigest = (
   digest.update(bytes);
 };
 
-const resolveCodeVersion = async (
+export const resolveLearningEvaluationCodeVersion = async (
   cwd: string,
 ): Promise<string> => {
   const head = gitOutput([
@@ -694,7 +694,7 @@ export const runM2ReleaseGate = async (
     let publishedReport: M2ReleaseReport;
     try {
       const resolvedCodeVersion =
-        options.codeVersion ?? await resolveCodeVersion(cwd);
+        options.codeVersion ?? await resolveLearningEvaluationCodeVersion(cwd);
       codeVersion = validateCodeVersion(resolvedCodeVersion);
       const observationEvidence = await loadObservationManifest(options.observationManifestPath, codeVersion);
       const automaticLearning = evaluateAutomaticLearningAcceptance(

@@ -6,7 +6,7 @@ import type {
   EvidenceTier,
   FeedbackEvent,
   KnowledgeCandidate,
-  McpRecoveryReceipt,
+  LearningRecoveryReceipt,
   RuleProposal,
   RepositoryState,
   Scope,
@@ -72,7 +72,7 @@ export interface CanonicalKnowledgeStore {
 
 export interface KnowledgeAdmissionEvidence {
   readonly learningProposals?: readonly RuleProposal[];
-  readonly learningReceipts?: readonly McpRecoveryReceipt[];
+  readonly learningReceipts?: readonly LearningRecoveryReceipt[];
   readonly contextUseRecords: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
   readonly correctionSourceEventIds: ReadonlySet<string>;
@@ -128,6 +128,7 @@ extends CanonicalKnowledgeAdmissionStore {
 }
 
 export interface KnowledgeRetrievalQuery {
+  readonly shellInvocation?: TrustedShellInvocation;
   readonly toolInvocation?: TrustedToolInvocation;
   readonly projectInstructions?: readonly string[];
   readonly branchScopeId?: string;
@@ -145,6 +146,7 @@ export interface RetrievedKnowledge {
 }
 
 export interface ContextRequest {
+  readonly shellInvocation?: TrustedShellInvocation;
   readonly toolInvocation?: TrustedToolInvocation;
   readonly projectInstructions?: readonly string[];
   readonly branch?: string;
@@ -164,6 +166,14 @@ export interface TrustedToolInvocation {
   readonly serverName: string;
   readonly toolName: string;
   readonly contractDigest: string;
+}
+
+export interface TrustedShellInvocation {
+  readonly toolName: "powershell" | "bash";
+  readonly command: string;
+  readonly cwd: string;
+  readonly branch: string;
+  readonly commitSha: string;
 }
 
 export interface TrustedWorkspaceIdentity {

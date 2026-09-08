@@ -132,7 +132,7 @@ export class CanonicalKnowledgeRetriever {
         );
         for (const candidate of unevaluatedCandidates) {
           applicableById.set(candidate.knowledgeId, learningApplicable(
-            candidate, evidence.learningProposals ?? [], query,
+            candidate, evidence.learningProposals ?? [], query, evidence.learningReceipts ?? [],
           ));
           const proposal = evidence.learningProposals?.find((entry) =>
             entry.knowledgeId === candidate.knowledgeId && entry.predicate !== undefined &&

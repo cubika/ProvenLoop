@@ -58,7 +58,7 @@ export interface InstalledCopilotExtensionOptions {
     readonly onPostToolUse?: (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly toolResult: { readonly resultType: string } }) => Promise<void>;
     readonly onPostToolUseFailure?: (input: { readonly toolName: string; readonly toolArgs: unknown; readonly sessionId: string; readonly error: string }) => Promise<void>;
   } }) => Promise<CopilotSessionLike>;
-  readonly onAutomaticContext?: (input: { readonly prompt?: string; readonly toolArguments?: unknown; readonly tool?: LearningToolContract; readonly workspace: CopilotWorkspaceSnapshot; readonly sessionId: string }) => Promise<string | undefined>;
+  readonly onAutomaticContext?: (input: { readonly prompt?: string; readonly toolArguments?: unknown; readonly tool?: LearningToolContract; readonly shellTool?: { readonly toolName: "powershell" | "bash"; readonly command: string; readonly cwd: string }; readonly workspace: CopilotWorkspaceSnapshot; readonly sessionId: string }) => Promise<string | undefined>;
   readonly now?: () => Date;
   readonly onStopped?: () => void;
   readonly workflowScopeId?: string;
@@ -436,15 +436,25 @@ export const runInstalledCopilotExtension = async (
         const automaticContext = async (input: { readonly prompt?: string; readonly toolName?: string; readonly toolArgs?: unknown; readonly sessionId: string; readonly workingDirectory: string }): Promise<{ additionalContext?: string } | undefined> => {
           if (!runtimeActive || input.sessionId !== sessionId || resolve(input.workingDirectory).toLowerCase() !== resolve(workspace.cwd ?? "").toLowerCase()) return;
           try {
+            let builtinShell = false;
             if (sdkSession?.rpc?.tools !== undefined) {
               let timer: NodeJS.Timeout | undefined;
               const metadata = await Promise.race([sdkSession.rpc.tools.getCurrentMetadata(), new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 100); })]).finally(() => clearTimeout(timer));
               if (metadata === undefined) return;
               if (metadata.tools !== null) toolRegistry.replace(metadata.tools, adapterVersion);
+              builtinShell = metadata.tools?.some((entry) => entry.name === input.toolName &&
+                (entry.name === "powershell" || entry.name === "bash") &&
+                entry.mcpServerName === undefined && entry.mcpToolName === undefined) === true;
             }
             const tool = input.toolName === undefined ? undefined : toolRegistry.find(input.toolName);
+            const args = input.toolArgs !== null && typeof input.toolArgs === "object" && !Array.isArray(input.toolArgs)
+              ? input.toolArgs as Readonly<Record<string, unknown>> : {};
+            const shellTool: { toolName: "powershell" | "bash"; command: string; cwd: string } | undefined = builtinShell && (input.toolName === "powershell" || input.toolName === "bash") &&
+              typeof args.command === "string" && args.command.length <= 256
+              ? { toolName: input.toolName, command: args.command, cwd: typeof args.cwd === "string" ? resolve(input.workingDirectory, args.cwd) : input.workingDirectory } : undefined;
             const context = await options.onAutomaticContext?.({ sessionId, workspace,
               ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+              ...(shellTool === undefined ? {} : { shellTool }),
               ...(tool === undefined ? {} : { tool, toolArguments: input.toolArgs }) });
             if (runtimeActive && context) return { additionalContext: context };
           } catch (error) { diagnostic(`Automatic context unavailable: ${sanitizeDiagnostic(error)}`); }

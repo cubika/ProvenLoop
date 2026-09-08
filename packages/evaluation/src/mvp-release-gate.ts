@@ -689,7 +689,7 @@ const runtimeFiles = async (
   return nested.flat();
 };
 
-const resolveExecutableDigest = async (
+export const resolveLearningEvaluationExecutableDigest = async (
   cwd: string,
 ): Promise<string> => {
   if (!runtimeModulePath.includes(`${sep}dist${sep}`)) {
@@ -811,7 +811,7 @@ const assertCodeVersionUnchanged = async (
     );
   }
   const executableDigest =
-    await resolveExecutableDigest(cwd);
+    await resolveLearningEvaluationExecutableDigest(cwd);
   if (executableDigest !== expectedExecutableDigest) {
     throw new Error(
       "The executable runtime changed during MVP evaluation.",
@@ -1527,7 +1527,7 @@ export const runMvpReleaseGate = async (
       options.codeVersion ?? await resolveCodeVersion(cwd),
     );
     executableDigest =
-      await resolveExecutableDigest(cwd);
+      await resolveLearningEvaluationExecutableDigest(cwd);
   } catch (error) {
     provenanceError = error;
   }

@@ -7,6 +7,7 @@ export {
   type CaptureWriterStatus,
 } from "./async-writer.js";
 export { CopilotLearningProvider } from "./learning-provider.js";
+export { SupervisedInferenceRunner, cancelLearningScratch } from "./inference-supervisor.js";
 export { getCopilotAutomaticLearningHostCapability, hasCopilotLearningHookApproval, approveCopilotLearningHooks } from "./automatic-host-capability.js";
 export { CopilotLearningToolRegistry, type CopilotToolMetadata } from "./learning-tool-registry.js";
 export {

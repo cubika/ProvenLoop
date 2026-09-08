@@ -17,11 +17,16 @@ export const learningPredicateSchema = z.object({
   serverName: text, toolName: text, argument: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
   contractDigest: sha256DigestSchema,
 }).strict();
+export const shellLearningPredicateSchema = z.object({
+  kind: z.literal("repository_test_command"), toolName: z.enum(["powershell", "bash"]),
+  failedCommand: text.max(256), command: text.max(256),
+}).strict();
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
   userSource: z.object({ eventId: identifierSchema, quote: text }).strict(),
   failedOperationEventId: identifierSchema, retryOperationEventId: identifierSchema,
   completionEventId: identifierSchema, predicate: learningPredicateSchema.optional(),
+  shellPredicate: shellLearningPredicateSchema.optional(),
 }).strict();
 export const learningInferenceResponseSchema = z.object({
   schemaVersion: z.literal(1), proposals: z.array(ruleProposalInputSchema).max(3),
@@ -55,6 +60,15 @@ export const mcpRecoveryReceiptSchema = z.object({
   completionEventId: identifierSchema, sourceDigests: z.array(learningSourceSchema).min(5).max(32),
   verifiedAt: isoTimestampSchema, proves: z.literal("invocation_contract"),
 }).strict();
+export const shellRecoveryReceiptSchema = z.object({
+  schemaVersion: z.literal(1), receiptId: identifierSchema, proposalId: identifierSchema,
+  predicate: shellLearningPredicateSchema, proves: z.literal("repository_test_command"),
+  failureEventId: identifierSchema, userEventId: identifierSchema, failedOperationEventId: identifierSchema,
+  retryOperationEventId: identifierSchema, completionEventId: identifierSchema, nativeVerificationEventId: identifierSchema,
+  repoId: identifierSchema, worktree: text, branch: text, commitSha: sha256DigestSchema.or(z.string().regex(/^[a-f0-9]{40}$/u)),
+  sourceDigests: z.array(learningSourceSchema).min(6).max(32), verifiedAt: isoTimestampSchema,
+}).strict();
+export const learningRecoveryReceiptSchema = z.discriminatedUnion("proves", [mcpRecoveryReceiptSchema, shellRecoveryReceiptSchema]);
 export type LearningWindow = z.infer<typeof learningWindowSchema>;
 export type LearningJob = z.infer<typeof learningJobSchema>;
 export type LearningPredicate = z.infer<typeof learningPredicateSchema>;
@@ -62,3 +76,6 @@ export type LearningToolContract = z.infer<typeof learningToolContractSchema>;
 export type RuleProposalInput = z.infer<typeof ruleProposalInputSchema>;
 export type RuleProposal = z.infer<typeof ruleProposalSchema>;
 export type McpRecoveryReceipt = z.infer<typeof mcpRecoveryReceiptSchema>;
+export type ShellLearningPredicate = z.infer<typeof shellLearningPredicateSchema>;
+export type ShellRecoveryReceipt = z.infer<typeof shellRecoveryReceiptSchema>;
+export type LearningRecoveryReceipt = z.infer<typeof learningRecoveryReceiptSchema>;

@@ -100,6 +100,7 @@ extends WorkEpisodeProjectionStore, BranchContextProjectionStore {
 }
 
 export interface DeletionServiceOptions {
+  readonly transientCleanup?: () => Promise<void>;
   readonly knowledgeProjection?: DeletionKnowledgeProjection;
   readonly now?: () => Date;
   readonly queue: DeletionQueue;
@@ -181,6 +182,7 @@ const typedSourceIdentities = (
 };
 
 export class DeletionService {
+  readonly #transientCleanup: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
   readonly #branchContextProjector: BranchContextProjector;
   readonly #knowledgeProjection:
@@ -194,6 +196,7 @@ export class DeletionService {
   readonly #store: DeletionStore;
 
   public constructor(options: DeletionServiceOptions) {
+    this.#transientCleanup = options.transientCleanup;
     this.#now = options.now ?? (() => new Date());
     this.#knowledgeProjection = options.knowledgeProjection;
     this.#queue = options.queue;
@@ -328,6 +331,7 @@ export class DeletionService {
           operation.deletionId,
         );
         barrierStarted = true;
+        await this.#transientCleanup?.();
         this.#projector.rebuild(undefined, {
           allowDuringDeletion: true,
         });

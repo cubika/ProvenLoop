@@ -27,8 +27,8 @@ import {
 
 import {
   branchContextSchema,
-  learningWindowSchema, learningJobSchema, ruleProposalSchema, mcpRecoveryReceiptSchema,
-  type LearningWindow, type LearningJob, type RuleProposal, type McpRecoveryReceipt,
+  learningWindowSchema, learningJobSchema, ruleProposalSchema, learningRecoveryReceiptSchema,
+  type LearningWindow, type LearningJob, type RuleProposal, type LearningRecoveryReceipt,
   captureEnvelopeSchema,
   captureQueueItemSchema,
   classifyRawEvent,
@@ -192,7 +192,7 @@ export interface CorrectionProjectionWriteResult {
 
 export interface CanonicalKnowledgeAdmissionEvidence {
   readonly learningProposals?: readonly RuleProposal[];
-  readonly learningReceipts?: readonly McpRecoveryReceipt[];
+  readonly learningReceipts?: readonly LearningRecoveryReceipt[];
   readonly contextUseRecords: readonly ContextUseRecord[];
   readonly correctionKeys: readonly CorrectionKey[];
   readonly correctionSourceEventIds: ReadonlySet<string>;
@@ -2011,11 +2011,11 @@ export class CanonicalSqliteStore {
       .filter((entry) => knowledgeIds === undefined || knowledgeIds.includes(entry.knowledgeId));
   }
 
-  public learningReceipts(knowledgeIds?: readonly string[]): readonly McpRecoveryReceipt[] {
+  public learningReceipts(knowledgeIds?: readonly string[]): readonly LearningRecoveryReceipt[] {
     const ids = new Set(this.learningProposals(knowledgeIds).map((entry) => entry.proposalId));
     return this.#database.prepare("SELECT proposal_id, receipt_json FROM learning_proposals WHERE receipt_json IS NOT NULL").all()
       .filter((row) => ids.has(String(row.proposal_id)))
-      .map((row) => mcpRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))));
+      .map((row) => learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))));
   }
 
   public scheduleLearningWindow(input: LearningWindow, expiresAt: string): LearningJob | undefined {
@@ -2067,11 +2067,11 @@ export class CanonicalSqliteStore {
     } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
   }
 
-  public commitLearningResult(input: { job: LearningJob; proposals: readonly RuleProposal[]; receipts: readonly McpRecoveryReceipt[]; candidates: readonly KnowledgeCandidate[]; reevaluation?: boolean }): boolean {
+  public commitLearningResult(input: { job: LearningJob; proposals: readonly RuleProposal[]; receipts: readonly LearningRecoveryReceipt[]; candidates: readonly KnowledgeCandidate[]; reevaluation?: boolean }): boolean {
     this.#assertNoRestoreBarrier();
     const job = learningJobSchema.parse(input.job);
     const proposals = input.proposals.map((entry) => ruleProposalSchema.parse(entry));
-    const receipts = input.receipts.map((entry) => mcpRecoveryReceiptSchema.parse(entry));
+    const receipts = input.receipts.map((entry) => learningRecoveryReceiptSchema.parse(entry));
     const candidates = input.candidates.map(normalizedKnowledgeCandidate);
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
@@ -3237,7 +3237,7 @@ export class CanonicalSqliteStore {
       dependentIds.add(jobId);
       for (const row of this.#database.prepare("SELECT proposal_id,receipt_json FROM learning_proposals WHERE job_id=?").all(jobId)) {
         dependentIds.add(String(row.proposal_id));
-        if (row.receipt_json) dependentIds.add(mcpRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))).receiptId);
+        if (row.receipt_json) dependentIds.add(learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))).receiptId);
       }
     }
     operation = deletionOperationSchema.parse({ ...operation, plannedDependentIds: [...dependentIds].sort() });
@@ -3266,7 +3266,7 @@ export class CanonicalSqliteStore {
           dependentIds.add(String(row.job_id));
           for (const proposal of this.#database.prepare("SELECT proposal_id,receipt_json FROM learning_proposals WHERE job_id=?").all(String(row.job_id))) {
             dependentIds.add(String(proposal.proposal_id));
-            if (proposal.receipt_json) dependentIds.add(mcpRecoveryReceiptSchema.parse(JSON.parse(String(proposal.receipt_json))).receiptId);
+            if (proposal.receipt_json) dependentIds.add(learningRecoveryReceiptSchema.parse(JSON.parse(String(proposal.receipt_json))).receiptId);
           }
           this.#database.prepare("DELETE FROM learning_jobs WHERE job_id=?").run(String(row.job_id));
         }

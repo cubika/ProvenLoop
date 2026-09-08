@@ -20,6 +20,29 @@ const queue = () => ({
 });
 
 describe("deletion service resource safety", () => {
+  it("keeps deletion pending until transient inference copies are removed", async () => {
+    const store = new CanonicalSqliteStore(":memory:");
+    const captureQueue = queue();
+    let barrier = false;
+    let blocked = true;
+    captureQueue.beginDeletionBarrier = async () => { barrier = true; };
+    const request = { deletionId: `scratch-${randomUUID()}`, targetId: "scratch-session", targetType: "session" as const };
+    const mutation = vi.spyOn(store, "deleteCanonicalTarget");
+    const service = new DeletionService({ store, queue: captureQueue, recordEvidence: async () => undefined,
+      transientCleanup: async () => {
+        expect(barrier).toBe(true);
+        expect(store.hasActiveDeletion()).toBe(true);
+        if (blocked) throw new Error("Inference cleanup pending.");
+      },
+    });
+    try {
+      await expect(service.delete(request)).rejects.toThrow("Inference cleanup pending");
+      expect(mutation).not.toHaveBeenCalled();
+      expect(store.deletionOperation(request.deletionId)?.status).toBe("failed");
+      blocked = false;
+      await expect(service.delete(request)).resolves.toMatchObject({ operation: { status: "completed", attemptCount: 2 } });
+    } finally { store.close(); }
+  });
   it("marks an operation retryable if acquiring its first lease throws", async () => {
     const store = new CanonicalSqliteStore(":memory:");
     const request = {

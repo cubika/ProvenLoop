@@ -54,11 +54,14 @@ export const runProvenLoopCopilotExtension = async (
       if (!cwd) return undefined;
       const response = await new LocalMcpToolHandlers({ cwd, dataRoot: options.dataRoot, now: () => new Date() }).context({
         cwd, sessionId: input.sessionId, tokenBudget: 600,
-        prompt: input.prompt?.slice(0, 8192) ?? `${input.tool?.serverName ?? ""} ${input.tool?.toolName ?? ""}`,
+        prompt: input.prompt?.slice(0, 8192) ?? input.shellTool?.command ?? `${input.tool?.serverName ?? ""} ${input.tool?.toolName ?? ""}`,
         trustedWorkspace: { repositoryState: "known_repo", repositoryObservedAt: new Date().toISOString(),
           repositoryId: input.workspace.repoId, ...(input.workspace.branch === undefined ? {} : { branch: input.workspace.branch }),
           ...(input.workspace.commitSha === undefined ? {} : { commitSha: input.workspace.commitSha }) },
         ...(input.tool === undefined ? {} : { toolInvocation: { serverName: input.tool.serverName, toolName: input.tool.toolName, contractDigest: input.tool.digest } }),
+        ...(input.shellTool === undefined || input.workspace.branch === undefined || input.workspace.commitSha === undefined ? {} : {
+          shellInvocation: { ...input.shellTool, branch: input.workspace.branch, commitSha: input.workspace.commitSha },
+        }),
       });
       if (stopped || response.items.length === 0) return undefined;
       if (!deliveryNoticeSent && host.session?.log && await notificationsEnabled()) {

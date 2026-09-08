@@ -82,6 +82,7 @@ export {
 } from "./m1-release-gate.js";
 export {
   runM2ReleaseGate,
+  resolveLearningEvaluationCodeVersion,
   type M2ReleaseGateCheck,
   type M2ReleaseGateStatus,
   type M2ReleaseReport,
@@ -91,6 +92,7 @@ export {
 } from "./m2-release-gate.js";
 export {
   evaluateMvpReleaseReadiness,
+  resolveLearningEvaluationExecutableDigest,
   mvpReleaseExitCode,
   mvpReleaseEvidenceSchema,
   MvpReleaseInputError,
@@ -153,3 +155,8 @@ export {
   type AutomaticLearningCheck,
   type AutomaticLearningEvidence,
 } from "./automatic-learning-acceptance.js";
+export { createFrozenLearningCorpus, frozenLearningCorpusSchema, type FrozenLearningCorpus } from "./automatic-learning-corpus.js";
+export { prepareFrozenLearningEvaluation, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
+  exportInstalledLearningCorpus, importInstalledLearningAcceptance, frozenLearningRunSchema,
+  learningInputLabelsSchema, learningOutputReviewSchema, type FrozenLearningProvider, type FrozenLearningRun,
+} from "./automatic-learning-workflow.js";

@@ -840,6 +840,8 @@ export class CopilotEventMapper {
         );
         if (mapped.status !== "mapped" || started === undefined) return mapped;
         const additionalEvents: CaptureEventInput[] = [];
+        // Derived events point directly to this canonical completion, not its native parent.
+        const derivedCommon = { ...common, parentBridge: undefined, originalParentSourceEventId: undefined };
         const args = recordOf(started.arguments);
         const command = typeof args.command === "string" ? args.command : undefined;
         const verification = command === undefined || started.truncated || !shellTool
@@ -894,7 +896,7 @@ export class CopilotEventMapper {
         if (verification !== undefined && exitCode !== undefined && sameRepository &&
             !(success === false && exitCode === 0)) {
           additionalEvents.push({
-            ...common,
+            ...derivedCommon,
             ...started.workspace,
             eventType: verification.eventType,
             operationId: toolCallId,
@@ -942,7 +944,7 @@ export class CopilotEventMapper {
             !quality.truncatedFields.some((path) => path.startsWith("toolResult.changedFiles")) &&
             pathsWithinWorkspace(changedPaths, started.workspace.worktree)) {
           additionalEvents.push({
-            ...common,
+            ...derivedCommon,
             ...started.workspace,
             eventType: "file.changed",
             operationId: toolCallId,

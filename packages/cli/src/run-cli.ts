@@ -15,6 +15,7 @@ import {
 } from "@provenloop/contracts";
 import {
   CopilotCliAdapter,
+  cancelLearningScratch,
   AUTOMATIC_LEARNING_DISCLOSURE,
   approveCopilotLearningHooks,
   getCopilotAutomaticLearningHostCapability,
@@ -796,6 +797,20 @@ const runDeletionCommand = async (
     });
     const ledgers = new Map<string, EvidenceLedgerWriter>();
     const result = await new DeletionService({
+      transientCleanup: async () => {
+        const inferenceLease = new WindowsNamedPipeLeaseProvider(await resolveWindowsProvenLoopLeaseName(paths.root, "learning-inference"));
+        const deadline = Date.now() + 12_000;
+        while (true) {
+          await cancelLearningScratch(join(paths.root, "temp"));
+          const lease = await inferenceLease.tryAcquire();
+          if (lease) {
+            try { await cancelLearningScratch(join(paths.root, "temp")); return; }
+            finally { await lease.release(); }
+          }
+          if (Date.now() >= deadline) throw new Error("Inference shutdown has not completed; deletion remains pending.");
+          await new Promise<void>((done) => setTimeout(done, 50));
+        }
+      },
       knowledgeProjection: {
         acquireLease: async () => ({
           release: async () => undefined,

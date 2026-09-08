@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { cancelLearningScratch } from "./inference-supervisor.js";
 import {
   join,
   parse as parsePath,
@@ -1149,6 +1150,7 @@ implements AgentAdapter<CopilotEventMappingResult> {
           this.#paths.root,
           EXTENSION_SHUTDOWN_TIMEOUT_MS,
         );
+        await cancelLearningScratch(join(this.#paths.root, "temp"));
       }
       const registration = await this.#requireRegistrationStatus();
     if (
