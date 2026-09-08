@@ -10,6 +10,8 @@ const sourceRuntimeTests = [
   "tests/unit/mcp-registry-runtime.test.ts",
 ];
 const nativeProcessTests = [
+  "tests/unit/installer-runtime.test.ts",
+  "tests/unit/installer-integration.test.ts",
   "tests/unit/owned-processes.test.ts",
   "tests/unit/legacy-extension-workers.test.ts",
   "tests/unit/refresh-plugin-files.test.ts",
