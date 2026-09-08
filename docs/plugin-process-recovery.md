@@ -28,6 +28,10 @@ Ownership and parent identity are rechecked before termination. Unknown, stale o
 ambiguous identities remain untouched; discovery is not permission to kill an
 unverified process.
 
+Native failures report bounded phase/reason, PID/depth and Windows error codes.
+Raw command lines, process inventories and unrecognized native error text are
+not copied into those diagnostics.
+
 ## Shutdown ordering
 
 Upgrade pauses new participating MCP and background database work and drains
@@ -101,7 +105,7 @@ Windows errors 5/32, verification failure and state-preserving retry. Bootstrap
 checks additionally cover stale inherited PATH, matching-version verification,
 diagnostic-gated maintenance recovery and `-NoAutoCollect`.
 
-Local Windows / Node.js 22.18.0 validation passed lint, typecheck, 902/902 unit
+Local Windows / Node.js 22.18.0 validation passed lint, typecheck, 918/918 unit
 tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no skipped tests,
 269/269 integration tests across 25 files, `package:verify`, and Windows PowerShell
 5.1 `install.ps1 -DryRun`. Native owned-MCP and legacy-extension preservation

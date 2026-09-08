@@ -393,7 +393,7 @@ are regression evidence, not measurements of a user's actual productivity.
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
 | M2 implementation | User/agent extraction, native recovery proofs, incremental jobs, conflict/expiry/deletion controls, and observational summaries |
 | Regression evidence | 24 Episode association pairs, 32 Branch Continuation pairs, and 24 Correction Recurrence pairs are synthetic fixtures, not field-effect measurements |
-| Local 0.13 validation | Windows / Node.js 22.18.0: lint, typecheck, 902 unit tests, 269 integration tests, packed-artifact verification and Windows PowerShell 5.1 installer dry run passed |
+| Local 0.13 validation | Windows / Node.js 22.18.0: lint, typecheck, 918 unit tests, 269 integration tests, packed-artifact verification and Windows PowerShell 5.1 installer dry run passed |
 | Release evidence | Windows/platform, latency, provider-degradation, remote-upgrade, and controlled-effect qualifications remain separate open gates |
 | Future M3-M6 | Delayed Outcome linking, Retrospective, evaluated Playbooks, and additional Agent adapters |
 

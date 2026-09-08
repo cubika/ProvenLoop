@@ -81,6 +81,36 @@ const validPid = (value: unknown): value is number =>
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+const nativeStages = [
+  "initialize", "compile", "enumerate", "ancestry", "owner", "arguments",
+  "identity-open", "identity-creation", "identity-owner", "serialize",
+  "target-open", "target-liveness", "target-owner", "target-identity",
+  "parent-open", "parent-owner", "parent-identity", "terminate", "wait-exit",
+];
+const nativeReasons = [
+  "native-error", "ancestor-cycle", "current-unavailable", "ancestor-incomplete",
+  "ancestor-inaccessible", "inventory-bound", "owned-inventory-bound",
+  "owner-changed", "protected-target", "target-inaccessible", "target-liveness",
+  "parent-inaccessible", "termination-failed", "exit-deadline",
+];
+const nativeDiagnostic = (stderr: string): string => {
+  // Never forward native stderr: PowerShell errors can embed commands and private paths.
+  const match = /(?:^|\r?\n)PROVENLOOP_PROCESS_DIAGNOSTIC:(\{[^\r\n]{1,1024}\})(?:\r?\n|$)/u.exec(stderr.slice(-4096));
+  if (!match?.[1]) return "native=unavailable";
+  let value: unknown;
+  try { value = JSON.parse(match[1]) as unknown; } catch { return "native=invalid"; }
+  if (!record(value) || typeof value.stage !== "string" || !nativeStages.includes(value.stage) ||
+    typeof value.reason !== "string" || !nativeReasons.includes(value.reason) ||
+    !validPid(value.pid) || !validPid(value.nativeCode) ||
+    !["hresult", "category", "line", "ancestorDepth"].every((key) => Number.isSafeInteger(value[key])) ||
+    (value.hresult as number) < -0x8000_0000 || (value.hresult as number) > 0x7fff_ffff ||
+    (value.category as number) < 0 || (value.category as number) > 31 ||
+    (value.line as number) < 0 || (value.line as number) > 4096 ||
+    (value.ancestorDepth as number) < 0 || (value.ancestorDepth as number) > 4096) return "native=invalid";
+  return `stage=${value.stage}; reason=${value.reason}; pid=${value.pid}; ancestorDepth=${String(value.ancestorDepth)}; ` +
+    `nativeCode=${value.nativeCode}; hresult=${String(value.hresult)}; category=${String(value.category)}; line=${String(value.line)}`;
+};
+
 export const WINDOWS_PROCESS_IDENTITY_SCRIPT = String.raw`Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -101,21 +131,29 @@ public static class ProvenLoopProcessIdentity {
 function Same-Path([string]$left,[string]$right) {
   return [String]::Equals($left.Replace('/','\').TrimEnd('\'),$right.Replace('/','\').TrimEnd('\'),[StringComparison]::OrdinalIgnoreCase)
 }
+function Fail-Process([string]$reason) {
+  $script:reason = $reason
+  throw 'Owned process verification failed.'
+}
 function Protected-Ids($all,[int]$current) {
+  $script:phase = 'ancestry'
   $seen = New-Object 'System.Collections.Generic.HashSet[int]'
   $first = $true
   while ($current -gt 0) {
-    if (-not $seen.Add($current)) { throw 'Ancestor chain is cyclic.' }
+    $script:diagnosticPid = $current
+    $script:ancestorDepth = $seen.Count
+    if (-not $seen.Add($current)) { Fail-Process 'ancestor-cycle' }
     $row = $all | Where-Object { [int]$_.ProcessId -eq $current } | Select-Object -First 1
     if ($null -eq $row) {
-      if ($first) { throw 'Current process identity is unavailable.' }
+      if ($first) { Fail-Process 'current-unavailable' }
       $missing = [ProvenLoopProcessIdentity]::OpenProcess(0x101000,$false,[uint32]$current)
       if ($missing -ne [IntPtr]::Zero) {
-        try { if ([ProvenLoopProcessIdentity]::WaitForSingleObject($missing,0) -ne 0) { throw 'Ancestor chain is incomplete.' } }
+        try { if ([ProvenLoopProcessIdentity]::WaitForSingleObject($missing,0) -ne 0) { Fail-Process 'ancestor-incomplete' } }
         finally { [void][ProvenLoopProcessIdentity]::CloseHandle($missing) }
         break
       }
-      if ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 87) { throw 'Ancestor identity is inaccessible.' }
+      $script:nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      if ($script:nativeCode -ne 87) { Fail-Process 'ancestor-inaccessible' }
       break
     }
     $first = $false
@@ -125,21 +163,29 @@ function Protected-Ids($all,[int]$current) {
 }
 function Read-Identity($row) {
   if (!$row.ExecutablePath -or !$row.CommandLine -or $row.CommandLine.Length -gt 32768) { return $null }
+  $script:phase = 'identity-open'
+  $script:diagnosticPid = [int]$row.ProcessId
   $handle = [ProvenLoopProcessIdentity]::OpenProcess(0x101000,$false,[uint32]$row.ProcessId)
   if ($handle -eq [IntPtr]::Zero) { return $null }
   try {
     if ([ProvenLoopProcessIdentity]::WaitForSingleObject($handle,0) -ne 258) { return $null }
+    $script:phase = 'identity-creation'
     $created = [ProvenLoopProcessIdentity]::Creation($handle)
+    $script:phase = 'identity-owner'
     $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -OperationTimeoutSec 2
     if ($owner.ReturnValue -ne 0 -or ![ProvenLoopProcessIdentity]::SameObservedCreation([long]$created,$row.CreationDate.ToUniversalTime().ToFileTimeUtc())) { return $null }
+    $script:phase = 'arguments'
     return @{pid=[int]$row.ProcessId;parentPid=[int]$row.ParentProcessId;createdAt=$created;executable=[string]$row.ExecutablePath;commandLine=[string]$row.CommandLine;arguments=@([ProvenLoopProcessIdentity]::Arguments($row.CommandLine));ownerSid=[string]$owner.Sid}
   } finally { [void][ProvenLoopProcessIdentity]::CloseHandle($handle) }
 }
 `;
 
-const INVENTORY = String.raw`$all = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5)
-if ($all.Count -gt 4096) { throw 'Process inventory exceeds its bound.' }
+const INVENTORY = String.raw`$script:phase = 'enumerate'
+$all = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5)
+if ($all.Count -gt 4096) { Fail-Process 'inventory-bound' }
 $protected = Protected-Ids $all ([int]$inputData.currentProcessId)
+$script:phase = 'owner'
+$script:nativeCode = 0
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $rows = @()
 $extensionParents = @()
@@ -155,6 +201,8 @@ foreach ($row in $all) {
   $matched = $false
   foreach ($executable in $inputData.executables) { if (Same-Path $row.ExecutablePath $executable) { $matched = $true; break } }
   if (-not $matched -or $row.CommandLine.Length -gt 32768) { continue }
+  $script:phase = 'arguments'
+  $script:diagnosticPid = [int]$row.ProcessId
   $arguments = [ProvenLoopProcessIdentity]::Arguments($row.CommandLine)
   $matched = $false
   foreach ($argument in $arguments) { foreach ($path in $inputData.paths) { if (Same-Path $argument $path) { $matched = $true; break } } }
@@ -162,41 +210,66 @@ foreach ($row in $all) {
   $identity = Read-Identity $row
   if ($null -eq $identity -or $identity.ownerSid -ne $sid) { continue }
   $rows += $identity
-  if ($rows.Count -gt 64) { throw 'Owned process inventory exceeds its bound.' }
+  if ($rows.Count -gt 64) { Fail-Process 'owned-inventory-bound' }
 }
+$script:phase = 'serialize'
 @{currentUserSid=$sid;protectedIds=@($protected);extensionParents=@($extensionParents);parents=@($all | ForEach-Object { @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;executable=[string]$_.ExecutablePath} });processes=@($rows)} | ConvertTo-Json -Depth 6 -Compress
 `;
 
 const TERMINATE = String.raw`$target = $inputData.target
+$script:phase = 'owner'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-if ($sid -ne $target.ownerSid) { throw 'Process owner changed.' }
+if ($sid -ne $target.ownerSid) { Fail-Process 'owner-changed' }
+$script:phase = 'enumerate'
 $all = @(Get-CimInstance Win32_Process -OperationTimeoutSec 5)
-if ($all.Count -gt 4096) { throw 'Process inventory exceeds its bound.' }
+if ($all.Count -gt 4096) { Fail-Process 'inventory-bound' }
 $protected = Protected-Ids $all ([int]$inputData.currentProcessId)
-if ($protected.Contains([int]$target.pid)) { throw 'Refusing current or ancestor process.' }
+if ($protected.Contains([int]$target.pid)) { Fail-Process 'protected-target' }
+$script:nativeCode = 0
+$script:diagnosticPid = [int]$target.pid
 $row = $all | Where-Object { [int]$_.ProcessId -eq [int]$target.pid } | Select-Object -First 1
 if ($null -eq $row) { @{status='exited'} | ConvertTo-Json -Compress; exit 0 }
+$script:phase = 'target-open'
 $handle = [ProvenLoopProcessIdentity]::OpenProcess(0x101001,$false,[uint32]$target.pid)
-if ($handle -eq [IntPtr]::Zero) { throw 'Cannot pin process identity for termination.' }
+if ($handle -eq [IntPtr]::Zero) {
+  $script:nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+  Fail-Process 'target-inaccessible'
+}
 $parentHandle = [IntPtr]::Zero
 try {
+  $script:phase = 'target-liveness'
   $wait = [ProvenLoopProcessIdentity]::WaitForSingleObject($handle,0)
   if ($wait -eq 0) { @{status='exited'} | ConvertTo-Json -Compress; exit 0 }
-  if ($wait -ne 258) { throw 'Cannot verify process liveness.' }
+  if ($wait -ne 258) { Fail-Process 'target-liveness' }
+  $script:phase = 'target-owner'
   $owner = Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -OperationTimeoutSec 2
+  $script:phase = 'target-identity'
   if ([ProvenLoopProcessIdentity]::Creation($handle) -ne $target.createdAt -or ![ProvenLoopProcessIdentity]::SameObservedCreation([long]$target.createdAt,$row.CreationDate.ToUniversalTime().ToFileTimeUtc()) -or $owner.ReturnValue -ne 0 -or $owner.Sid -ne $target.ownerSid -or [int]$row.ParentProcessId -ne [int]$target.parentPid -or -not (Same-Path $row.ExecutablePath $target.executable) -or $row.CommandLine -cne $target.commandLine) {
     @{status='identity_changed'} | ConvertTo-Json -Compress; exit 0
   }
   if ($null -ne $inputData.extensionParent) {
     $parent = $all | Where-Object { [int]$_.ProcessId -eq [int]$target.parentPid } | Select-Object -First 1
     if ($null -eq $parent -or -not (Same-Path $parent.ExecutablePath $inputData.extensionParent.executable)) { @{status='identity_changed'} | ConvertTo-Json -Compress; exit 0 }
+    $script:phase = 'parent-open'
+    $script:diagnosticPid = [int]$parent.ProcessId
     $parentHandle = [ProvenLoopProcessIdentity]::OpenProcess(0x101000,$false,[uint32]$parent.ProcessId)
-    if ($parentHandle -eq [IntPtr]::Zero) { throw 'Cannot pin extension parent identity.' }
+    if ($parentHandle -eq [IntPtr]::Zero) {
+      $script:nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      Fail-Process 'parent-inaccessible'
+    }
+    $script:phase = 'parent-owner'
     $parentOwner = Invoke-CimMethod -InputObject $parent -MethodName GetOwnerSid -OperationTimeoutSec 2
+    $script:phase = 'parent-identity'
     if ([ProvenLoopProcessIdentity]::WaitForSingleObject($parentHandle,0) -ne 258 -or [ProvenLoopProcessIdentity]::Creation($parentHandle) -ne $inputData.extensionParent.createdAt -or $parentOwner.ReturnValue -ne 0 -or $parentOwner.Sid -ne $target.ownerSid -or ![ProvenLoopProcessIdentity]::SameObservedCreation([long]$inputData.extensionParent.createdAt,$parent.CreationDate.ToUniversalTime().ToFileTimeUtc())) { @{status='identity_changed'} | ConvertTo-Json -Compress; exit 0 }
   }
-  if (-not [ProvenLoopProcessIdentity]::TerminateProcess($handle,0)) { throw 'Owned process termination failed.' }
-  if ([ProvenLoopProcessIdentity]::WaitForSingleObject($handle,3000) -ne 0) { throw 'Owned process did not exit before the deadline.' }
+  $script:phase = 'terminate'
+  $script:diagnosticPid = [int]$target.pid
+  if (-not [ProvenLoopProcessIdentity]::TerminateProcess($handle,0)) {
+    $script:nativeCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    Fail-Process 'termination-failed'
+  }
+  $script:phase = 'wait-exit'
+  if ([ProvenLoopProcessIdentity]::WaitForSingleObject($handle,3000) -ne 0) { Fail-Process 'exit-deadline' }
   @{status='stopped'} | ConvertTo-Json -Compress
 } finally {
   if ($parentHandle -ne [IntPtr]::Zero) { [void][ProvenLoopProcessIdentity]::CloseHandle($parentHandle) }
@@ -417,25 +490,45 @@ export class OwnedProvenLoopProcessController {
   }
 
   async #run(program: string, payload: Record<string, unknown>): Promise<unknown> {
+    const operation = program === INVENTORY ? "inspect" : "terminate";
     const encoded = Buffer.from(JSON.stringify({ ...payload, currentProcessId: this.#currentProcessId }), "utf8").toString("base64");
     const script = `$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$script:phase='initialize'; $script:reason='native-error'; $script:nativeCode=0; $script:diagnosticPid=0; $script:ancestorDepth=0
+try {
 $inputData = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json
+$script:phase='compile'
 ${WINDOWS_PROCESS_IDENTITY_SCRIPT}
-${program}`;
+${program}
+} catch {
+  $failure = $_
+  $exception = $failure.Exception
+  for ($i=0; $i -lt 4 -and $null -ne $exception.InnerException; $i++) { $exception=$exception.InnerException }
+  if ($exception -is [ComponentModel.Win32Exception]) { $script:nativeCode=$exception.NativeErrorCode }
+  [Console]::Error.WriteLine('PROVENLOOP_PROCESS_DIAGNOSTIC:'+(@{stage=$script:phase;reason=$script:reason;pid=$script:diagnosticPid;ancestorDepth=$script:ancestorDepth;nativeCode=$script:nativeCode;hresult=$exception.HResult;category=[int]$failure.CategoryInfo.Category;line=$failure.InvocationInfo.ScriptLineNumber} | ConvertTo-Json -Compress))
+  exit 1
+}`;
     const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
     if (encodedCommand.length + this.#powerShell.length + 100 > 32767) {
       throw new Error("Owned process command exceeds the Windows command-line bound.");
     }
+    const started = Date.now();
     const result = await this.#runner.run(
       this.#powerShell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand], { timeoutMs: 15_000 },
-    );
-    if (result.exitCode !== 0 || Buffer.byteLength(result.stdout, "utf8") > 512 * 1024) {
-      throw new Error("Owned process inspection or cleanup failed; no broader termination was attempted.");
+    ).catch(() => {
+      throw new Error(`Owned process ${operation} runner failed; no broader termination was attempted.`);
+    });
+    const outputBytes = Buffer.byteLength(result.stdout, "utf8");
+    const diagnostic = `operation=${operation}; exitCode=${result.exitCode}; elapsedMs=${Date.now() - started}; outputBytes=${outputBytes}`;
+    if (result.exitCode !== 0 || outputBytes > 512 * 1024) {
+      const reason = result.exitCode === 124 ? "timeout" : result.exitCode === 127 ? "launch-failed" :
+        outputBytes > 512 * 1024 ? "output-bound" : "native-failure";
+      throw new Error(`Owned process inspection or cleanup failed; no broader termination was attempted. ` +
+        `[${diagnostic}; failure=${reason}; ${nativeDiagnostic(result.stderr)}]`);
     }
     try {
       return JSON.parse(result.stdout.trim()) as unknown;
     } catch {
-      throw new Error("Invalid owned process command output.");
+      throw new Error(`Invalid owned process command output. [${diagnostic}]`);
     }
   }
 }

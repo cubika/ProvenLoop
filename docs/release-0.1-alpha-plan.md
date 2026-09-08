@@ -609,7 +609,7 @@ an explicit warning and checksum.
 ### Candidate-specific verification to retain
 
 Local validation completed on Windows with Node.js 22.18.0: lint, typecheck,
-902/902 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
+918/918 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
 skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
 Windows PowerShell 5.1 `install.ps1 -DryRun` passed. The
 [release notes](releases/0.1.0-alpha.0.13.md#verification-scope-and-remaining-evidence)

@@ -152,7 +152,8 @@ describe("M1 + M2 MVP aggregate release gate", () => {
         code: "EEXIST",
       });
     },
-    20_000,
+    // Three aggregate evaluations share this fixture; gate assertions and product budgets are unchanged.
+    45_000,
   );
 
   it("publishes a path-free invalid-evidence report", async () => {

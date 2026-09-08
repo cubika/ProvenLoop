@@ -36,7 +36,7 @@ consent. M0/MVP remain No-Go; `0.1.0-alpha.1` remains an unapproved target.
 
 ### Local validation
 
-Windows / Node.js 22.18.0 validation passed lint, typecheck, all 902 unit tests
+Windows / Node.js 22.18.0 validation passed lint, typecheck, all 918 unit tests
 across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no skipped tests, all 269
 integration tests across 25 files, `package:verify`, and Windows PowerShell 5.1
 `install.ps1 -DryRun`.

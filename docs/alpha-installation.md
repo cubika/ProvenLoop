@@ -32,7 +32,7 @@ See the [release notes](releases/0.1.0-alpha.0.13.md). M0/MVP remain No-Go for
 quality release; `0.1.0-alpha.1` is still an unapproved target.
 
 Local 0.13 validation passed on Windows with Node.js 22.18.0: lint, typecheck,
-902/902 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
+918/918 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
 skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
 Windows PowerShell 5.1 `install.ps1 -DryRun`. Native process-preservation and
 directory-lock fixtures and installed bundled-CLI error-32 recovery are included.
