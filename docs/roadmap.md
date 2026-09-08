@@ -110,6 +110,8 @@ the real-effect acceptance requirement.
 
 ## 5. M3: Delayed Outcome Evidence Learning — future
 
+Before expanding retrospective analysis, implement the [single-task agent experience slice](agent-experience-learning.md): research candidates, self-directed recovery proofs, source-aware explanations, and EXP-01 through EXP-12 validation. Existing user-correction learning remains a separate source path.
+
 Deliver:
 
 - automated PR, review, CI, fix, bug, and revert discovery/association;

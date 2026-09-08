@@ -137,6 +137,7 @@ export interface LearningPromptWork {
   readonly eventId: string;
   readonly generation: number;
   readonly events: readonly CaptureEnvelope[];
+  readonly origin?: "agent";
 }
 
 interface RestoreJournal {
@@ -659,6 +660,19 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
         json_extract(receipt_json, '$.repoId'), json_extract(receipt_json, '$.branch'),
         json_extract(receipt_json, '$.commitSha'), json_extract(receipt_json, '$.predicate.toolName')
       ) WHERE json_extract(receipt_json, '$.proves')='repository_test_command';
+    `,
+  },
+  {
+    version: 14,
+    // Agent provenance is a new reader boundary; anchors reuse the durable bounded work queue.
+    sql: `
+      CREATE INDEX raw_events_learning_agents ON raw_events(session_id,repo_id,worktree,event_timestamp,event_id)
+        WHERE parse_status='supported' AND trust='model' AND event_type='agent.message'
+          AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal';
+      INSERT OR IGNORE INTO learning_prompt_work
+        SELECT deduplication_key,1,0 FROM raw_events WHERE parse_status='supported' AND trust='model' AND event_type='agent.message'
+          AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+          AND session_id IS NOT NULL AND repo_id IS NOT NULL AND worktree IS NOT NULL;
     `,
   },
 ] as const satisfies readonly SqliteMigration[];
@@ -1908,6 +1922,7 @@ const RUNTIME_SCHEMA_INDEXES = {
   ],
   raw_events: [
     { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_context", origin: "c", unique: false, partial: true },
+    { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_agents", origin: "c", unique: false, partial: true },
     { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_prompts", origin: "c", unique: false, partial: true },
     {
       columns: ["last_seen_at", "deduplication_key"],
@@ -2097,6 +2112,28 @@ export class CanonicalSqliteStore {
               AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id) <= (?,?)
             ORDER BY event_timestamp DESC, event_id DESC LIMIT 1`).get(...identity);
           if (previous) keys.add(String(previous.deduplication_key));
+          if (changed.trust === "model" && changed.event_type === "agent.message" &&
+              JSON.parse(String(changed.safe_envelope_json)).event.actorId !== "provenloop-internal") keys.add(String(changed.deduplication_key));
+          if (["agent.turn_completed", "session.idle"].includes(String(changed.event_type))) {
+            const agent = this.#database.prepare(`SELECT deduplication_key FROM raw_events
+              WHERE parse_status='supported' AND trust='model' AND event_type='agent.message'
+                AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+                AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)<=(?,?)
+              ORDER BY event_timestamp DESC,event_id DESC LIMIT 1`).get(...identity);
+            if (agent) keys.add(String(agent.deduplication_key));
+          }
+          const nextUser = this.#database.prepare(`SELECT event_timestamp,event_id FROM raw_events
+            WHERE parse_status='supported' AND trust='user' AND event_type='prompt.submitted'
+              AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)>(?,?)
+            ORDER BY event_timestamp,event_id LIMIT 1`).get(...identity);
+          const laterSummary = this.#database.prepare(`SELECT deduplication_key FROM raw_events
+            WHERE parse_status='supported' AND trust='model' AND event_type='agent.message'
+              AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+              AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)>=(?,?)
+              ${nextUser ? "AND (event_timestamp,event_id)<(?,?)" : ""}
+            ORDER BY event_timestamp DESC,event_id DESC LIMIT 1`).get(...identity,
+            ...(nextUser ? [String(nextUser.event_timestamp), String(nextUser.event_id)] : []));
+          if (laterSummary) keys.add(String(laterSummary.deduplication_key));
           const effective = this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(changed.safe_envelope_json))));
           const completionSource = effective.event.evidence?.sourceCompleteEventId;
           if (completionSource) {
@@ -2119,7 +2156,8 @@ export class CanonicalSqliteStore {
             JOIN raw_events ON raw_events.event_id=source.event_id
             WHERE affected.event_id=? AND learning_jobs.state NOT IN ('cancelled','archived')
               AND NOT EXISTS (SELECT 1 FROM learning_jobs newer WHERE newer.window_id=learning_jobs.window_id AND newer.rowid>learning_jobs.rowid)
-              AND raw_events.trust='user' AND raw_events.event_type='prompt.submitted' LIMIT 128`).all(String(changed.event_id))) {
+              AND ((raw_events.trust='user' AND raw_events.event_type='prompt.submitted')
+                OR (raw_events.trust='model' AND raw_events.event_type='agent.message' AND raw_events.event_id=json_extract(learning_jobs.window_json, '$.anchorEventId'))) LIMIT 128`).all(String(changed.event_id))) {
             keys.add(String(prompt.deduplication_key));
           }
           // A failed operation may support several adjacent user turns; do not stop at the first.
@@ -2128,7 +2166,7 @@ export class CanonicalSqliteStore {
               AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
               AND (event_timestamp,event_id) > (?,?) ORDER BY event_timestamp, event_id LIMIT 12`).all(...identity);
           for (const prompt of following) {
-            if (prompt.trust === "user" && prompt.event_type === "prompt.submitted") keys.add(String(prompt.deduplication_key));
+            if ((prompt.trust === "user" && prompt.event_type === "prompt.submitted") || (prompt.trust === "model" && prompt.event_type === "agent.message")) keys.add(String(prompt.deduplication_key));
           }
           for (const key of keys) touch.run(key, Date.parse(String(changed.event_timestamp)) + 2_000);
         }
@@ -2138,6 +2176,30 @@ export class CanonicalSqliteStore {
         JOIN raw_events USING(deduplication_key) WHERE not_before <= ? ORDER BY not_before, learning_prompt_work.rowid LIMIT ?`).all(now.getTime(), limit);
       const work = prompts.map((prompt): LearningPromptWork => {
         const values = [String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree), String(prompt.event_timestamp), String(prompt.event_id)];
+        if (prompt.trust === "model" && prompt.event_type === "agent.message") {
+          const boundary = this.#database.prepare(`SELECT event_timestamp,event_id FROM raw_events
+            WHERE parse_status='supported' AND trust='user' AND event_type='prompt.submitted'
+              AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)<=(?,?)
+            ORDER BY event_timestamp DESC,event_id DESC LIMIT 1`).get(...values);
+          const rows = boundary ? this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
+            WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
+              AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+              AND (event_timestamp,event_id)>=(?,?) ORDER BY event_timestamp,event_id LIMIT 64`).all(
+            String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree), String(boundary.event_timestamp), String(boundary.event_id)) : [];
+          const events = rows.map((row) => this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json)))));
+          const nextBoundary = events.findIndex((entry, index) => index > 0 && entry.event.trust === "user");
+          const taskEvents = nextBoundary < 0 ? events : events.slice(0, nextBoundary);
+          let summary: CaptureEnvelope | undefined;
+          let selected: CaptureEnvelope | undefined;
+          for (const entry of taskEvents) {
+            if (entry.event.trust === "model" && entry.event.eventType === "agent.message") summary = entry;
+            const closesSummary = summary && ((entry.event.eventType === "session.idle" && entry.event.trust === "system") ||
+              (entry.event.eventType === "agent.turn_completed" && entry.event.trust === "model" &&
+                (summary.event.actorId === undefined || entry.event.actorId === undefined || entry.event.actorId === summary.event.actorId)));
+            if (closesSummary) { selected = summary; break; }
+          }
+          return { deduplicationKey: String(prompt.deduplication_key), eventId: selected?.event.eventId ?? String(prompt.event_id), generation: Number(prompt.generation), origin: "agent", events };
+        }
         const adjacent = (direction: "before" | "after") => this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
           WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
             AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
@@ -2253,7 +2315,11 @@ export class CanonicalSqliteStore {
     if (this.#database.prepare("SELECT 1 FROM learning_jobs WHERE window_id=? AND state IN ('cancelled','archived') LIMIT 1").get(window.windowId)) return undefined;
     const latest = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY rowid DESC LIMIT 1").get(window.windowId);
     const previous = latest ? learningJobSchema.parse(JSON.parse(String(latest.body_json))) : undefined;
-    const attempts = Number(this.#database.prepare("SELECT coalesce(max(json_extract(body_json, '$.attempts')),0) AS attempts FROM learning_jobs WHERE window_id=?").get(window.windowId)?.attempts);
+    const task = window.origin === "agent" ? window.events.find((entry) => entry.event.trust === "user" && entry.event.eventType === "prompt.submitted") : undefined;
+    const taskBudget = task ? this.#database.prepare(`SELECT max(json_extract(job.body_json, '$.attempts')) AS attempts,
+      min(json_extract(job.body_json, '$.expiresAt')) AS expires_at FROM learning_sources source JOIN learning_jobs job ON job.job_id=source.job_id
+      WHERE source.event_id=? AND json_extract(job.window_json, '$.origin')='agent'`).get(task.event.eventId) : undefined;
+    const attempts = Math.max(Number(taskBudget?.attempts ?? 0), Number(this.#database.prepare("SELECT coalesce(max(json_extract(body_json, '$.attempts')),0) AS attempts FROM learning_jobs WHERE window_id=?").get(window.windowId)?.attempts));
     const jobId = `learning-job-${sha256([window.windowId, window.revision]).slice(0, 24)}`;
     // Reconciliation can fill missing proof without changing the extracted correction.
     const saved = previous ? this.learningProposalsForJob(previous.jobId) : [];
@@ -2261,15 +2327,15 @@ export class CanonicalSqliteStore {
       ? saved.filter((proposal) => {
         const candidate = this.knowledgeCandidates([proposal.knowledgeId])[0];
         if (candidate?.state !== "candidate" || this.feedbackEvents(proposal.knowledgeId).some((entry) => entry.source === "user")) return false;
-        const { rule, trigger, exclusions, userSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate } = proposal;
+        const { rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate } = proposal;
         try {
-          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate }] });
+          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate }] });
           return true;
         } catch { return false; }
       }).map((proposal) => ruleProposalSchema.parse({ ...proposal, jobId, proposalId: `learning-proposal-${sha256([jobId, proposal.proposalId]).slice(0, 24)}`, sourceDigests: window.sources })) : [];
     const job = learningJobSchema.parse({ schemaVersion: 1, jobId,
       windowId: window.windowId, revision: window.revision, state: "pending", attempts, createdAt: window.createdAt,
-      updatedAt: now.toISOString(), expiresAt: prior?.expiresAt ?? expiresAt, extractorVersion: "correction-extractor-1",
+      updatedAt: now.toISOString(), expiresAt: prior?.expiresAt ?? (typeof taskBudget?.expires_at === "string" ? taskBudget.expires_at : expiresAt), extractorVersion: "correction-extractor-1",
       ...(saved.length ? { state: retained.length ? "waiting_evidence" : "evaluated", result: previous?.result } : {}),
       ...(previous?.state === "paused" ? { state: "paused", retryAfter: previous.retryAfter, pauseReason: previous.pauseReason } : {}),
     });
@@ -2294,6 +2360,24 @@ export class CanonicalSqliteStore {
 
   public learningSourcesExist(window: LearningWindow): boolean {
     return window.sources.every((source) => this.#database.prepare("SELECT 1 FROM raw_events WHERE event_id=?").get(source.eventId) !== undefined);
+  }
+
+  public learningAttemptCount(window: LearningWindow, fallback: number): number {
+    const task = window.origin === "agent" ? window.events.find((entry) => entry.event.trust === "user" && entry.event.eventType === "prompt.submitted") : undefined;
+    if (!task) return fallback;
+    return Math.max(fallback, Number(this.#database.prepare(`SELECT coalesce(max(json_extract(job.body_json, '$.attempts')),0) AS attempts
+      FROM learning_sources source JOIN learning_jobs job ON job.job_id=source.job_id
+      WHERE source.event_id=? AND json_extract(job.window_json, '$.origin')='agent'`).get(task.event.eventId)?.attempts ?? 0));
+  }
+
+  public learningProposalWasRecalled(proposal: RuleProposal, window: LearningWindow): boolean {
+    if (!proposal.agentSource) return false;
+    const summary = window.events.find((entry) => entry.event.eventId === proposal.agentSource?.eventId);
+    if (!summary) return false;
+    const since = Math.min(...window.events.map((entry) => Date.parse(entry.event.timestamp)));
+    const until = Date.parse(summary.event.timestamp);
+    return this.contextUseRecords(window.sessionId).some((record) => Date.parse(record.createdAt) >= since && Date.parse(record.createdAt) <= until &&
+      [...record.returnedKnowledgeIds, ...record.appliedKnowledgeIds].some((id) => id === proposal.knowledgeId || id === `knowledge:${proposal.knowledgeId}`));
   }
 
   public transitionLearningJob(input: LearningJob, expectedState: LearningJob["state"]): boolean {
@@ -2329,6 +2413,7 @@ export class CanonicalSqliteStore {
       const window = this.learningWindow(job.jobId);
       const stored = this.#database.prepare("SELECT state FROM learning_jobs WHERE job_id=?").get(job.jobId);
       if (!window || stored?.state !== (input.reevaluation ? "waiting_evidence" : "running") || Date.parse(job.updatedAt) >= Date.parse(job.expiresAt) || this.hasActiveDeletion() || !this.learningSourcesCurrent(window) ||
+          proposals.some((proposal) => this.learningProposalWasRecalled(proposal, window)) ||
           candidates.some((item) => this.knowledgeDeletionBlocked(item.knowledgeId)) || this.knowledgeCandidatesWithUnavailableSources(candidates).size > 0) { this.#database.exec("ROLLBACK;"); return false; }
       if (input.reevaluation) {
         const priorRow = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE job_id=?").get(job.jobId);
@@ -2365,7 +2450,8 @@ export class CanonicalSqliteStore {
         if (existing) {
           const userControls = this.feedbackEvents().some((event) => event.targetId === candidate.knowledgeId && event.source === "user");
           const newReceipt = receipts.find((receipt) => proposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === receipt.proposalId));
-          if (existing.state === "candidate" && candidate.state === "active" && !userControls && newReceipt && (input.reevaluation || !existing.sourceEvidenceIds.includes(newReceipt.userEventId))) {
+          const originEventId = newReceipt?.userEventId ?? newReceipt?.agentEventId;
+          if (existing.state === "candidate" && candidate.state === "active" && !userControls && newReceipt && originEventId && (input.reevaluation || !existing.sourceEvidenceIds.includes(originEventId))) {
             this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?").run(JSON.stringify(candidate), sha256(candidate), candidate.validatedAt ?? candidate.createdAt, candidate.knowledgeId);
             this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
           }
@@ -7736,6 +7822,7 @@ export class CanonicalSqliteStore {
                         index.name === "raw_events_learning_context" ||
                         index.name === "raw_events_learning_prompts"
                       )) ||
+                      (expectedVersion < 14 && index.name === "raw_events_learning_agents") ||
                       (expectedVersion < 10 && (
                         index.name === "raw_events_observed" ||
                         index.name === "context_use_observed"

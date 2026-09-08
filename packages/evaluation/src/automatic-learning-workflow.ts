@@ -92,6 +92,7 @@ const classifyValidationRejection = (error: unknown): z.infer<typeof rejectionRe
     case "Learning proposal contains sensitive content.": return "sensitive_content";
     case "A proposal cannot mix shell and MCP predicates.": return "predicate_conflict";
     case "Invalid user source quotation.": return "source_quote";
+    case "Invalid agent source or tool quotation.": return "source_quote";
     case "Proposal references an unknown source.": return "source_unknown";
     case "Proposal operation references must identify failed/retry tool.started events and the retry tool.completed event.": return "operation_kind";
     default: return "validation_unknown";
@@ -318,8 +319,9 @@ export const exportInstalledLearningCorpus = async (options: {
     const receipts = store.learningReceipts();
     corpus = frozenLearningCorpusSchema.parse({ version: 1, corpusId: "installed-capture-review-v1", sourceKind: "captured_installed",
       cases: windows.map((window, index) => ({ id: "captured-" + index, language: /[\u3400-\u9fff]/u.test(window.events.map((event) => event.content?.message ?? "").join(" ")) ? "zh" : "en",
-        scenario: "captured-ordinary-window", designStratum: "unlabeled_capture", window,
-        contracts: receipts.flatMap((receipt) => receipt.proves === "invocation_contract" && window.sources.some((source) => source.eventId === receipt.userEventId) ? [receipt.contract] : []) })), tasks: [] });
+        scenario: window.origin === "agent" ? "captured-agent-experience" : "captured-ordinary-window", designStratum: "unlabeled_capture", window,
+        contracts: receipts.flatMap((receipt) => receipt.proves === "invocation_contract" &&
+          window.sources.some((source) => source.eventId === (receipt.userEventId ?? receipt.agentEventId)) ? [receipt.contract] : []) })), tasks: [] });
   } finally { store.close(); }
   return prepareFrozenLearningEvaluation({ outputDirectory: options.outputDirectory, corpus, ...(options.now ? { now: options.now } : {}) });
 };

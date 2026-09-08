@@ -10,6 +10,8 @@ See the [2026-09-08 validation record](general-learning-validation.md) for execu
 
 ## Prepare and label
 
+Agent-origin scenarios follow [EXP-01 through EXP-12](agent-experience-learning.md). Record agent and tool quotations separately from user corrections, and distinguish research candidates from verified recovery. Source-role validation must precede counting extraction or activation.
+
 ```powershell
 node scripts/evaluate-automatic-learning.mjs prepare --out evaluation-output/frozen-learning-v1
 ```

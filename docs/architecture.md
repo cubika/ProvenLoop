@@ -604,6 +604,8 @@ Knowledge. A personal scope requires an explicit user choice.
 
 #### 3.6.1 Automatic extraction in the existing worker
 
+The [agent experience contract](agent-experience-learning.md) extends this worker with a separate agent-origin path. Agent windows are anchored to a captured summary and task closure; proposals retain agent/tool quotations and recovery receipts use `agentEventId`. User-origin records retain `userSource` and `userEventId`. Research findings remain candidates, while supported self-directed recoveries use native proof. SQLite schema 14 marks the persisted-format boundary.
+
 **Required design, not yet implemented.** The Extension callback remains a bounded
 event copier. After durable ingestion, a `LearningCoordinator` in `host` creates
 versioned learning windows from trusted user turns and their causally related

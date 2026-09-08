@@ -2,6 +2,8 @@
 
 Status: proposed test design. No case in this document is marked implemented or passed.
 
+The [agent experience extension](agent-experience-learning.md) adds EXP-01 through EXP-12 for agent research and self-directed retries without user correction. These cases supplement the 96 correction-learning families below and retain their distinct source roles.
+
 This catalog defines 96 scenario families across 12 areas. It tests whether ProvenLoop can identify what a correction means, choose a defensible level of abstraction, verify the part supported by evidence, and reuse it only where it applies. Tool transport is one dimension of a case. MCP, native commands, code edits and document work should not each become an isolated definition of learning.
 
 The current authored replay corpus concentrates on missing-argument recovery. Translations and renamed parameters help measure expression stability, but they share much of the same evidence structure. The families below add different failure mechanisms, successful operations that still need correction, ambiguous intent, changes over time and tasks that should produce no rule.

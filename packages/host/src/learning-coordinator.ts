@@ -1,4 +1,4 @@
-import type { LearningWindow, LearningJob, LearningToolContract, RuleProposal, LearningRecoveryReceipt } from "@provenloop/contracts";
+import { learningProposalSource, type LearningWindow, type LearningJob, type LearningToolContract, type RuleProposal, type LearningRecoveryReceipt } from "@provenloop/contracts";
 import { buildLearningWindows, validateLearningResponse, verifyLearningRecovery, learningKnowledgeCandidate, sha256, sanitizeDiagnostic } from "@provenloop/domain";
 import type { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
@@ -84,7 +84,7 @@ export class LearningCoordinator {
         store.transitionLearningJob({ ...job, updatedAt: time.toISOString() }, "waiting_evidence");
       }
       for (const work of store.learningPromptWork(time)) {
-        const windowId = `learning-window-${sha256(work.eventId).slice(0, 24)}`;
+        const windowId = `${work.origin === "agent" ? "learning-agent-window" : "learning-window"}-${sha256(work.eventId).slice(0, 24)}`;
         const window = buildLearningWindows(work.events, time).find((entry) => entry.windowId === windowId);
         if (window) {
           store.scheduleLearningWindow(window, new Date(Date.parse(window.createdAt) + (this.options.candidateDays ?? 30) * 86_400_000).toISOString(), time);
@@ -102,13 +102,18 @@ export class LearningCoordinator {
         return { status: "cancelled", jobId: pending.jobId };
       }
       if (!await this.options.enabled()) return { status: "disabled" };
+      const attempts = store.learningAttemptCount(window, pending.attempts);
+      if (attempts >= 3) {
+        store.transitionLearningJob({ ...pending, state: "failed", attempts, updatedAt: time.toISOString() }, pending.state);
+        return evidenceResult ?? { status: "idle", jobId: pending.jobId, reason: "attempt_budget" };
+      }
       if (!store.reserveLearningAttempt(time, this.options.dailyLimit ?? 200)) {
         store.transitionLearningJob({ ...pending, state: "paused", updatedAt: time.toISOString(), pauseReason: "daily_budget",
           retryAfter: new Date(Date.UTC(time.getUTCFullYear(), time.getUTCMonth(), time.getUTCDate() + 1)).toISOString() }, pending.state);
         return evidenceResult ?? { status: "paused", jobId: pending.jobId, reason: "daily_budget" };
       }
       const deadlineMs = this.options.deadlineMs ?? 60_000;
-      const running: LearningJob = { ...pending, state: "running", attempts: pending.attempts + 1, updatedAt: time.toISOString(),
+      const running: LearningJob = { ...pending, state: "running", attempts: attempts + 1, updatedAt: time.toISOString(),
         deadline: new Date(time.getTime() + deadlineMs).toISOString(), provider: provider.identity.provider, model: provider.identity.model, extractorVersion: `correction-extractor-1/${provider.identity.version}` };
       delete running.pauseReason; delete running.retryAfter; delete running.error; delete running.result;
       if (!store.transitionLearningJob(running, pending.state)) return { status: "busy" };
@@ -139,11 +144,11 @@ export class LearningCoordinator {
           return evidenceResult ?? { status: "cancelled", jobId: running.jobId, reason: "expired" };
         }
         const parsed = validateLearningResponse(window, output);
-        const proposals: RuleProposal[] = parsed.proposals.map((entry) => {
-          const identity = sha256([window.repoId, entry.shellPredicate ? [entry.shellPredicate, window.events.find((event) => event.event.eventId === entry.userSource.eventId)?.event.commitSha] : entry.predicate ?? [entry.rule, entry.trigger]]);
+        const proposals: RuleProposal[] = parsed.proposals.map((entry): RuleProposal => {
+          const identity = sha256([window.repoId, entry.shellPredicate ? [entry.shellPredicate, window.events.find((event) => event.event.eventId === learningProposalSource(entry).eventId)?.event.commitSha] : entry.predicate ?? [entry.rule, entry.trigger]]);
           return { ...entry, schemaVersion: 1, proposalId: `learning-proposal-${sha256([running.jobId, entry]).slice(0, 24)}`, jobId: running.jobId,
             knowledgeId: `learning-knowledge-${identity.slice(0, 24)}`, createdAt: window.createdAt, expiresAt: running.expiresAt, sourceDigests: window.sources };
-        });
+        }).filter((proposal) => !store.learningProposalWasRecalled(proposal, window));
         const receipts = proposals.flatMap((proposal): LearningRecoveryReceipt[] => {
           const receipt = verifyLearningRecovery(proposal, window.events, this.options.contracts?.() ?? [], now());
           return receipt ? [receipt] : [];
@@ -163,7 +168,7 @@ export class LearningCoordinator {
         const finished = now();
         const state = !store.learningSourcesCurrent(window) ? (store.learningSourcesExist(window) ? "superseded" : "cancelled")
           : Date.parse(running.expiresAt) <= finished.getTime() ? "archived" : pauseReason ? "paused" : "failed";
-        store.transitionLearningJob({ ...running, state, attempts: pauseReason ? pending.attempts : running.attempts,
+        store.transitionLearningJob({ ...running, state, attempts: pauseReason ? attempts : running.attempts,
           updatedAt: finished.toISOString(), result: "error", error: sanitizeDiagnostic(error).slice(0, 512),
           ...(pauseReason ? { pauseReason, retryAfter: new Date(finished.getTime() + (unavailable === "signed_out" ? 300_000 : unavailable ? 60_000 : 0)).toISOString() } : {}),
         }, "running");

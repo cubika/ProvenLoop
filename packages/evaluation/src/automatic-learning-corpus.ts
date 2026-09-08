@@ -8,7 +8,7 @@ export const frozenLearningCorpusSchema = z.object({
   sourceKind: z.enum(["authored_replay", "captured_installed"]),
   cases: z.array(z.object({
     id, language: z.enum(["zh", "en"]), scenario: id,
-    designStratum: z.enum(["correction", "negative", "unlabeled_capture"]),
+    designStratum: z.enum(["correction", "experience", "negative", "unlabeled_capture"]),
     window: learningWindowSchema, contracts: z.array(learningToolContractSchema),
   }).strict()).min(1).max(500),
   tasks: z.array(z.object({ id, caseId: id, prompt: z.string().min(1).max(2048),

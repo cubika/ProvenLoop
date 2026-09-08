@@ -31,6 +31,23 @@ describe("isolated Copilot learning provider", () => {
     expect(await provider.infer(window(), { signal: new AbortController().signal })).toEqual({ schemaVersion: 1, proposals: [] });
     expect(await readdir(root)).toEqual([]);
   });
+  it("EXP-01/07 requests agent provenance without granting search or execution tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provenloop-agent-provider-")); roots.push(root);
+    const input = window();
+    input.origin = "agent"; input.anchorEventId = input.events[0]?.event.eventId ?? "anchor";
+    const provider = new CopilotLearningProvider({ temporaryRoot: root, enabled: async () => true, runner: { run: async (_exe, args) => {
+      const prompt = args[args.indexOf("--prompt") + 1] ?? "";
+      expect(prompt).toContain("agentSource");
+      expect(prompt).toContain("NEVER include userSource");
+      expect(prompt).toContain("evidenceSources");
+      expect(prompt).toContain(input.anchorEventId);
+      expect(args).toContain("--available-tools=");
+      expect(args).toContain("--disable-builtin-mcps");
+      return { exitCode: 0, stdout: JSON.stringify({ schemaVersion: 1, proposals: [] }), stderr: "" };
+    } } });
+    expect(await provider.infer(input, { signal: new AbortController().signal })).toEqual({ schemaVersion: 1, proposals: [] });
+    expect(await readdir(root)).toEqual([]);
+  });
   it("drops disabled in-flight results and cleans malformed responses", async () => {
     for (const disable of [true, false]) {
       const root = await mkdtemp(join(tmpdir(), "provenloop-learning-test-")); roots.push(root); let enabled = true;

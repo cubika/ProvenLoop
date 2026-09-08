@@ -1,8 +1,9 @@
-import { shellRecoveryReceiptSchema, type CaptureEnvelope, type RuleProposal, type ShellRecoveryReceipt } from "@provenloop/contracts";
+import { shellRecoveryReceiptSchema, learningProposalSource, type CaptureEnvelope, type RuleProposal, type ShellRecoveryReceipt } from "@provenloop/contracts";
 import { sha256 } from "./digest.js";
 import { sameVerificationWorkspace } from "./verification-proof.js";
 import { validCapturedParent } from "./parent-bridge.js";
 import { posix, win32 } from "node:path";
+import { validAgentLearningSource } from "./agent-learning-source.js";
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 // These forms are already classified as test.completed by the native command evidence bridge.
@@ -33,18 +34,26 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
   if (!predicate || proposal.predicate || !supportedLearningTestCommand(predicate.command) ||
       !supportedLearningTestCommand(predicate.failedCommand) || predicate.command === predicate.failedCommand ||
       !proposal.failedOperationEventId || !proposal.retryOperationEventId || !proposal.completionEventId) return undefined;
+  const agentOrigin = proposal.agentSource !== undefined;
+  if (agentOrigin && (proposal.agentSource?.kind !== "recovery" ||
+      !validAgentLearningSource(proposal, events.filter((entry) => proposal.sourceDigests.some((item) => item.eventId === entry.event.eventId))))) return undefined;
+  if (!proposal.userSource && !proposal.agentSource) return undefined;
+  const source = learningProposalSource(proposal);
   const byId = new Map(events.map((entry) => [entry.event.eventId, entry]));
-  const failed = byId.get(proposal.failedOperationEventId), retry = byId.get(proposal.retryOperationEventId), completion = byId.get(proposal.completionEventId), user = byId.get(proposal.userSource.eventId);
-  if (!failed || !retry || !completion || !user || user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
-      !user.content?.message?.includes(proposal.userSource.quote) || !proposal.userSource.quote.includes(predicate.command)) return undefined;
+  const failed = byId.get(proposal.failedOperationEventId), retry = byId.get(proposal.retryOperationEventId), completion = byId.get(proposal.completionEventId), user = byId.get(source.eventId);
+  if (!failed || !retry || !completion || !user ||
+      user.event.trust !== (agentOrigin ? "model" : "user") || user.event.eventType !== (agentOrigin ? "agent.message" : "prompt.submitted") ||
+      !user.content?.message?.includes(source.quote) || !source.quote.includes(predicate.command)) return undefined;
+  if (agentOrigin && events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.trust === "user" &&
+      Date.parse(entry.event.timestamp) > Date.parse(failed.event.timestamp) && Date.parse(entry.event.timestamp) <= Date.parse(user.event.timestamp))) return undefined;
   const failure = events.find((entry) => entry.event.sessionId === user.event.sessionId && entry.event.operationId === failed.event.operationId &&
     ["tool.failed", "tool.completed"].includes(entry.event.eventType) && entry.event.exitCode !== undefined && entry.event.exitCode !== 0);
   const proof = events.find((entry) => entry.event.eventType === "test.completed" && entry.event.operationId === retry.event.operationId &&
     entry.event.sessionId === user.event.sessionId && entry.event.evidence?.sourceStartEventId === retry.sourceEventId && entry.event.evidence.sourceCompleteEventId === completion.sourceEventId);
   if (!failure || !proof || !user.event.repoId || !user.event.sessionId || !user.event.worktree || !user.event.branch ||
       !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(user.event.commitSha ?? "")) return undefined;
-  const chain = [failed, failure, user, retry, completion];
-  const executionActors = new Set([failed, failure, retry, completion, proof].flatMap((entry) =>
+  const chain = agentOrigin ? [failed, failure, retry, completion, user] : [failed, failure, user, retry, completion];
+  const executionActors = new Set([failed, failure, retry, completion, proof, ...(agentOrigin ? [user] : [])].flatMap((entry) =>
     entry.event.actorId === undefined ? [] : [entry.event.actorId]));
   if (executionActors.size > 1 || executionActors.has("provenloop-internal")) return undefined;
   const complete = (entry: CaptureEnvelope): boolean => !entry.event.mcp && sameVerificationWorkspace(user, entry) &&
@@ -105,12 +114,14 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
     proof.event.evidence?.sourceCompleteEventId === completion.sourceEventId && proof.event.evidence.sourceStartEventId === retry.sourceEventId &&
     (proof.event.parentBridge === undefined || (sha256(proof.event.parentBridge) === sha256(completion.event.parentBridge) &&
       proof.event.originalParentSourceEventId === completion.event.originalParentSourceEventId));
-  if (!trace(failure, failed) || !trace(user, failure) || !trace(retry, user) || !trace(completion, retry) || !derivedCompletion) return undefined;
+  if (!trace(failure, failed) || !trace(completion, retry) || !derivedCompletion ||
+      (agentOrigin ? (!trace(retry, failure) || !trace(user, completion)) : (!trace(user, failure) || !trace(retry, user)))) return undefined;
+  const recoveryAnchor = agentOrigin ? failure : user;
   const competingRetries = events.filter((entry) => {
     const args = record(entry.event.redactedArguments);
     return entry.event.eventType === "tool.started" && entry.event.toolName === predicate.toolName && !entry.event.mcp &&
       Date.parse(entry.event.timestamp) <= Date.parse(completion.event.timestamp) && args.command === predicate.command &&
-      sha256(relevant(args)) === sha256(relevant(before)) && trace(entry, user) && !trace(entry, completion);
+      sha256(relevant(args)) === sha256(relevant(before)) && trace(entry, recoveryAnchor) && !trace(entry, completion);
   });
   if (competingRetries.length !== 1 ||
       events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.operationId === retry.event.operationId &&
@@ -118,7 +129,8 @@ export const verifyShellRecovery = (proposal: RuleProposal, events: readonly Cap
   if (proposal.sourceDigests.some((source) => !byId.has(source.eventId) || sha256(byId.get(source.eventId)) !== source.digest) ||
       [...chain, proof].some((entry) => !proposal.sourceDigests.some((source) => source.eventId === entry.event.eventId))) return undefined;
   return shellRecoveryReceiptSchema.parse({ schemaVersion: 1, receiptId: `shell-recovery-${sha256([proposal.proposalId, predicate]).slice(0, 24)}`, proposalId: proposal.proposalId, predicate,
-    proves: "repository_test_command", failureEventId: failure.event.eventId, userEventId: user.event.eventId, failedOperationEventId: failed.event.eventId,
+    proves: "repository_test_command", failureEventId: failure.event.eventId,
+    ...(agentOrigin ? { agentEventId: user.event.eventId } : { userEventId: user.event.eventId }), failedOperationEventId: failed.event.eventId,
     retryOperationEventId: retry.event.eventId, completionEventId: completion.event.eventId, nativeVerificationEventId: proof.event.eventId,
     repoId: user.event.repoId, worktree: user.event.worktree, branch: user.event.branch, commitSha: user.event.commitSha, sourceDigests: proposal.sourceDigests, verifiedAt: now.toISOString() });
 };

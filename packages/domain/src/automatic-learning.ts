@@ -1,6 +1,6 @@
 import { posix, win32 } from "node:path";
 import {
-  learningInferenceResponseSchema, learningWindowSchema, mcpRecoveryReceiptSchema,
+  learningInferenceResponseSchema, learningWindowSchema, mcpRecoveryReceiptSchema, learningProposalSource,
   type CaptureEnvelope, type LearningWindow, type LearningToolContract,
   type RuleProposal, type McpRecoveryReceipt, type LearningRecoveryReceipt, type KnowledgeCandidate,
 } from "@provenloop/contracts";
@@ -8,6 +8,7 @@ import { sha256 } from "./digest.js";
 import { validCapturedParent } from "./parent-bridge.js";
 import { supportedLearningTestCommand, verifyShellRecovery } from "./shell-learning.js";
 import { containsPotentialSecret } from "./redaction.js";
+import { validAgentLearningSource } from "./agent-learning-source.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -114,6 +115,39 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
       });
       windows.push({ user, window });
     }
+    // Select one closed agent turn per captured user task. The provider decides whether
+    // the summary contains a reusable finding; capture selection does not inspect keywords.
+    let boundary = -1;
+    let closedTask = false;
+    let summary: CaptureEnvelope | undefined;
+    for (let index = 0; index < group.length; index += 1) {
+      const entry = group[index];
+      if (!entry) continue;
+      if (entry.event.trust === "user") {
+        boundary = index; closedTask = false; summary = undefined;
+      } else if (boundary >= 0 && !closedTask && entry.event.eventType === "agent.message" && entry.event.trust === "model" && entry.content?.message) {
+        summary = entry;
+      } else if (!closedTask && summary &&
+          ((entry.event.eventType === "agent.turn_completed" && entry.event.trust === "model" &&
+            (summary.event.actorId === undefined || entry.event.actorId === undefined || entry.event.actorId === summary.event.actorId)) ||
+            (entry.event.eventType === "session.idle" && entry.event.trust === "system"))) {
+        closedTask = true;
+        if (now.getTime() - Date.parse(entry.event.timestamp) < 2_000 || index - boundary + 1 > 32 ||
+            !summary.event.sessionId || !summary.event.repoId || !summary.event.worktree || summary.event.repositoryState !== "known_repo") continue;
+        const selected = group.slice(boundary, index + 1);
+        const summaryTime = Date.parse(summary.event.timestamp);
+        const result = selected.find((item) => item.event.trust === "tool" &&
+          ["tool.completed", "tool.failed"].includes(item.event.eventType) && Date.parse(item.event.timestamp) < summaryTime &&
+          [item.content?.message, item.content?.safeError, item.content?.toolResult].some((value) => value !== undefined));
+        if (!result) continue;
+        const sourceDigests = selected.map((item) => ({ eventId: item.event.eventId, digest: learningSourceDigest(item) }));
+        const window = learningWindowSchema.parse({ schemaVersion: 1, origin: "agent", anchorEventId: summary.event.eventId,
+          windowId: "learning-agent-window-" + sha256(summary.event.eventId).slice(0, 24), revision: sha256(sourceDigests),
+          sessionId: summary.event.sessionId, repoId: summary.event.repoId, worktree: summary.event.worktree,
+          createdAt: summary.event.timestamp, sources: sourceDigests, events: selected });
+        windows.push({ user: summary, window });
+      }
+    }
   }
   return windows.sort((a, b) => compare(a.user, b.user)).map(({ window }) => window);
 };
@@ -123,14 +157,21 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
   const parsed = learningInferenceResponseSchema.parse(output);
   const sources = new Map(window.events.map((entry) => [entry.event.eventId, entry]));
   for (const proposal of parsed.proposals) {
-    if ([proposal.rule, proposal.trigger, ...proposal.exclusions, proposal.userSource.quote].some(containsPotentialSecret)) {
+    const source = learningProposalSource(proposal);
+    if ([proposal.rule, proposal.trigger, ...proposal.exclusions, source.quote,
+      ...(proposal.agentSource?.evidenceSources.map((item) => item.quote) ?? [])].some(containsPotentialSecret)) {
       throw new Error("Learning proposal contains sensitive content.");
     }
     if (proposal.predicate && proposal.shellPredicate) throw new Error("A proposal cannot mix shell and MCP predicates.");
-    const user = sources.get(proposal.userSource.eventId);
-    if (user?.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
+    const user = sources.get(source.eventId);
+    if (proposal.agentSource) {
+      if (window.origin !== "agent" || window.anchorEventId !== source.eventId ||
+          "learning-agent-window-" + sha256(source.eventId).slice(0, 24) !== window.windowId ||
+          user?.event.repoId !== window.repoId || user.event.sessionId !== window.sessionId || user.event.worktree !== window.worktree ||
+          !validAgentLearningSource(proposal, window.events)) throw new Error("Invalid agent source or tool quotation.");
+    } else if (window.origin === "agent" || user?.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
         `learning-window-${sha256(user.event.eventId).slice(0, 24)}` !== window.windowId ||
-        !user.content?.message?.includes(proposal.userSource.quote)) throw new Error("Invalid user source quotation.");
+        !user.content?.message?.includes(source.quote)) throw new Error("Invalid user source quotation.");
     for (const [id, expectedType] of [[proposal.failedOperationEventId, "tool.started"],
       [proposal.retryOperationEventId, "tool.started"], [proposal.completionEventId, "tool.completed"]] as const) {
       if (id === undefined) continue;
@@ -155,7 +196,11 @@ export const renderLearningPredicate = (proposal: RuleProposal): string | undefi
 
 export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly CaptureEnvelope[], contracts: readonly LearningToolContract[], now: Date): McpRecoveryReceipt | undefined => {
   const predicate = proposal.predicate;
-  if (predicate === undefined || !proposal.failedOperationEventId || !proposal.retryOperationEventId || !proposal.completionEventId) return undefined;
+  const source = proposal.userSource ?? proposal.agentSource;
+  const agentOrigin = proposal.agentSource !== undefined;
+  if (predicate === undefined || !source || (proposal.userSource && proposal.agentSource) ||
+      (agentOrigin && proposal.agentSource?.kind !== "recovery") ||
+      !proposal.failedOperationEventId || !proposal.retryOperationEventId || !proposal.completionEventId) return undefined;
   const contract = contracts.find((item) => item.digest === predicate.contractDigest && item.serverName === predicate.serverName && item.toolName === predicate.toolName);
   if (contract === undefined || sha256({ schemaVersion: contract.schemaVersion, serverName: contract.serverName, toolName: contract.toolName, version: contract.version, sourceSchemaDigest: contract.sourceSchemaDigest, requiredArguments: contract.requiredArguments, absolutePathArguments: contract.absolutePathArguments }) !== contract.digest) return undefined;
   if (!(predicate.kind === "required_argument" ? contract.requiredArguments : contract.absolutePathArguments).includes(predicate.argument)) return undefined;
@@ -163,14 +208,20 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
   const failed = byId.get(proposal.failedOperationEventId);
   const retry = byId.get(proposal.retryOperationEventId);
   const completion = byId.get(proposal.completionEventId);
-  const user = byId.get(proposal.userSource.eventId);
+  const user = byId.get(source.eventId);
   const failure = events.find((entry) => entry.event.eventType === "tool.failed" && entry.event.operationId === failed?.event.operationId && entry.event.sessionId === failed?.event.sessionId);
-  if (!failed || !retry || !completion || !user || !failure || user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
+  if (!failed || !retry || !completion || !user || !failure ||
+      (!agentOrigin && (user.event.trust !== "user" || user.event.eventType !== "prompt.submitted")) ||
       !failed.event.operationId || !retry.event.operationId ||
-      !user.content?.message?.includes(proposal.userSource.quote)) return undefined;
-  const chain = [failed, failure, user, retry, completion];
-  const executionActors = new Set([failed, failure, retry, completion].flatMap((entry) => entry.event.actorId ? [entry.event.actorId] : []));
+      !user.content?.message?.includes(source.quote)) return undefined;
+  if (agentOrigin && (!validAgentLearningSource(proposal, events.filter((entry) => proposal.sourceDigests.some((item) => item.eventId === entry.event.eventId))) ||
+      events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.trust === "user" &&
+        Date.parse(entry.event.timestamp) > Date.parse(failed.event.timestamp) && Date.parse(entry.event.timestamp) <= Date.parse(user.event.timestamp)))) return undefined;
+  const chain = agentOrigin ? [failed, failure, retry, completion, user] : [failed, failure, user, retry, completion];
+  const executionActors = new Set([failed, failure, retry, completion, ...(agentOrigin ? [user] : [])].flatMap((entry) => entry.event.actorId ? [entry.event.actorId] : []));
   if (executionActors.size > 1 || executionActors.has("provenloop-internal")) return undefined;
+  if (agentOrigin && chain.some((entry) => entry.event.adapter !== user.event.adapter || entry.event.adapterVersion !== user.event.adapterVersion ||
+      entry.event.branch !== user.event.branch || entry.event.commitSha !== user.event.commitSha)) return undefined;
   if (!user.event.sessionId || !user.event.repoId || !user.event.worktree || chain.some((entry) =>
     entry.event.sessionId !== user.event.sessionId || entry.event.repoId !== user.event.repoId ||
     entry.event.worktree !== user.event.worktree || entry.event.repositoryState !== "known_repo" ||
@@ -212,13 +263,19 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
           (parent.event.captureQuality?.truncatedFields.length ?? 0) > 0 || (parent.event.captureQuality?.omittedFields.length ?? 0) > 0 ||
           Date.parse(parent.event.timestamp) > childTime ||
           parent.event.trust === "user" || parent.event.trust === "external-content") return false;
+      if (agentOrigin && (parent.event.actorId === "provenloop-internal" ||
+          (parent.event.actorId !== undefined && executionActors.size > 0 && !executionActors.has(parent.event.actorId)) ||
+          parent.event.adapter !== user.event.adapter || parent.event.adapterVersion !== user.event.adapterVersion ||
+          parent.event.branch !== user.event.branch || parent.event.commitSha !== user.event.commitSha)) return false;
       childTime = Date.parse(parent.event.timestamp);
       child = parent;
       current = parent.event.parentEventId;
     }
     return false;
   };
-  if (!traces(retry, user.event.eventId) || !traces(user, failure.event.eventId) ||
+  const recoveryAnchor = agentOrigin ? failure : user;
+  if (!(agentOrigin ? traces(retry, failure.event.eventId) && traces(user, completion.event.eventId) :
+      traces(retry, user.event.eventId) && traces(user, failure.event.eventId)) ||
       !traces(failure, failed.event.eventId) || !traces(completion, retry.event.eventId)) return undefined;
   // Only competing corrections before this result make the selected retry ambiguous.
   // Later invocations do not change the immutable evidence for this invocation.
@@ -227,7 +284,7 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
     const other = Object.fromEntries(Object.entries(args).filter(([key]) => key !== predicate.argument));
     return entry.event.eventType === "tool.started" && entry.event.toolName === retry.event.toolName && native(entry) &&
       Date.parse(entry.event.timestamp) <= Date.parse(completion.event.timestamp) && valid(args[predicate.argument]) &&
-      sha256(other) === sha256(otherBefore) && traces(entry, user.event.eventId) && !traces(entry, completion.event.eventId);
+      sha256(other) === sha256(otherBefore) && traces(entry, recoveryAnchor.event.eventId) && !traces(entry, completion.event.eventId);
   });
   if (competingRetries.length !== 1) return undefined;
   if (proposal.sourceDigests.some((source) => { const entry = byId.get(source.eventId); return !entry || learningSourceDigest(entry) !== source.digest; })) return undefined;
@@ -235,7 +292,8 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
   if (events.some((entry) => entry.event.sessionId === user.event.sessionId && entry.event.operationId === retry.event.operationId &&
       (entry.event.eventType === "tool.failed" || entry.event.completionStatus === "failed" || entry.event.mcp?.isError === true || entry.event.mcp?.resultType === "failure"))) return undefined;
   return mcpRecoveryReceiptSchema.parse({ schemaVersion: 1, receiptId: `mcp-recovery-${sha256([proposal.proposalId, contract.digest]).slice(0, 24)}`,
-    proposalId: proposal.proposalId, predicate, contract, failureEventId: failure.event.eventId, userEventId: user.event.eventId,
+    proposalId: proposal.proposalId, predicate, contract, failureEventId: failure.event.eventId,
+    ...(agentOrigin ? { agentEventId: user.event.eventId } : { userEventId: user.event.eventId }),
     failedOperationEventId: failed.event.eventId, retryOperationEventId: retry.event.eventId, completionEventId: completion.event.eventId,
     sourceDigests: proposal.sourceDigests, verifiedAt: now.toISOString(), proves: "invocation_contract" });
 };

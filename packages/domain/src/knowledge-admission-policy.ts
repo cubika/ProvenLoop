@@ -1,4 +1,5 @@
 import {
+  learningProposalSource,
   captureEnvelopeSchema,
   contextUseRecordSchema,
   correctionKeySchema,
@@ -379,10 +380,15 @@ const evaluateCandidate = (
     if (proposal && (candidate.sourceEvidenceIds.length !== proposal.sourceDigests.length || proposal.sourceDigests.some((source) => !sourceEvidence.has(source.eventId)))) reasons.add("incomplete_proof_chain");
     if (candidate.sourceEvidenceIds.some((id) => context.recalledReferences.has(id))) reasons.add("recalled_knowledge_evidence");
     if (proposal && receipt) {
-      const user = context.envelopesById.get(proposal.userSource.eventId);
+      const user = context.envelopesById.get(learningProposalSource(proposal).eventId);
       const completion = proposal.completionEventId === undefined ? undefined : context.envelopesById.get(proposal.completionEventId);
+      const taskPrompt = proposal.agentSource ? proposal.sourceDigests.map((source) => context.envelopesById.get(source.eventId))
+        .filter((entry): entry is CaptureEnvelope => entry?.event.trust === "user" && entry.event.eventType === "prompt.submitted")
+        .sort((left, right) => Date.parse(left.event.timestamp) - Date.parse(right.event.timestamp))[0] : undefined;
+      const start = proposal.agentSource ? taskPrompt ?? (proposal.failedOperationEventId ? context.envelopesById.get(proposal.failedOperationEventId) : user) : user;
+      const end = proposal.agentSource ? user : completion;
       if (context.allContextUseRecords.some((record) => record.sessionId === user?.event.sessionId && recordRecallsKnowledge(record, candidate.knowledgeId) &&
-          Date.parse(record.createdAt) >= Date.parse(user?.event.timestamp ?? "") && Date.parse(record.createdAt) <= Date.parse(completion?.event.timestamp ?? ""))) reasons.add("recalled_knowledge_evidence");
+          Date.parse(record.createdAt) >= Date.parse(start?.event.timestamp ?? "") && Date.parse(record.createdAt) <= Date.parse(end?.event.timestamp ?? ""))) reasons.add("recalled_knowledge_evidence");
     }
     return decision(candidate, [], reasons);
   }

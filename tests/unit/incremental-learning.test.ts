@@ -239,7 +239,7 @@ describe("incremental automatic learning", () => {
     expect(() => new CanonicalSqliteStore(path)).toThrow("maintenance upgrade");
     const upgraded = new CanonicalSqliteStore(path, { allowSchemaMigration: true });
     try {
-      expect(upgraded.health().userVersion).toBe(13);
+      expect(upgraded.health().userVersion).toBe(DEFAULT_SQLITE_MIGRATIONS.length);
       expect(upgraded.learningPromptWork(now)).toHaveLength(1);
     } finally { upgraded.close(); }
     expect(() => new CanonicalSqliteStore(path, { migrations: oldMigrations })).toThrow("newer than supported");

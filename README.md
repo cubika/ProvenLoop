@@ -14,6 +14,8 @@ core job is to answer:
 
 ## Product goals
 
+Learning also covers [agent investigation and self-directed recovery](docs/agent-experience-learning.md): captured findings can become source-backed candidates without a user correction; supported recovery evidence is required for automatic qualification.
+
 The product is intended to make these improvements measurable, not assumed:
 
 - developers repeat less project context;

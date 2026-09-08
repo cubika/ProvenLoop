@@ -676,6 +676,8 @@ Candidates do not enter ordinary Context or become individual user tasks. The in
 
 ### 7.3 Deep Retrospective
 
+Single-task findings from agent research and self-directed retries use the [agent experience learning contract](agent-experience-learning.md). They retain model-authored provenance and do not require a fabricated user correction. Research produces candidates; supported native recovery proof may qualify narrow guidance. This delivery slice precedes cross-Episode retrospective analysis.
+
 Deep Retrospective is a proactive research task triggered by expected value. It does not generate a summary after every Session.
 
 #### Triggers

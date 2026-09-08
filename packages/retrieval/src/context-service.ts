@@ -1091,12 +1091,17 @@ export class ContextRetrievalService {
           learning: learningProposals.map((proposal) => ({
             proposalId: proposal.proposalId,
             jobId: proposal.jobId,
-            userSource: { ...proposal.userSource, quote: redactPotentialSecrets(proposal.userSource.quote) },
+            ...(proposal.userSource ? { userSource: { ...proposal.userSource, quote: redactPotentialSecrets(proposal.userSource.quote) } } : {}),
+            ...(proposal.agentSource ? { agentSource: { ...proposal.agentSource, quote: redactPotentialSecrets(proposal.agentSource.quote),
+              evidenceSources: proposal.agentSource.evidenceSources.map((source) => ({ ...source, quote: redactPotentialSecrets(source.quote) })),
+            } } : {}),
             sourceDigests: proposal.sourceDigests,
             receipts: (learningEvidence.learningReceipts ?? []).filter(
               (receipt) => receipt.proposalId === proposal.proposalId,
             ).map((receipt) => ({
               receiptId: receipt.receiptId, proves: receipt.proves,
+              ...(receipt.userEventId ? { userEventId: receipt.userEventId } : {}),
+              ...(receipt.agentEventId ? { agentEventId: receipt.agentEventId } : {}),
               ...(receipt.proves === "invocation_contract"
                 ? { contractDigest: receipt.contract.digest, contractVersion: receipt.contract.version }
                 : { nativeVerificationEventId: receipt.nativeVerificationEventId, branch: receipt.branch, commitSha: receipt.commitSha }),

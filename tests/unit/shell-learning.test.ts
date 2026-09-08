@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CopilotEventMapper, type CopilotSessionEvent } from "@provenloop/copilot-adapter";
 import { buildLearningWindows, createCaptureEnvelope, learningKnowledgeCandidate, learningSourceDigest, verifyShellRecovery, KnowledgeAdmissionPolicy } from "@provenloop/domain";
 import type { CaptureEnvelope, RuleProposal } from "@provenloop/contracts";
-import { captureQueueItemSchema } from "@provenloop/contracts";
+import { captureQueueItemSchema, learningProposalSource } from "@provenloop/contracts";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { LearningCoordinator } from "@provenloop/host";
 
@@ -120,7 +120,7 @@ describe("native shell correction learning", () => {
       }
       for (const work of store.learningPromptWork(time, 128)) store.completeLearningPromptWork(work);
       add(timestamp === "preserved" ? proof : { ...proof, event: { ...proof.event, timestamp: "2026-09-08T00:04:00Z" } });
-      const work = store.learningPromptWork(time, 128).find((entry) => entry.eventId === proposal.userSource.eventId);
+      const work = store.learningPromptWork(time, 128).find((entry) => entry.eventId === learningProposalSource(proposal).eventId);
       expect(work).toBeDefined();
       expect(work?.events.length).toBeLessThanOrEqual(128);
       expect(work?.events.some((entry) => entry.event.eventId === proof.event.eventId)).toBe(true);
@@ -203,7 +203,7 @@ describe("native shell correction learning", () => {
       if (!candidate) throw new Error("Missing qualified shell rule");
       expect(new KnowledgeAdmissionPolicy().evaluate({ candidate, ...store.knowledgeAdmissionEvidence([candidate]) }).admitted).toBe(true);
       expect(store.learningReceipts()).toEqual([expect.objectContaining({ proves: "repository_test_command" })]);
-      const target = { targetType: "source" as const, targetId: proposal.userSource.eventId };
+      const target = { targetType: "source" as const, targetId: learningProposalSource(proposal).eventId };
       const deletion = store.beginDeletion(target); store.deleteCanonicalTarget(deletion.deletionId, target);
       expect(store.knowledgeCandidates()).toEqual([]); expect(store.learningReceipts()).toEqual([]); expect(store.learningJobs()).toEqual([]);
     } finally { store.close(); }

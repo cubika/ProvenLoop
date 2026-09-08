@@ -85,5 +85,6 @@ export {
 } from "./redaction.js";
 
 export * from "./automatic-learning.js";
+export * from "./agent-learning-source.js";
 
 export * from "./shell-learning.js";

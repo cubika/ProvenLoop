@@ -1,5 +1,5 @@
 import { resolve, join } from "node:path";
-import { prepareFrozenLearningEvaluation, createGeneralLearningCorpus, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
+import { prepareFrozenLearningEvaluation, createGeneralLearningCorpus, createAgentExperienceCorpus, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
   exportInstalledLearningCorpus, importInstalledLearningAcceptance, resolveLearningEvaluationCodeVersion,
   resolveLearningEvaluationExecutableDigest } from "../packages/evaluation/dist/index.js";
 import { CopilotLearningProvider, readCopilotAdapterState } from "../packages/copilot-adapter/dist/index.js";
@@ -19,9 +19,9 @@ try {
   let result;
   if (command === "prepare") {
     const corpus = option("--corpus") ?? "default";
-    if (!["default", "general"].includes(corpus)) throw new Error("Unknown corpus; use default or general.");
+    if (!["default", "general", "agent"].includes(corpus)) throw new Error("Unknown corpus; use default, general or agent.");
     result = await prepareFrozenLearningEvaluation({ outputDirectory: resolve(required("--out")),
-      ...(corpus === "general" ? { corpus: createGeneralLearningCorpus() } : {}) });
+      ...(corpus === "general" ? { corpus: createGeneralLearningCorpus() } : corpus === "agent" ? { corpus: createAgentExperienceCorpus() } : {}) });
   }
   else if (command === "capture") {
     const paths = resolveWindowsProvenLoopPaths(resolve(required("--data-root")));
@@ -63,7 +63,7 @@ try {
   else if (command === "import-installed") result = await importInstalledLearningAcceptance({ evidencePath: required("--evidence"),
     artifactManifestPath: required("--manifest"), artifactRoot: required("--artifact-root"), expectedCodeVersion: await codeVersion(),
     expectedExecutableDigest: await executableDigest(), outputPath: resolve(required("--out")) });
-  else throw new Error("Use prepare --out DIR [--corpus default|general]; capture --data-root DIR --out DIR; run --prepared DIR --out DIR --data-root DIR [--max-requests 40] [--max-attempts 1] [--labels-a FILE --labels-b FILE]; review --run DIR --review-a FILE --review-b FILE --out FILE; import-installed --evidence FILE --manifest FILE --artifact-root DIR --out FILE.");
+  else throw new Error("Use prepare --out DIR [--corpus default|general|agent]; capture --data-root DIR --out DIR; run --prepared DIR --out DIR --data-root DIR [--max-requests 40] [--max-attempts 1] [--labels-a FILE --labels-b FILE]; review --run DIR --review-a FILE --review-b FILE --out FILE; import-installed --evidence FILE --manifest FILE --artifact-root DIR --out FILE.");
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Evaluation failed."); process.exitCode = 1;

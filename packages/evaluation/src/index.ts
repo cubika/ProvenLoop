@@ -161,3 +161,4 @@ export { prepareFrozenLearningEvaluation, runFrozenLearningEvaluation, reviewFro
   learningInputLabelsSchema, learningOutputReviewSchema, type FrozenLearningProvider, type FrozenLearningRun,
 } from "./automatic-learning-workflow.js";
 export { createGeneralLearningCorpus, GENERAL_LEARNING_EXAMPLES } from "./general-learning-corpus.js";
+export { createAgentExperienceCorpus } from "./agent-experience-corpus.js";
