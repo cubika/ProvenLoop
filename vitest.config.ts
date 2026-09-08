@@ -9,6 +9,11 @@ const sourceRuntimeTests = [
   "tests/unit/production-learning-loop.test.ts",
   "tests/unit/mcp-registry-runtime.test.ts",
 ];
+const nativeProcessTests = [
+  "tests/unit/owned-processes.test.ts",
+  "tests/unit/legacy-extension-workers.test.ts",
+  "tests/unit/refresh-plugin-files.test.ts",
+];
 
 export default defineConfig({
   resolve: {
@@ -35,7 +40,9 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["tests/unit/**/*.test.ts"],
-          exclude: [...configDefaults.exclude, ...sourceRuntimeTests],
+          exclude: [
+            ...configDefaults.exclude, ...sourceRuntimeTests, ...nativeProcessTests,
+          ],
           sequence: { groupOrder: 0 },
         },
       },
@@ -47,6 +54,16 @@ export default defineConfig({
           // Run native-runtime functional checks after CPU-heavy tests, not alongside them.
           fileParallelism: false,
           sequence: { groupOrder: 1 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "native-process",
+          include: nativeProcessTests,
+          // Native compiler/process handshakes must not race the CPU-heavy suites.
+          fileParallelism: false,
+          sequence: { groupOrder: 2 },
         },
       },
     ],

@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -29,9 +30,10 @@ const expectedVersion = JSON.parse(
     "utf8",
   ),
 ).version;
-const temporaryRoot = await mkdtemp(
+// Windows CI can expose TEMP through an 8.3 alias; keep the owned fixture scope canonical.
+const temporaryRoot = await realpath(await mkdtemp(
   join(tmpdir(), "provenloop-package-"),
-);
+));
 const packageDirectory = join(temporaryRoot, "package");
 const installDirectory = join(temporaryRoot, "install");
 const npmCliPath = process.env.npm_execpath;

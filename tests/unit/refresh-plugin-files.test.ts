@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { once } from "node:events";
+import { createHash, randomUUID } from "node:crypto";
 import {
   link,
   mkdir,
@@ -9,6 +8,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   symlink,
   writeFile,
   type FileHandle,
@@ -589,7 +589,14 @@ describe("locked plugin file refresh", () => {
 
   it.skipIf(process.platform !== "win32")("refreshes while a native directory handle denies delete sharing", async () => {
     const test = await fixture();
+    const startupTimeoutMs = 45_000;
+    const teardownTimeoutMs = 10_000;
+    const readinessToken = "directory-locked-" + randomUUID();
+    const startedAt = Date.now();
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = "Stop"
+[Console]::Out.WriteLine("fixture: PowerShell started")
+[Console]::Out.Flush()
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -600,39 +607,157 @@ public static class DirectoryLock {
     IntPtr security, uint disposition, uint flags, IntPtr template);
 }
 '@
+[Console]::Out.WriteLine("fixture: native interop compiled")
+[Console]::Out.Flush()
 $handle = [DirectoryLock]::CreateFile($env:PROVENLOOP_TEST_PLUGIN_ROOT, 1, 3, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
-if ($handle.IsInvalid) { throw "Could not lock fixture directory." }
-[Console]::Out.WriteLine("locked")
-Start-Sleep -Seconds 30
-$handle.Dispose()
+if ($handle.IsInvalid) {
+  $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+  throw "Could not lock fixture directory; Win32 error $code."
+}
+try {
+  # Exercise readiness across separately flushed output chunks.
+  $token = $env:PROVENLOOP_TEST_LOCK_TOKEN
+  $split = [int]($token.Length / 2)
+  [Console]::Out.Write($token.Substring(0, $split))
+  [Console]::Out.Flush()
+  Start-Sleep -Milliseconds 25
+  [Console]::Out.WriteLine($token.Substring($split))
+  [Console]::Out.Flush()
+  Start-Sleep -Seconds 120
+} finally {
+  $handle.Dispose()
+}
 `], {
-      env: { ...process.env, PROVENLOOP_TEST_PLUGIN_ROOT: test.options.pluginRoot },
-      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PROVENLOOP_TEST_PLUGIN_ROOT: test.options.pluginRoot,
+        PROVENLOOP_TEST_LOCK_TOKEN: readinessToken,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    let stdout = "";
     let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    const exited = once(child, "exit");
+    let pendingLine = "";
+    let spawned = false;
+    let closed = false;
+    let terminationRequested = false;
+    let processError: Error | undefined;
+    let settleReady: ((error?: Error) => void) | undefined;
+    let resolveClosed: (() => void) | undefined;
+    const diagnostics = (): string =>
+      `elapsed=${Date.now() - startedAt}ms, spawned=${String(spawned)}, ` +
+      `pid=${String(child.pid)}, exitCode=${String(child.exitCode)}, ` +
+      `signal=${String(child.signalCode)}, closed=${String(closed)}, terminationRequested=${String(terminationRequested)}, ` +
+      `error=${processError?.message ?? "none"}\nstdout: ${stdout || "(empty)"}\nstderr: ${stderr || "(empty)"}`;
+    const ready = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        settleReady?.(new Error(`Directory lock startup timed out after ${startupTimeoutMs}ms.\n${diagnostics()}`));
+      }, startupTimeoutMs);
+      settleReady = (error) => {
+        clearTimeout(timer);
+        settleReady = undefined;
+        if (error) reject(error);
+        else resolve();
+      };
+    });
+    const exited = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const onSpawn = (): void => { spawned = true; };
+    const onError = (error: Error): void => {
+      processError ??= error;
+      settleReady?.(new Error(`Directory lock process or stream failed.\n${diagnostics()}`, { cause: error }));
+    };
+    const onExit = (): void => {
+      settleReady?.(new Error(`Directory lock exited before readiness.\n${diagnostics()}`));
+    };
+    const onClose = (): void => {
+      closed = true;
+      settleReady?.(new Error(`Directory lock closed before readiness.\n${diagnostics()}`));
+      resolveClosed?.();
+    };
+    const onStdout = (chunk: string): void => {
+      stdout = (stdout + chunk).slice(-8192);
+      pendingLine += chunk;
+      let newline: number;
+      while ((newline = pendingLine.indexOf("\n")) !== -1) {
+        const line = pendingLine.slice(0, newline).replace(/\r$/u, "");
+        pendingLine = pendingLine.slice(newline + 1);
+        if (line === readinessToken) {
+          if (child.exitCode !== null || child.signalCode !== null || processError) {
+            settleReady?.(new Error(`Directory lock was not alive at readiness.\n${diagnostics()}`));
+          } else {
+            settleReady?.();
+          }
+        }
+      }
+      pendingLine = pendingLine.slice(-8192);
+    };
+    const onStderr = (chunk: string): void => { stderr = (stderr + chunk).slice(-8192); };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.once("spawn", onSpawn);
+    child.on("error", onError);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.stdout.on("error", onError);
+    child.stderr.on("error", onError);
+
+    const assertDirectoryLocked = async (phase: string): Promise<void> => {
+      if (closed || child.exitCode !== null || child.signalCode !== null || processError) {
+        throw new Error(`Directory lock was lost ${phase}.\n${diagnostics()}`);
+      }
+      const denied = { code: expect.stringMatching(/^(?:EBUSY|EACCES|EPERM)$/u) };
+      await expect(rename(test.options.pluginRoot, test.options.pluginRoot + "-moved")).rejects.toMatchObject(denied);
+      await expect(rmdir(test.options.pluginRoot)).rejects.toMatchObject(denied);
+    };
+    const failures: unknown[] = [];
     try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Directory lock startup timed out: " + stderr)), 15_000);
-        child.once("error", (error) => { clearTimeout(timer); reject(error); });
-        child.once("exit", () => { clearTimeout(timer); reject(new Error("Directory lock exited: " + stderr)); });
-        child.stdout.once("data", (chunk: Buffer) => {
-          clearTimeout(timer);
-          if (chunk.toString().trim() === "locked") resolve();
-          else reject(new Error("Unexpected directory lock output: " + chunk.toString()));
-        });
-      });
-      await expect(rename(test.options.pluginRoot, test.options.pluginRoot + "-moved")).rejects.toThrow();
+      await ready;
+      await assertDirectoryLocked("before refresh");
       const result = await refreshPluginFiles(test.options);
       expect(await readFile(join(test.options.pluginRoot, "plugin.json"), "utf8"))
         .toBe(test.options.assets["plugin.json"]);
+      await assertDirectoryLocked("after refresh");
       await result.rollback();
       await expectOriginal(test);
+      await assertDirectoryLocked("after rollback");
+    } catch (error) {
+      failures.push(error);
     } finally {
-      child.stdin.end("\n");
-      if (child.exitCode === null) child.kill();
-      await exited;
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        if (!closed && child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          terminationRequested = child.kill();
+        }
+        await Promise.race([
+          exited,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error(
+              `Directory lock teardown timed out after ${teardownTimeoutMs}ms.\n${diagnostics()}`,
+            )), teardownTimeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        clearTimeout(timer);
+        child.off("spawn", onSpawn);
+        child.off("error", onError);
+        child.off("exit", onExit);
+        child.off("close", onClose);
+        child.stdout.off("data", onStdout);
+        child.stderr.off("data", onStderr);
+        child.stdout.off("error", onError);
+        child.stderr.off("error", onError);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+      }
     }
-  });
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Native directory lock fixture failed, including teardown.");
+    }
+  }, 90_000);
 });
