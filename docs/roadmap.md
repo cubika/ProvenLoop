@@ -2,7 +2,7 @@
 
 **Status:** Milestone plan; implementation is not release acceptance
 
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
 ## 1. Delivery strategy
 
@@ -13,9 +13,10 @@ eligible guidance in a later task without a manual remember/retrieve ritual.
 Explicit rule controls and observations remain necessary, but are not a substitute
 for rule production. Delayed outcome discovery is not a prerequisite.
 
-The `0.1.0-alpha.0.11` Windows Design Partner Preview evidence candidate includes
+The `0.1.0-alpha.0.12` Windows Design Partner Preview evidence candidate includes
 M0-M2 repairs, Knowledge review, trusted feedback, local observations, and
-bounded current-session reconciliation. `0.1.0-alpha.1` remains an unapproved
+bounded current-session reconciliation, opt-in user/agent learning and maintenance
+request draining. `0.1.0-alpha.1` remains an unapproved
 quality-release target; new-version validation and field acceptance require
 retained evidence. Synthetic replay validates regressions, observational use
 records behavior, and controlled comparisons establish benefit. These are
@@ -241,9 +242,9 @@ Not required for the first useful demonstration:
 5. Verify an unrelated repository does not receive the rule, then exercise
    correction, revocation and deletion without resurrecting it.
 
-This automatic demonstration is required, not optional. The
-[current executable workflow](../README.md#first-useful-workflow) is still the
-0.11 manual diagnostic path; it does not satisfy the new requirement. Full trace
+This automatic demonstration is required. The
+[current executable workflow](../README.md#first-useful-workflow) includes explicit
+opt-in and diagnostic controls. Manual diagnostics alone do not satisfy acceptance. Full trace
 replay and native-host evidence are both required; same-Episode success alone
 is insufficient.
 

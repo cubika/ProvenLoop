@@ -1,20 +1,21 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.11 evidence candidate; quality-release acceptance remains open
+**Status:** 0.12 evidence candidate; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
-**Evidence candidate:** `0.1.0-alpha.0.11` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.12` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.11 release notes](releases/0.1.0-alpha.0.11.md).
+[0.12 release notes](releases/0.1.0-alpha.0.12.md).
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
-storage/capture repairs are included in the 0.11 candidate scope. Checked
-engineering items below refer to previously recorded work; the versioned 0.11
+storage/capture repairs are included alongside opt-in user/agent learning and
+coordinated maintenance in the 0.12 candidate scope. Checked
+engineering items below refer to previously recorded work; the versioned 0.12
 artifacts require a fresh retained validation and publication record.
 
 ## 1. Goal
@@ -51,8 +52,8 @@ additional requirement, not a box that packaging work can close.
 
 ### Included
 
-The list describes the release target, not a claim that every item is in 0.11.
-Automatic natural-language extraction remains a first-product blocker.
+The list describes the release target. Bounded extraction is implemented in 0.12;
+installed-host acceptance and controlled benefit remain open.
 
 - GitHub Copilot CLI adapter;
 - non-blocking Extension event capture;
@@ -93,7 +94,7 @@ returning success-shaped placeholders.
 The Alpha should support:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub

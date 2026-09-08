@@ -1,9 +1,9 @@
 # ProvenLoop implementation blockers
 
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
 This list tracks missing **acceptance evidence**, not a claim that the associated
-code is absent. `0.1.0-alpha.0.11` is a Windows Design Partner Preview evidence
+code is absent. `0.1.0-alpha.0.12` is a Windows Design Partner Preview evidence
 candidate. Its capture/storage/feedback repairs require their own retained
 version-bound validation and native-host observations; historical probe results
 do not approve the new path. `0.1.0-alpha.1` remains an unapproved quality-release
@@ -110,7 +110,9 @@ Exit conditions:
 ## M2-AUTO: Automatic natural-language rule production
 
 **Owner:** M2 learner, Copilot adapter and installed-runtime work packages
-**State:** First-product blocker; not implemented in 0.11
+**State:** Installed-host acceptance open. Bounded user/agent extraction and supported
+recovery qualification are implemented in 0.12; see the [general](general-learning-validation.md)
+and [agent](agent-experience-validation.md) validation records.
 
 - Replace fixed-field/manual-rule production as the normal path with automatic
   bounded semantic extraction using the existing authorized Copilot sign-in.
@@ -125,7 +127,7 @@ Exit conditions:
   and bounded user-visible feedback; manual `remember` demonstrations and
   synthetic construction of downstream events do not close this blocker.
 
-## 0.1.0-alpha.0.11 acceptance boundary
+## 0.1.0-alpha.0.12 acceptance boundary
 
 - Retain final lint, typecheck, targeted/full test, build, and packed-artifact
   results for the evaluated source; this documentation does not assert they ran.

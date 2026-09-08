@@ -2,6 +2,43 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.12] - 2026-09-08
+
+Windows Design Partner Preview with opt-in automatic learning and coordinated
+upgrade maintenance. M0/MVP remain No-Go; controlled benefit is unproved.
+
+### Added
+
+- Extract repository-scoped candidates from ordinary user corrections and
+  captured agent research or self-directed recovery. Preserve exact source
+  quotations and source roles without treating agent text as user approval.
+- Qualify narrow MCP invocation and repository test-command recovery from
+  native causal evidence. Broad semantic proposals and research findings remain
+  candidates outside ordinary Context.
+- Add explicit learning consent, status, disable and notice controls, with
+  repository hook approval verified for Copilot CLI `1.0.84-1`.
+- Retain general correction and agent experience validation records, including
+  incomplete provider experiments and remaining catalog gaps.
+
+### Fixed
+
+- Process learning changes through an incremental durable queue. Preserve
+  attempt/expiry budgets, resume interrupted jobs, and revisit enriched native
+  evidence without requiring another model request.
+- Strengthen proof binding, conflict isolation and deletion/revocation controls.
+  Keep source roles and unresolved evidence intact across lifecycle changes.
+- Pause new MCP and background database work before upgrade, wait up to
+  15 seconds for active work, and remove the pause on a drain timeout. Hold
+  inference and database leases through cleanup, migration and rollback.
+
+### Migration
+
+SQLite schema 14 replaces published 0.11's schema 10. Close Sessions using
+older previews before this first migration, then restart after upgrade. The
+new pause/drain protocol requires participating runtime code; it does not
+hot-reload old MCP processes. Retain the verified snapshot and prior runtime.
+See the [0.12 release notes](docs/releases/0.1.0-alpha.0.12.md).
+
 ## [0.1.0-alpha.0.11] - 2026-09-07
 
 Windows Design Partner Preview compatibility update. Carries forward the 0.10

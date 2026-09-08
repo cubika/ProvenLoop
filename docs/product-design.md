@@ -4,10 +4,10 @@
 
 **Status:** Canonical Product Design
 **Version:** 2.1
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
 **Implementation boundary:** This document includes both product goals and phased designs.
-`0.1.0-alpha.0.11` is a Windows Design Partner Preview evidence candidate with Knowledge
+`0.1.0-alpha.0.12` is a Windows Design Partner Preview evidence candidate with opt-in user/agent learning, Knowledge
 management, local observations, trusted Session authorization, strict native proof chains,
 and bounded current-Session reconciliation. M3-M6 are not current capabilities. Passing
 synthetic regressions does not establish controlled benefit evidence or M0/MVP approval;
@@ -18,8 +18,9 @@ artifacts must be retained separately; earlier source-code test results cannot s
 assessment, and later-task reuse after natural-language corrections are required for the
 first complete product and cannot be deferred to Retrospective. Users should not have to
 run `remember`, fill in fixed fields, or invoke an extraction tool for the system to learn
-from a correction. The published 0.11 release does not provide this capability. Existing
-manual first-use examples diagnose storage and retrieval only and do not meet first-product acceptance.
+from a correction. The 0.12 implementation provides bounded extraction and narrow
+recovery qualification; installed-host acceptance remains open. Manual examples
+diagnose storage and retrieval, and are not substitutes for that acceptance.
 
 ---
 
@@ -628,7 +629,7 @@ The following cannot directly produce usable Knowledge:
 
 #### 7.2.1 Initial automatic extraction and activation
 
-This section defines initial requirements that remain to be implemented; it does not describe the 0.11 runtime. The target scenario is an Agent making an incorrect MCP call, receiving a correction in ordinary natural language, and retrying accordingly. The system extracts a rule while the session remains open and reuses it in later related tasks. Users do not need to know the Correction Key format.
+The 0.12 implementation covers bounded extraction and narrow native/MCP recovery qualification. The target scenario is an Agent making an incorrect MCP call, receiving a correction in ordinary natural language, and retrying accordingly. The system extracts a rule while the session remains open and reuses eligible guidance in later related tasks. Installed-host acceptance remains open. Users do not need to know the Correction Key format.
 
 Automatic processing uses the existing event capture, Worker, Knowledge lifecycle, and retrieval. It does not introduce another chat assistant or require users to invoke a new tool:
 
@@ -959,7 +960,7 @@ The `knowledge` and `observations` subcommands are included in 0.10. Before ever
 
 ### 9.5 Learning benefits
 
-The initial version must show users the lessons that actually become active and are provided during normal work, without diagnostic commands. The following interaction requirements remain to be implemented; 0.11 has no automatic-learning notifications. Use inline messages or a status area supported by the host. A Dashboard is not a prerequisite.
+The initial version must show users the lessons that actually become active and are provided during normal work, without diagnostic commands. The 0.12 source includes bounded activation and delivery notifications; the following interaction requirements still need installed-host acceptance. Use inline messages or a status area supported by the host. A Dashboard is not a prerequisite.
 
 - After a rule is persisted and passes activation checks, combine specific changes into a message such as "Remembered: this repository uses pnpm," with its scope and a source link. Viewing, correcting, disabling, and deleting must all be accessible.
 - After a later task actually receives the rule, show "The package-management rule from your previous correction was provided for this task." Record adoption only after observing compliant behavior or receiving explicit feedback; the message itself is not evidence of benefit.

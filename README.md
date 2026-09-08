@@ -61,11 +61,11 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-07):** `0.1.0-alpha.0.11` is the Windows Design
-Partner Preview evidence candidate. It includes Knowledge review commands,
-automatic local observations, the native SDK proof bridge, trusted live-session
-feedback controls, and bounded current-session reconciliation. See the
-[release notes](docs/releases/0.1.0-alpha.0.11.md) and
+**Version boundary (2026-09-08):** `0.1.0-alpha.0.12` is the Windows Design
+Partner Preview evidence candidate. It adds opt-in natural-language correction
+learning, agent research/recovery provenance, incremental learning jobs and
+coordinated upgrade maintenance. See the
+[release notes](docs/releases/0.1.0-alpha.0.12.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -77,9 +77,10 @@ M3-M5 targets; the diagram above is the long-term learning loop.
 **First-product requirement (2026-09-07):** ordinary natural-language corrections
 must automatically produce source-backed proposals, qualify supported low-risk
 rules, and enable later-task reuse without manual remember/retrieve instructions.
-This is required M2 work, not deferred retrospective. The published 0.11 runtime
-does not implement this path yet; see the [automatic-learning design](docs/architecture.md#361-automatic-extraction-in-the-existing-worker)
-and [implementation blocker](docs/implementation-blockers.md#m2-auto-automatic-natural-language-rule-production).
+The 0.12 runtime implements bounded extraction and supported native/MCP recovery
+qualification. Research and unsupported semantic findings remain candidates.
+Installed-host acceptance and controlled benefit remain open; see the
+[validation record](docs/general-learning-validation.md) and [agent experience checks](docs/agent-experience-validation.md).
 
 ## Repository structure
 
@@ -152,7 +153,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.11/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.12/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -258,9 +259,20 @@ is not sufficient.
 
 ## First useful workflow
 
-**Current 0.11 diagnostic/manual path:** the commands below check rule storage,
-retrieval and user controls. They do not satisfy the first-product automatic
-natural-language learning requirement.
+Automatic learning requires its own disclosure acknowledgement. With Copilot
+CLI `1.0.84-1`, run from the repository root:
+
+```powershell
+provenloop learning enable --confirm
+provenloop learning approve-hooks --cwd (Get-Location).Path --confirm
+```
+
+Restart the Copilot session after hook approval. Ordinary user corrections and
+captured agent findings can then produce source-backed candidates. Only supported,
+fully verified recovery predicates become active guidance. Use `provenloop learning
+status` to inspect job state and `provenloop learning disable` to stop extraction.
+
+The manual path below checks rule storage, retrieval and user controls.
 
 The existing `remember` path creates a user-confirmed rule. From its repository,
 for example:
@@ -277,7 +289,7 @@ Enable retrieval with `provenloop enable retrieval` if it is disabled. Open a
 `provenloop_context` before a relevant testing task, then `provenloop_explain`
 for the returned item. Inspect the rule, scope, applicability, and source.
 
-In `0.1.0-alpha.0.11`, inspect and maintain rules explicitly:
+Inspect and maintain rules explicitly:
 
 ```powershell
 provenloop knowledge list --scope repository
@@ -365,10 +377,10 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.11`, an evidence-collection prerelease, not M0/MVP approval |
+| Preview candidate | `0.1.0-alpha.0.12`, an evidence-collection prerelease, not M0/MVP approval |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
-| M2 implementation | Strictly bound correction proofs, counterevidence-aware lifecycle, user-confirmed rule review, and local observational summaries |
+| M2 implementation | User/agent extraction, native recovery proofs, incremental jobs, conflict/expiry/deletion controls, and observational summaries |
 | Regression evidence | 24 Episode association pairs, 32 Branch Continuation pairs, and 24 Correction Recurrence pairs are synthetic fixtures, not field-effect measurements |
 | Release evidence | Windows/platform, latency, provider-degradation, remote-upgrade, and controlled-effect qualifications remain separate open gates |
 | Future M3-M6 | Delayed Outcome linking, Retrospective, evaluated Playbooks, and additional Agent adapters |
@@ -379,5 +391,5 @@ domain state; FTS and observations are rebuildable projections.
 For batch-level implementation and outstanding validation, see the
 [implementation checklist](docs/implementation-checklist.md) and
 [blockers](docs/implementation-blockers.md). Prior source regression results do
-not certify the versioned 0.10 artifacts; their validation and publication must
+not certify new versioned artifacts; their validation and publication must
 be verified separately.

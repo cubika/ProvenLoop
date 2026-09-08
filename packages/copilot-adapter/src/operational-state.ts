@@ -60,7 +60,7 @@ export interface AutomaticLearningConsent {
 }
 
 export const AUTOMATIC_LEARNING_DISCLOSURE =
-  "Automatic correction learning sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in. It uses isolated background requests with tools disabled; Copilot service usage and retention policies apply. Candidates stay private until verified. You can disable learning, mute notices, revoke rules, or delete their sources.";
+  "Automatic learning processes user corrections and captured agent research/recovery summaries. It sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in. It uses isolated background requests with tools disabled; Copilot service usage and retention policies apply. Unverified candidates stay isolated from ordinary Context. You can disable learning, mute notices, revoke rules, or delete their sources.";
 
 const parseAutomaticLearning = (input: unknown, path: string): AutomaticLearningConsent | undefined => {
   if (input === undefined) return undefined;

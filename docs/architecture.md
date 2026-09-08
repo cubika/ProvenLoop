@@ -1,15 +1,15 @@
 # ProvenLoop Technical Architecture
 
-**Status:** 0.1.0-alpha.0.11 preview architecture with explicitly deferred capabilities
+**Status:** 0.1.0-alpha.0.12 preview architecture with explicitly deferred capabilities
 
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 
 This document describes both the executable near-term architecture and the
 long-term logical architecture. They use the same event, evidence, domain, and
 evaluation contracts. Later milestones enable additional consumers and state
 transitions; they do not introduce a second architecture.
 
-Current implementation descriptions apply to the `0.1.0-alpha.0.11` Windows
+Current implementation descriptions apply to the `0.1.0-alpha.0.12` Windows
 Design Partner Preview evidence candidate. M3-M6 consumers remain targets.
 Synthetic regression coverage is not native-host acceptance, controlled benefit
 evidence, or M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
@@ -17,9 +17,10 @@ target. New-version artifact validation must be retained separately.
 
 **First-product requirement update (2026-09-07):** automatic extraction from
 ordinary natural-language corrections is mandatory for the first complete M1+M2
-product. Sections 2.2 and 3.6.1-3.6.5 specify the required addition; it is not
-implemented in the published 0.11 runtime. Manual rule creation is a control and
-diagnostic path, not acceptance of automatic learning.
+product. Sections 2.2 and 3.6.1-3.6.5 specify its architecture. The 0.12 source
+implements bounded user/agent extraction and narrow recovery qualification;
+installed-host acceptance remains open. Manual rule creation is a control and
+diagnostic path.
 
 ## 1. Architecture goals
 
