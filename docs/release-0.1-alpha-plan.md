@@ -1,6 +1,6 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.14 viewer release preparation; quality-release acceptance remains open
+**Status:** 0.14 viewer published and downloaded artifact verified; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-09

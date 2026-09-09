@@ -395,6 +395,7 @@ are regression evidence, not measurements of a user's actual productivity.
 |---|---|
 | Preview candidate | `0.1.0-alpha.0.14`, with a local read-only viewer; not M0/MVP approval |
 | Local viewer | `provenloop ui`: searchable knowledge, evidence details, work episodes, learning jobs, and usage |
+| 0.14 release validation | Windows Node.js 22/24 CI and release workflow passed 928 unit and 270 integration tests, installed-tarball UI checks, and installer dry run; downloaded assets verified |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
 | M2 implementation | User/agent extraction, native recovery proofs, incremental jobs, conflict/expiry/deletion controls, and observational summaries |
