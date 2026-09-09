@@ -3,6 +3,10 @@ export {
   loadNodeSqlite,
 } from "./node-sqlite.js";
 export {
+  readInspection, InspectionReader, INSPECTION_PAGE_SIZE,
+  type InspectionCollection, type InspectionFilter,
+} from "./inspection-reader.js";
+export {
   CanonicalSqliteStore,
   CanonicalMigrationRequiredError,
   DEFAULT_SQLITE_MIGRATIONS,

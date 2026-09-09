@@ -1,6 +1,6 @@
 {
   "name": "provenloop",
-  "version": "0.1.0-alpha.0.13",
+  "version": "0.1.0-alpha.0.14",
   "private": true,
   "description": "Local learning infrastructure for coding agents.",
   "license": "MIT",

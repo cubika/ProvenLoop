@@ -2,6 +2,25 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## [0.1.0-alpha.0.14] - 2026-09-09
+
+Windows Design Partner Preview with a local read-only graphical viewer through
+`provenloop ui`. Schema remains 14; capability preferences and learning consent
+are unchanged. M0/MVP quality-release acceptance remains open.
+
+### Added
+
+- Browse knowledge, captured events, work episodes, learning jobs, and usage.
+  Search and filter lists, then follow source evidence and verification receipts.
+- Show captured content, redaction limits, conflicts, feedback, and recent use
+  without changing stored records or treating observation counts as benefit.
+- Bundle the local web viewer with the CLI, with no additional dependencies.
+  Use short read-only database snapshots, maintenance coordination, loopback-only
+  access, request isolation, escaped content, and display redaction.
+
+See the [0.14 release notes](docs/releases/0.1.0-alpha.0.14.md) and
+[viewer guide](docs/local-viewer.md).
+
 ## [0.1.0-alpha.0.13] - 2026-09-08
 
 Windows Design Partner Preview focused on Windows upgrade recovery.

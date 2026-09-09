@@ -1,6 +1,6 @@
 # ProvenLoop 0.1 Alpha installation
 
-**Updated:** 2026-09-08
+**Updated:** 2026-09-09
 
 ## Supported environment
 
@@ -11,7 +11,7 @@
 | npm | `>=11` |
 | GitHub Copilot CLI | `>=1.0.71` |
 | Automatic retrieval hooks | Copilot CLI `1.0.84-1`, with repository approval |
-| ProvenLoop | `0.1.0-alpha.0.13` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.14` evidence candidate |
 
 The relaxed Node.js/npm ranges apply starting with `0.1.0-alpha.0.11`. Older
 tagged installers and tarballs retain their original requirements; use the new
@@ -24,11 +24,11 @@ The runtime also suppresses only SQLite's experimental-feature notice
 during SQLite module loading, including the background search reader. Other
 warnings and SQLite errors remain visible.
 
-The URLs below target the `0.1.0-alpha.0.13` Windows Design Partner Preview.
-The preview repairs Windows upgrade shutdown and locked-directory recovery, and
-retains 0.12's opt-in learning from ordinary corrections and captured agent
-investigation, native recovery verification, Knowledge review and local observations.
-See the [release notes](releases/0.1.0-alpha.0.13.md). M0/MVP remain No-Go for
+The URLs below target the `0.1.0-alpha.0.14` Windows Design Partner Preview.
+The preview adds `provenloop ui`, a local read-only browser for knowledge, evidence,
+learning jobs, and usage. It retains 0.13's Windows upgrade recovery and 0.12's
+opt-in learning from ordinary corrections and captured agent investigation.
+See the [release notes](releases/0.1.0-alpha.0.14.md). M0/MVP remain No-Go for
 quality release; `0.1.0-alpha.1` is still an unapproved target.
 
 Local 0.13 validation passed on Windows with Node.js 22.18.0: lint, typecheck,
@@ -36,8 +36,8 @@ Local 0.13 validation passed on Windows with Node.js 22.18.0: lint, typecheck,
 skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
 Windows PowerShell 5.1 `install.ps1 -DryRun`. Native process-preservation and
 directory-lock fixtures and installed bundled-CLI error-32 recovery are included.
-These checks do not establish remote CI, publication, a real user's 0.13 upgrade
-or controlled benefit; see the release notes for the exact coverage boundary.
+These are retained 0.13 results. The [0.14 release notes](releases/0.1.0-alpha.0.14.md)
+record the new viewer and its validation separately.
 
 The earlier `0.1.0-alpha.0.8` and `0.1.0-alpha.0.9` tags remain immutable.
 Package smoke stopped 0.8 publication; a real-runtime source context assertion
@@ -52,6 +52,19 @@ unverified until ProvenLoop evidence is collected. Automatic retrieval hook
 approval is verified separately and currently requires `1.0.84-1`. The Alpha
 does not bundle Node.js.
 
+## Open the local viewer
+
+After installation, run:
+
+```powershell
+provenloop ui
+```
+
+The command opens the default browser. Keep its terminal running while browsing;
+Ctrl+C stops the server. Each launch prints a new access URL. If an old tab reports
+that the site cannot be reached, run the command again and use its new URL.
+See [Local learning viewer](local-viewer.md) for filters and runtime options.
+
 ## Install
 
 For the Microsoft-internal Design Partner preview, the canonical installation
@@ -64,7 +77,7 @@ may disconnect; load the updated integration in a new session or through a
 host-supported reload. See [Upgrade](#upgrade) before migrating an older data root.
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
 ```
 
 The installer:
@@ -94,7 +107,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -106,14 +119,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1)
 )) -NoLearning
 ```
 
 For a manual tarball installation (without the bootstrap's orchestration):
 
 ```powershell
-$version = "0.1.0-alpha.0.13"
+$version = "0.1.0-alpha.0.14"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $downloadRoot = New-Item -ItemType Directory -Force .\.provenloop\downloads
 $package = Join-Path $downloadRoot.FullName "provenloop-cli-$version.tgz"
@@ -174,7 +187,7 @@ Keep the previous runtime slot and stop
 on any failed command before editing PATH.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.13` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.14` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -196,7 +209,7 @@ reload after success. The bootstrap stages the new runtime in a separate slot,
 performs the integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
 ```
 
 For a manually downloaded and verified release tarball, use the same
@@ -205,7 +218,7 @@ global prefix or an unqualified `provenloop` command, because either can select
 an older runtime:
 
 ```powershell
-$version = "0.1.0-alpha.0.13"
+$version = "0.1.0-alpha.0.14"
 $runtimeSlot = Join-Path `
   $env:LOCALAPPDATA `
   "ProvenLoopRuntime\versions\$version"

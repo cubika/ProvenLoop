@@ -167,11 +167,12 @@ No adapter may invent events it cannot observe.
 
 ### Other optional expansion
 
-Possible work:
+The local read-only viewer ships through `provenloop ui` in 0.14. Further
+possible work:
 
 - Memorix backend integration after the fallback backend is stable;
 - Claude Code and Codex adapters;
-- local web review UI;
+- editing and approval controls in the local viewer;
 - team-scoped approved knowledge;
 - remote sandbox execution;
 - OpenClaw notifications or long-running scheduling;

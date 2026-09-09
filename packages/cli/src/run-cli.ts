@@ -82,6 +82,7 @@ import {
   readLocalObservationSummary,
 } from "./observation-summary.js";
 import { invalidateLocalObservationProjection } from "./collect-observations.js";
+import { runUi } from "./run-ui.js";
 
 export interface CliIo {
   readonly error: (message: string) => void;
@@ -136,6 +137,7 @@ const option = (
 };
 
 const usage = `Usage:
+  provenloop ui [--port <0-65535>] [--no-open] [--data-root <directory>]
   provenloop install [--no-auto-collect] [--data-root <directory>]
   provenloop version
   provenloop runtime extension-path
@@ -1356,6 +1358,17 @@ export const runCli = async (
   dependencies: CliDependencies = defaultDependencies,
 ): Promise<number> => {
   if (args[0] === "learning") return runLearningCommand(args, io);
+  if (args[0] === "ui") {
+    const port = option(args, "--port");
+    if (!hasOnlyOptions(args, 1, { flags: ["--no-open"], values: ["--port", "--data-root"] }) ||
+      (port !== undefined && (!/^\d{1,5}$/u.test(port) || Number(port) > 65535))) {
+      io.error(usage); return 2;
+    }
+    try {
+      await runUi({ dataRoot: dataRoot(args), port: Number(port ?? 0), open: !args.includes("--no-open") }, io);
+      return 0;
+    } catch (error) { io.error(error instanceof Error ? error.message : String(error)); return 1; }
+  }
   if (args[0] === "version" && args.length === 1) {
     io.log(JSON.stringify(releaseMetadata, null, 2));
     return 0;

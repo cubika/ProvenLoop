@@ -61,12 +61,12 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-08):** `0.1.0-alpha.0.13` is the Windows
-Design Partner Preview evidence candidate. It repairs Windows upgrade recovery
-with graceful MCP shutdown, narrowly verified legacy-helper cleanup and guarded
-in-place plugin refresh for directory-lock errors. It retains 0.12's opt-in
-correction/agent learning and incremental jobs. See the
-[release notes](docs/releases/0.1.0-alpha.0.13.md) and
+**Version boundary (2026-09-09):** `0.1.0-alpha.0.14` is the Windows
+Design Partner Preview with a local read-only viewer. Run `provenloop ui` to
+browse knowledge, captured evidence, work episodes, learning jobs, and usage
+through the existing CLI. It retains 0.13's Windows upgrade recovery and
+0.12's opt-in learning. See the
+[release notes](docs/releases/0.1.0-alpha.0.14.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -155,7 +155,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -299,6 +299,11 @@ Enable retrieval with `provenloop enable retrieval` if it is disabled. Open a
 `provenloop_context` before a relevant testing task, then `provenloop_explain`
 for the returned item. Inspect the rule, scope, applicability, and source.
 
+For a local graphical view of knowledge, source evidence, learning jobs, and
+usage records, run `provenloop ui`. The browser viewer is read only and uses the
+same local data as the CLI. See [Local learning viewer](docs/local-viewer.md)
+for filters, runtime options, and development usage.
+
 Inspect and maintain rules explicitly:
 
 ```powershell
@@ -388,7 +393,8 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.13`, an evidence-collection prerelease, not M0/MVP approval |
+| Preview candidate | `0.1.0-alpha.0.14`, with a local read-only viewer; not M0/MVP approval |
+| Local viewer | `provenloop ui`: searchable knowledge, evidence details, work episodes, learning jobs, and usage |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |
 | M2 implementation | User/agent extraction, native recovery proofs, incremental jobs, conflict/expiry/deletion controls, and observational summaries |

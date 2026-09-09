@@ -18,6 +18,7 @@ import {
   pathToFileURL,
 } from "node:url";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { applyEdits, modify, parse } from "jsonc-parser";
 
 const repositoryRoot = resolve(
@@ -435,6 +436,43 @@ public static class Program
     ]),
     "installed CLI install",
   );
+  const uiProcess = spawn(process.execPath, [binaryPath, "ui", "--no-open", "--port", "0", "--data-root", dataRoot], {
+    cwd: temporaryRoot, env: smokeEnvironment, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const uiExited = once(uiProcess, "close");
+  let uiOutput = "";
+  let uiError = "";
+  try {
+    const uiUrl = await new Promise((resolveReady, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`Installed UI startup timed out: ${uiError}`)), 10_000);
+      uiProcess.stdout.on("data", (chunk) => {
+        uiOutput += String(chunk);
+        const match = /http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{64}\//u.exec(uiOutput);
+        if (match) { clearTimeout(deadline); resolveReady(match[0]); }
+      });
+      uiProcess.stderr.on("data", (chunk) => { uiError += String(chunk); });
+      uiProcess.once("error", (error) => { clearTimeout(deadline); reject(error); });
+      uiProcess.once("close", (code) => { clearTimeout(deadline); reject(new Error(`Installed UI exited before startup (${code}): ${uiError}`)); });
+    });
+    const page = await fetch(uiUrl, { signal: AbortSignal.timeout(5_000) });
+    const pageText = await page.text();
+    if (page.status !== 200 || !pageText.includes("Knowledge cards") || !pageText.includes(expectedVersion)) {
+      throw new Error(`Installed UI overview failed (${page.status}).`);
+    }
+    const style = await fetch(`${uiUrl}style.css`, { signal: AbortSignal.timeout(5_000) });
+    if (style.status !== 200 || !style.headers.get("content-type")?.includes("text/css") || !(await style.text()).includes("grid-template-columns")) {
+      throw new Error("Installed UI assets are missing.");
+    }
+    uiProcess.kill("SIGTERM");
+    await uiExited;
+    let stillListening = false;
+    try { await fetch(uiUrl, { signal: AbortSignal.timeout(1_000) }); stillListening = true; } catch { /* Expected after process exit. */ }
+    if (stillListening) throw new Error("Installed UI is still listening after shutdown.");
+    console.log("Verified installed UI overview, bundled CSS, and process shutdown.");
+  } finally {
+    if (uiProcess.exitCode === null && uiProcess.signalCode === null) uiProcess.kill();
+    await uiExited;
+  }
   const locatorPath = join(
     smokeEnvironment.LOCALAPPDATA,
     "ProvenLoopIntegration",

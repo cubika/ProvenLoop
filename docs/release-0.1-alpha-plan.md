@@ -1,15 +1,18 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.13 published with a live upgrade observation; quality-release acceptance remains open
+**Status:** 0.14 viewer release preparation; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
-**Updated:** 2026-09-08
+**Updated:** 2026-09-09
 
-**Evidence candidate:** `0.1.0-alpha.0.13` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.14` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.13 release notes](releases/0.1.0-alpha.0.13.md).
+[0.14 release notes](releases/0.1.0-alpha.0.14.md).
+
+The 0.14 scope adds the read-only `provenloop ui` browser through the existing
+CLI. It reuses local canonical data without changing schema 14 or learning consent.
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
@@ -74,6 +77,7 @@ and is retained in 0.13; installed-host acceptance and controlled benefit remain
 - Knowledge lifecycle and counterevidence handling;
 - M0, M1, M2, and MVP evaluation gates;
 - automatic local observations and safe export;
+- a local read-only knowledge and evidence viewer through `provenloop ui`;
 - bounded current-session reconciliation in the installed background loop;
 - explicit bounded M0 acceptance and maintainer-controlled probes;
 - package installation, upgrade, disable, uninstall, and rollback.
@@ -85,7 +89,7 @@ and is retained in 0.13; installed-host acceptance and controlled benefit remain
 - M5 Playbook generation or activation;
 - additional coding-agent adapters;
 - cross-machine or team synchronization;
-- web dashboard;
+- remote or team dashboards and browser-based editing;
 - cloud storage;
 - model fine-tuning.
 
@@ -97,7 +101,7 @@ returning success-shaped placeholders.
 The candidate's versioned installation command is:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.13/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub
