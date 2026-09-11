@@ -150,7 +150,7 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
   return windows.sort((a, b) => compare(a.user, b.user)).map(({ window }) => window);
 };
 
-export const validateLearningResponse = (window: LearningWindow, output: unknown): ReturnType<typeof learningInferenceResponseSchema.parse> => {
+export const validateLearningResponse = (window: LearningWindow, output: unknown, options: { readonly sourcesOnly?: boolean } = {}): ReturnType<typeof learningInferenceResponseSchema.parse> => {
   if (Buffer.byteLength(JSON.stringify(output), "utf8") > 16 * 1024) throw new Error("Learning response exceeds byte budget.");
   const parsed = learningInferenceResponseSchema.parse(output);
   const sources = new Map(window.events.map((entry) => [entry.event.eventId, entry]));
@@ -180,7 +180,14 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
       }
     }
   }
-  return { ...parsed, proposals: parsed.proposals.filter((proposal) => assessLearningRetention(proposal, window.events, window).retain) };
+  if (options.sourcesOnly) return parsed;
+  const decisions = parsed.proposals.map((proposal) => ({ proposal, decision: assessLearningRetention(proposal, window.events, window) }));
+  const proposals = decisions.filter((entry) => entry.decision.retain).map((entry) => entry.proposal);
+  const accepted = proposals.filter((proposal) => proposal.distillation !== undefined).length;
+  return { ...parsed, proposals, ...(parsed.distillation ? { distillation: { ...parsed.distillation,
+    accepted, rejected: parsed.distillation.proposed - accepted,
+    reasons: [...parsed.distillation.reasons, ...decisions.filter((entry) => !entry.decision.retain).map((entry) => "Retention: " + entry.decision.reason)].slice(0, 3),
+  } } : {}) };
 };
 
 export const renderLearningPredicate = (proposal: RuleProposal): string | undefined => {

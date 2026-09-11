@@ -13,6 +13,7 @@ import { redactPotentialSecrets } from "@provenloop/domain";
 import { escapeHtml, recordsResetControl, renderUiPage, uiCss, uiLayout } from "./ui-page.js";
 import { applyUiKnowledgeAction, UiActionError } from "./ui-actions.js";
 import { resetAllRecords } from "./reset-records.js";
+import { readLearningReadiness, type LearningReadiness } from "./run-learning.js";
 
 export interface UiServerOptions { readonly dataRoot: string; readonly port?: number }
 export interface UiServer { readonly url: string; readonly close: () => Promise<void> }
@@ -36,7 +37,7 @@ const storageBytes = async (path: string): Promise<number> => {
   return total;
 };
 
-const installationSummary = async (path: string): Promise<string> => {
+const installationSummary = async (path: string, dataRoot: string, includeReadiness: boolean): Promise<{ summary: string; readiness?: LearningReadiness }> => {
   try {
     await access(path);
     const state = await readCopilotAdapterState(path, new Date());
@@ -44,8 +45,8 @@ const installationSummary = async (path: string): Promise<string> => {
       `${name.replaceAll("_", " ")}: ${state.capabilities?.[name]?.enabled === true ? "on" : state.capabilities?.[name]?.enabled === false ? "off" : "unknown"}`);
     const learning = resolveAutomaticLearning(state);
     capabilities.push(`automatic learning: ${learning.enabled ? `on (${learning.mode})` : `off (${learning.blockedBy.join(", ")})`}`);
-    return capabilities.join(" · ");
-  } catch { return "Installation state could not be read. Check provenloop status."; }
+    return { summary: capabilities.join(" · "), ...(includeReadiness ? { readiness: await readLearningReadiness(state, { dataRoot }) } : {}) };
+  } catch { return { summary: "Installation state could not be read. Check provenloop status." }; }
 };
 
 export const startUiServer = async (options: UiServerOptions): Promise<UiServer> => {
@@ -117,12 +118,13 @@ export const startUiServer = async (options: UiServerOptions): Promise<UiServer>
           const location = await applyUiKnowledgeAction(paths, decodeURIComponent(actionRoute[1]), form);
           response.setHeader("Location", `${base}${location}`); send(303, "Knowledge action saved."); return;
         }
-        const installation = await installationSummary(paths.adapterState);
+        const installation = await installationSummary(paths.adapterState, paths.root, url.pathname === base);
         let queueDepth: number | undefined;
         try { queueDepth = (await readdir(join(paths.queue, ".active"), { withFileTypes: true })).filter((entry) => entry.isFile()).length; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
         const runtime = { databaseBytes: await storageBytes(paths.database), knowledgeBytes: await storageBytes(paths.knowledgeDatabase), ...(queueDepth === undefined ? {} : { queueDepth }) };
-        const page = readInspection(paths.database, (reader) => renderUiPage(reader, { ...context, runtime }, installation));
+        const page = readInspection(paths.database, (reader) => renderUiPage(reader, { ...context, runtime,
+          ...(installation.readiness === undefined ? {} : { readiness: installation.readiness }) }, installation.summary));
         send(page.status, page.html);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unable to read local records.";

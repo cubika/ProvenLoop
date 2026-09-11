@@ -1,5 +1,51 @@
 # Agent experience validation, 2026-09-08
 
+## Reviewed distillation development check, 2026-09-11
+
+This unreleased schema 18 change was checked with the actual Copilot CLI 1.0.84-1
+provider on authored inputs, followed by local runtime replay. It adds a separate
+model quality review and concise lesson delivery. The host-selected model ID was
+not exposed. No live user history was sent and no installed database was upgraded.
+
+| Authored case | Actual provider result | Local later-task replay |
+|---|---|---|
+| A Chinese message combines a one-time edit/no-commit request with lasting documentation and conversation conventions | Three proposals reviewed; two retained and one rejected for support/scope | An English documentation task received the relevant distilled English-documentation rule in 300 rendered tokens; another repository received none |
+| Investigation finds a generated client overwritten by its build step | One concise lesson about editing the schema and regenerating the client, accepted by review | The lesson and full conditions were returned after a changed commit in 432 rendered tokens, requiring source revalidation; another repository received none |
+| Change the default model for the present task without committing | No retained proposal | No guidance returned |
+
+A separate authored behavior probe used the same installed host with no tools. For a
+Chinese request to write one sentence of repository API documentation, the baseline
+returned a Chinese sentence. Supplying the actually distilled lesson and its full
+conditions produced an English sentence while preserving the identifier. This shows
+a concrete behavioral difference on one task. Context was supplied explicitly by the
+probe, so it is not automatic installed-plugin acceptance or a productivity estimate.
+
+Local evidence is under `.provenloop/distillation-validation/`: `inputs.json`,
+`report.json`, `replay.json`, and `behavior/report.json`. Earlier attempts remain in
+`attempts.jsonl` and the numbered report snapshots. One first request timed out; two
+early harness versions invalidated replay by hashing optional undefined fields before
+canonical JSON persistence. Those failed replays were not counted as product success.
+The final run used the canonical source representation and kept all rejected cases.
+
+The samples were authored, and no independent human quality labels were collected.
+The model review is not an independent semantic oracle. The extraction prompt later
+received wording clarifications about lasting requirements without keywords and
+checking search-alias meaning; these examples support the implemented path, not an
+exact-final-prompt quality threshold.
+General precision, missed-learning rates, real installed-hook use, and sustained
+improvement still require the broader validation plan.
+
+Repository validation passed 1,174 unit tests with five existing skips and all 273
+integration tests. The final short-Chinese-rationale adjustment passed a further
+76 relevant tests, followed by all six alias tests including an explicit short-Chinese
+case. Type checks, lint, and document link/format checks passed.
+Packed installation, viewer startup/CSS/shutdown, upgrade, and cleanup checks passed
+using temporary data and a fake Copilot host. The first packaging attempts hit the
+sandbox npm-cache and Windows process-inspection boundaries; the isolated check passed
+with a workspace cache and authorized native process inspection.
+
+## Earlier agent-experience record
+
 The [implementation contract](agent-experience-learning.md) was written before source changes. This record separates model extraction, deterministic runtime replay and live-host acceptance. The existing user-correction path remains covered by regression tests.
 
 ## Real provider replay

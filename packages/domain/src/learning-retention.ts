@@ -3,6 +3,8 @@ import type { CaptureEnvelope, LearningRetention, LearningToolContract, RuleProp
 import { capturedToolQuote, validAgentLearningSource } from "./agent-learning-source.js";
 import { containsPotentialSecret } from "./redaction.js";
 import { isInternalWorkSource } from "./work-source.js";
+import { hasAcceptedLearningDistillation } from "./learning-distillation.js";
+import { sha256 } from "./digest.js";
 
 export interface LearningRetentionAssessment {
   readonly retain: boolean;
@@ -64,10 +66,12 @@ export const assessLearningRetention = (
   const sourceId = proposal.userSource?.eventId ?? proposal.agentSource?.eventId;
   const anchor = events.find((entry) => entry.event.eventId === sourceId);
   const sourceText = proposal.userSource ? anchor?.content?.message ?? proposal.userSource.quote : proposal.agentSource?.quote ?? "";
+  const distilled = hasAcceptedLearningDistillation(proposal, events.map((entry) => ({ eventId: entry.event.eventId, digest: sha256(entry) })));
+  if (proposal.distillation && !distilled) return reject("invalid_distillation_review");
   if (anchor && isInternalWorkSource(anchor.event)) return reject("internal_source");
-  if (shortApproval.test(sourceText.trim()) || taskOnly.test(sourceText) || taskOnly.test(proposal.trigger)) return reject("task_only");
-  if (commitRestriction.test(sourceText) && !lastingIntent.test(sourceText)) return reject("task_only");
-  if (proposal.userSource && editRequest.test(sourceText) && !lastingIntent.test(sourceText)) return reject("requested_state_change");
+  if (shortApproval.test(sourceText.trim()) || (!distilled && taskOnly.test(sourceText)) || taskOnly.test(proposal.trigger)) return reject("task_only");
+  if (!distilled && commitRestriction.test(sourceText) && !lastingIntent.test(sourceText)) return reject("task_only");
+  if (!distilled && proposal.userSource && editRequest.test(sourceText) && !lastingIntent.test(sourceText)) return reject("requested_state_change");
   const retention = proposal.retention;
   if (!retention) return { retain: true, reusable: false, reason: "legacy_unreviewed" };
   if (retention.lifetime !== "durable") return reject("task_only");
@@ -94,12 +98,13 @@ export const assessLearningRetention = (
   const citedPaths = [...sources.flatMap((source) => pathsInText(source.quote)), ...pathsInText(anchor.content?.message ?? "")];
   if ([...citedPaths, ...events.flatMap(operationPaths)].some((path) => !inside(path, scope.worktree))) return reject("cross_repository_target");
   if (taskOnly.test(retention.futureUse)) return reject("task_only");
-  if (normalize(retention.futureUse).length < 16 || normalize(retention.rationale).length < 16 ||
-      normalize(retention.rationale) === normalize(proposal.rule)) return reject("missing_future_value");
+  if (!distilled && (normalize(retention.futureUse).length < 16 || normalize(retention.rationale).length < 16 ||
+      normalize(retention.rationale) === normalize(proposal.rule))) return reject("missing_future_value");
   const typed = proposal.predicate !== undefined || proposal.shellPredicate !== undefined;
   if (retention.kind === "convention") {
-    if (nonAssertedInstruction.test(sourceText)) return reject("unasserted_convention");
-    if (!proposal.userSource || !lastingIntent.test(sourceText) || !sources.some((source) => source.eventId === proposal.userSource?.eventId && lastingIntent.test(source.quote))) return reject("duration_unproven");
+    if (!distilled && nonAssertedInstruction.test(sourceText)) return reject("unasserted_convention");
+    if (!proposal.userSource || !sources.some((source) => source.eventId === proposal.userSource?.eventId &&
+        (distilled || lastingIntent.test(source.quote))) || (!distilled && !lastingIntent.test(sourceText))) return reject("duration_unproven");
   } else if (retention.kind === "reference") {
     if (typed || !sources.some((source) => {
       const event = events.find((entry) => entry.event.eventId === source.eventId);
@@ -107,7 +112,7 @@ export const assessLearningRetention = (
       // containing words such as "requires". Exact captured provenance and the
       // retention assessment still apply; this grants reference use only.
       return event?.event.trust === "tool" &&
-        (proposal.agentSource?.kind === "research" || explanatorySource.test(source.quote));
+        (distilled || proposal.agentSource?.kind === "research" || explanatorySource.test(source.quote));
     })) return reject("missing_reusable_finding");
   } else if (!typed) return reject("unsupported_recovery");
   return { retain: true, reusable: !typed, reason: "source_supported", kind: retention.kind };

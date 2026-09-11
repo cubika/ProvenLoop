@@ -40,6 +40,23 @@ const completeOutputReviews = async (runDirectory: string) => {
 };
 
 describe("frozen automatic-learning evaluation workflow", () => {
+  it("counts a quality-review request against the same run budget and retains its count", async () => {
+    const f = await fixture(); let reserved = 0;
+    const run = await runFrozenLearningEvaluation({ ...defaults, ...f, maxRequests: 2,
+      reserveAttempt: () => { reserved += 1; return true; },
+      provider: { ...provider, timeoutMs: 100_000, infer: async (_window, options) => {
+        expect(await options.reserveReviewAttempt?.()).toBe(true);
+        expect(await options.reserveReviewAttempt?.()).toBe(false);
+        return { schemaVersion: 1, proposals: [], distillation: { proposed: 1, accepted: 0, rejected: 1, reasons: ["Quality review: reusable"] } };
+      } },
+    });
+    expect(reserved).toBe(2);
+    expect(run.attempts).toHaveLength(1);
+    expect(run.attempts[0]).toMatchObject({ status: "no_rule", reviewRequests: 1 });
+    expect(run.attempts[0]?.distillation).toMatchObject({ proposed: 1, accepted: 0, rejected: 1 });
+    expect(run.pendingCaseIds).toHaveLength(39);
+    expect(await readFile(join(f.outputDirectory, "attempts.jsonl"), "utf8")).toContain('"reviewRequests":1');
+  });
   it("keeps source hashes and typed positive proof valid after corpus JSON persistence", () => {
     const corpus = createFrozenLearningCorpus();
     const persisted: ReturnType<typeof createFrozenLearningCorpus> = JSON.parse(JSON.stringify(corpus));

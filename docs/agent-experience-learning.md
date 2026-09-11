@@ -2,6 +2,29 @@
 
 Status: implementation contract. Validation results are recorded separately.
 
+Product requirement update (2026-09-11):
+[FB-008](feedback.md#fb-008-distillation-quality-noise-and-missed-learning) requires
+instruction-quality distillation of experience, with both noise and missed valuable
+learning evaluated. The finding/reference implementation below is an intermediate
+capability; preserved excerpts alone do not meet the
+[final output standard](product-design.md#45-distillation-is-the-product). This update
+records the target without changing the implemented evidence or delivery rules.
+
+Development implementation (2026-09-11, unreleased schema 18): new untyped lessons
+receive a separate model quality review after extraction. The reviewer checks support,
+scope, lasting value, actionability, concision, and redundancy within the supplied
+batch. Only accepted lessons pass to source and retention checks. The review is bound
+to the exact proposal and source digests; it does not establish external verification
+or user confirmation. Legacy references keep their existing delivery mode.
+
+Reviewed conventions can separate a lasting constraint from a mixed task message
+without requiring words such as "always". Reviewed user and agent references deliver
+the concise lesson with complete applicability, keeping quotations in Explain. The
+default context budget never truncates the lesson or its conditions. Reviewed English
+concept keys also support retrieval of lessons written in Chinese. Source enrichment
+invalidates the review and schedules reassessment within the original lifetime and
+attempt budget. Full distillation quality and sustained user benefit remain open.
+
 Development update (2026-09-11): research proposals must pass a retention
 assessment with exact sources and lasting value. Eligible references return an
 explicitly unverified finding and tool excerpts in the same repository/worktree.

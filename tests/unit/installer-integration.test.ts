@@ -98,6 +98,23 @@ describe.skipIf(process.platform !== "win32")("installer integration recovery", 
     `], { encoding: "utf8", timeout: 15_000, windowsHide: true });
     expect(output).toContain(`Automatic learning: ${automaticLearning.enabled ? "enabled" : "disabled"}`);
   });
+  it("guides first use from repository readiness to a reviewed lesson and observable guidance", () => {
+    const summaryStart = installer.indexOf('    Write-Host (\n        "Automatic learning: "');
+    const summaryEnd = installer.indexOf("\n} finally {", summaryStart);
+    expect(summaryStart).toBeGreaterThan(0); expect(summaryEnd).toBeGreaterThan(summaryStart);
+    const script = "$ErrorActionPreference = 'Stop'\nSet-StrictMode -Version Latest\n" +
+      "$automaticLearningStatus = '{\"automaticLearning\":{\"enabled\":true}}' | ConvertFrom-Json\n" +
+      installer.slice(summaryStart, summaryEnd);
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", timeout: 15_000, windowsHide: true });
+    expect(output).toContain("provenloop learning status --cwd");
+    expect(output).toContain("Restart Copilot in that repository");
+    expect(output).toContain("Review Knowledge and its source evidence");
+    expect(output).toContain("Check Usage for guidance provided");
+    expect(output).toContain("Guidance provided and explicit adoption are recorded separately");
+    expect(output).not.toContain("acceptance start");
+  });
+
   it("discovers an older installed integration even when inherited PATH misses its command", () => {
     expect(runIntegration({ installed: true, version: "0.1.0-alpha.0.10" }))
       .toMatchObject({ status: "pass", calls: ["status", "upgrade"], existingInstallation: true });

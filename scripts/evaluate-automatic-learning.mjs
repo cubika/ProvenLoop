@@ -44,7 +44,7 @@ try {
     const provider = new CopilotLearningProvider({ temporaryRoot: join(paths.root, "temp"), enabled });
     const currentCode = async () => before === await executableDigest() && version === await codeVersion();
     try { result = await runFrozenLearningEvaluation({ preparedDirectory: resolve(required("--prepared")), outputDirectory,
-      provider: { identity: provider.identity, infer: async (window, options) => {
+      provider: { identity: provider.identity, timeoutMs: provider.timeoutMs, infer: async (window, options) => {
         if (!await currentCode()) { controller.abort(); throw new Error("Evaluation code changed before provider dispatch."); }
         return provider.infer(window, options);
       } },
@@ -56,7 +56,7 @@ try {
       inputLabelPaths: labels, maxRequests: Number(option("--max-requests") ?? 40), maxAttempts: Number(option("--max-attempts") ?? 1) }); }
     finally { store.close(); process.removeListener("SIGTERM", abort); process.removeListener("SIGINT", abort); await lease.release(); }
     if (before !== await executableDigest() || version !== await codeVersion()) throw new Error("Code changed during evaluation; retain attempts but discard aggregate acceptance.");
-    result = { status: "insufficient_evidence", attemptedRequests: result.attempts.length, pendingWindows: result.pendingCaseIds.length,
+    result = { status: "insufficient_evidence", attemptedRequests: result.attempts.reduce((sum, entry) => sum + 1 + (entry.reviewRequests ?? 0), 0), pendingWindows: result.pendingCaseIds.length,
       failedAttempts: result.attempts.filter((item) => !["extracted", "no_rule"].includes(item.status)).length, outputDirectory };
   } else if (command === "review") result = await reviewFrozenLearningEvaluation({ runDirectory: resolve(required("--run")),
     outputReviewPaths: [required("--review-a"), required("--review-b")], outputPath: resolve(required("--out")) });

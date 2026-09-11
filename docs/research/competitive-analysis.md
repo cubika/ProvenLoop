@@ -3,58 +3,88 @@
 > This document records the technical, product, and competitive research conducted before and after ProvenLoop's product definition.
 > See the [product design](../product-design.md) for the complete specification.
 
-**Research snapshot:** 2026-08-20
+**Latest positioning and documentation review:** 2026-09-11
+**Historical technical snapshot:** 2026-08-20
 **Initial environment:** Windows + `agency copilot` + GitHub Copilot CLI
+
+Sections 1 and 3 and the dated updates in section 5 reflect the latest review.
+Other sections preserve earlier research and proposals; their vendor details were
+not revalidated in this review. In particular, the Memorix composition, historical
+import, and full lifecycle architecture below are historical proposals, not current
+installation requirements. Use the [architecture](../architecture.md),
+[roadmap](../roadmap.md), and [release notes](../releases/0.1.0-alpha.0.15.md) for
+implementation boundaries.
 
 ## 1. Summary of findings
 
-The original idea was local Coding Agent Memory that works unobtrusively across Sessions:
+The primary customer benefit is less repeated investigation and rework. ProvenLoop
+should make earlier investigations useful in later tasks, apply ordinary corrections
+without a separate rule-maintenance routine, and let users inspect or withdraw
+guidance. The [product positioning](../product-design.md#4-product-positioning) is the
+canonical statement of these benefits.
 
-```text
-Install once
-  -> Users continue using Copilot normally
-  -> Observe Sessions automatically
-  -> Retain personal habits and engineering lessons
-  -> Use them automatically in later related tasks
-  -> Reduce repeated explanations and mistakes over time
-```
+The 2026-09-11 [user feedback](../feedback.md#fb-008-distillation-quality-noise-and-missed-learning)
+sharpens the product focus: distill experience into guidance that approaches the
+quality of deliberately maintained Copilot instructions. Final output quality and
+coverage of valuable learning are both requirements. Keeping exact source excerpts
+supports auditing but is insufficient as the finished product.
 
-The research calls for revising this positioning.
+### 1.1 Verified competitive overlap
 
-Many existing solutions already provide:
+The following official documentation was read on 2026-09-11. These are documented
+capabilities, not comparative runtime tests or productivity measurements.
 
-- Coding Agent Session capture.
-- Background summarization and compression.
-- MCP retrieval and injection.
-- Short-term and long-term memory layers.
-- Conversion of Git Commits into engineering memory.
-- Semantic, Episodic, Procedural Memory.
-- Outcome Signals such as user corrections and test success or failure.
-- Shared memory across Agents such as Claude Code, Codex, and Copilot.
-- Synchronization of stable rules to files such as `AGENTS.md` and `CLAUDE.md`.
+| Alternative | Documented capabilities | Implication for ProvenLoop |
+|---|---|---|
+| [Copilot Memory](https://docs.github.com/en/copilot/concepts/agents/copilot-memory) | Facts and preferences shared across CLI, cloud agent, and code review, with feature-specific limits; repository facts checked against current code; unused entries expire | ProvenLoop competes with memory already available in its initial host, including validation and lifecycle controls |
+| [Claude Code auto memory](https://code.claude.com/docs/en/memory#auto-memory) | Automatically retains corrections, preferences, and findings in local files; users can inspect, edit, and delete them | Automatic accumulation and local user control overlap |
+| [Codex memories](https://developers.openai.com/codex/customization/memories) | Once enabled, background generation of local memories with supporting evidence and chat-level use/contribution controls | Continuity and evidence retention are native capabilities |
+| [Claude-Mem](https://docs.claude-mem.ai/introduction) | Automatic capture, summaries, later-session context, citations, and a Web Viewer; [knowledge agents](https://docs.claude-mem.ai/usage/knowledge-agents) synthesize answers from selected history | An independent coding-memory plugin already offers much of the proposed operating model |
+| [Mem0 Open Source](https://docs.mem0.ai/open-source/overview) | A configurable memory library or self-hosted server, with control of infrastructure and data | General memory infrastructure can be reused to build application workflows |
+| [Project instructions](https://developers.openai.com/codex/agent-configuration/agents-md) | Persistent global and repository guidance read at task startup | A maintained instruction file is a practical baseline for recurring rules |
 
-ProvenLoop should therefore move beyond the positioning:
+The sources support feature overlap. They do not establish equal learning quality or
+show that one product has solved causal outcome learning. An absent feature description
+means it was not established by this review, not that the product cannot implement it.
 
-> Local-first coding-agent memory.
+### 1.2 Differentiation hypothesis
 
-A more accurate positioning is:
+ProvenLoop organizes capture, evidence, and retrieval around a developer's engineering
+work. It aims to reduce the effort required to preserve useful findings, decide when
+they apply, and carry them into the next task. Provenance, local storage, automatic
+summaries, scope controls, and a Viewer are supporting capabilities rather than
+exclusive advantages.
 
-> **ProvenLoop is a learning layer for Coding Agents that uses feedback from software outcomes. It connects Sessions, Commits, PRs, Reviews, CI, tests, and later Bug Fixes into work traces, then uses later outcomes to revise earlier Agent decisions.**
+The comparison must therefore test the quality of selected and formulated lessons,
+valuable opportunities missed, and user editing effort. Calling a workflow
+distillation does not establish that competitors lack it or that ProvenLoop performs
+it better. The [distillation evaluation](../product-validation.md#97-distillation-quality-noise-and-missed-learning)
+defines the additional evidence required.
 
-Recommended technical strategy:
+The current preview has bounded capture, source references, rule controls, and narrow
+recovery qualification. Broader semantic learning quality and incremental benefit
+remain unproven. Linking later PR, CI, bug, or revert outcomes to revise earlier lessons
+is a promising direction, but it remains future work in ProvenLoop too.
 
-```text
-Build the differentiating layer
-Integrate the commodity memory layer
-```
+An initial case should show a real investigation or correction followed by unprompted
+reuse in a later related task, including what the agent then did. Compare against the
+user's native memory and maintained instructions, and a representative open-source
+alternative where supported. Include unrelated tasks, code changes, and the time spent
+reviewing rules or fixing the integration. See the
+[Design Partner plan](../product-validation.md#96-validating-the-product-promise-with-design-partners).
 
-In practice:
+### 1.3 Product implications
 
-- Use Memorix for general-purpose Memory, MCP, Hooks, Git Memory, retrieval, and lifecycle management.
-- Build ProvenLoop's own Work Episode, Outcome Linker, causal retrospectives across time, and effectiveness evaluation.
-- Extend through composition using Memorix's npm SDK and embedded MCP Server capabilities without forking Memorix.
-- Require no additional API Key; use the user's existing sign-in with `agency copilot -p` for background analysis.
-- Keep the user's launch command unchanged: `agency copilot`.
+Start with developers who still repeat investigations or corrections weekly in the
+same repository despite existing memory tools. Make the first successful reuse easy
+to observe, and distinguish capture, learning, and repository-hook readiness. Record
+missed opportunities as well as incorrect guidance. A strict rule that never applies
+again may be safe but provide little value.
+
+Prove one recurring scenario on the supported host before expanding into more adapters
+or automatic Playbooks. Cross-agent portability is a later customer benefit. Willingness
+to install, continue using, and pay for the product requires user research; the feature
+comparison alone does not answer those questions.
 
 ---
 
@@ -246,6 +276,9 @@ This is useful for Observability, but is not ProvenLoop's core data model. Sessi
 
 ## 3. GitHub Copilot Memory
 
+Documentation reviewed on 2026-09-11: [About GitHub Copilot Memory](https://docs.github.com/en/copilot/concepts/agents/copilot-memory).
+It is described as a public preview available on paid plans.
+
 ### 3.1 What it stores
 
 Copilot Memory stores two categories:
@@ -263,9 +296,14 @@ Copilot Memory stores two categories:
 - Personal coding habits.
 - Workflow preferences.
 
-### 3.2 Approximate implementation
+Copilot CLI uses repository facts and the initiating user's preferences. Code review
+uses repository facts only. Memories can be shared between CLI, cloud agent, and code
+review subject to those limits. Individual plans enable memory by default; managed
+plans require an administrator to enable the policy first.
 
-Public information suggests a workflow resembling:
+### 3.2 Documented use and validation
+
+The documented behavior can be summarized as:
 
 ```text
 Copilot interaction
@@ -290,20 +328,24 @@ User preference:
 
 Unused Memory is automatically deleted after 28 days; successful validation and use may reset the timer.
 
+Repository owners can review and delete repository facts. Users can view and delete
+their own preferences. The reviewed documentation does not establish direct editing
+of stored entries. Preference applicability uses model judgment; it is not the same
+check as validating a repository fact against current code.
+
 ### 3.3 Differences from ProvenLoop
 
-| Dimension | Copilot Memory | ProvenLoop |
+| Dimension | Copilot Memory documentation | ProvenLoop current boundary |
 |---|---|---|
-| Main content | Facts and preferences | Work processes, outcomes, and lessons |
-| Learning unit | Individual Memory item | Work Episode |
-| Engineering data | Code references | Session, Commit, PR, Review, CI, Bug Fix |
-| Short-term development Context | Not specifically bound to Branch | Branch Context |
-| Retrospective analysis of later Bugs | Not a core capability | Core differentiator |
-| Effectiveness metrics | Not public | Correction counts, retries, first-attempt success rate |
-| Storage | Hosted by GitHub | Local and auditable |
-| Agent coverage | GitHub Copilot | General-purpose Core + multiple Agent Adapters |
+| Retained material | Repository facts and user preferences | Bounded work events, episodes, source references, and knowledge candidates |
+| Validation | Repository citations checked against current branch; preferences assessed for applicability | Source and scope checks; supported recovery predicates have operation-bound proof |
+| User control | Review and delete facts or preferences under the documented permissions | Inspect sources, edit rule content or scope, archive, and delete |
+| Later outcome learning | Full PR/CI/revert recovery chains not established by the reviewed page | Automated delayed linking and cross-task retrospective analysis remain planned |
+| Demonstrated benefit | No comparative productivity result established by this page | Observations and regressions exist; controlled benefit remains open |
+| Agent coverage | CLI, cloud agent, and code review within Copilot | Windows Copilot CLI; additional agent adapters remain planned |
 
-If ProvenLoop only stores preferences and repository facts, Copilot Memory already covers that scope.
+This overlap makes incremental effect on real tasks the relevant comparison. Citations,
+validation, or expiry alone do not establish a ProvenLoop advantage.
 
 ---
 
@@ -353,31 +395,16 @@ Conclusion:
 
 ### 5.1 Mem0
 
-<https://github.com/mem0ai/mem0>
+The [Open Source overview](https://docs.mem0.ai/open-source/overview), read on
+2026-09-11, describes a memory engine that runs as a Python/Node library or a
+self-hosted server. The server includes a dashboard, per-user API keys, and a request
+audit log. Developers configure the model, embeddings, storage, and optional reranker.
 
-Positioning:
-
-- General-purpose Memory SDK/API for AI application developers.
-
-Capabilities:
-
-- Extracts facts from conversations.
-- User, Agent, and Run scopes.
-- Vector, BM25, and Entity retrieval.
-- Deduplication and long-term preferences.
-
-Gaps:
-
-- Does not understand Git, PRs, Reviews, tests, and later Bugs.
-- No Work Episode.
-- Does not measure improvement in engineering outcomes.
-
-Useful ideas to adopt:
-
-- Append-only evidence.
-- Scope model.
-- Hybrid retrieval.
-- History and Audit.
+The product comparison concerns how much engineering-specific workflow the application
+must supply around that engine. The overview does not establish a complete
+investigation-to-later-task outcome workflow, but it also does not establish that Mem0
+cannot support one. Reuse infrastructure where it meets ProvenLoop's contracts; judge
+the resulting product by total developer effort.
 
 ### 5.2 Zep / Graphiti
 
@@ -405,6 +432,12 @@ Unsuitable as the MVP's default dependency:
 - ProvenLoop would still need to model the coding lifecycle.
 
 ### 5.3 Letta / MemGPT
+
+The [stateful-agent documentation](https://docs.letta.com/v1-sdk/concepts/stateful-agents/),
+read on 2026-09-11, describes persisted messages and tool calls, agent-editable memory,
+and blocks shared across agents. That page is labeled legacy V1 SDK documentation.
+The Letta Code details below remain the earlier snapshot and were not revalidated.
+They must not be used to portray Letta as passive storage.
 
 <https://github.com/letta-ai/letta-code>
 
@@ -489,24 +522,17 @@ Gaps:
 
 ### 5.7 Claude-Mem
 
-<https://github.com/thedotmack/claude-mem>
+The [introduction](https://docs.claude-mem.ai/introduction), read on 2026-09-11, describes
+automatic tool-observation capture, summaries, later-session context, citations, and a
+Web Viewer. Its [knowledge agents](https://docs.claude-mem.ai/usage/knowledge-agents)
+compile selected history into a corpus for synthesized answers about decisions and
+findings. [Export/import](https://docs.claude-mem.ai/usage/export-import) can transfer
+selected memory records between installations.
 
-This solution is closest to ProvenLoop in its operating model:
-
-- Lifecycle Hooks.
-- Background Worker.
-- SQLite.
-- Chroma Semantic Search.
-- Session Summary.
-- MCP Progressive Disclosure.
-
-It mainly answers:
-
-> What was done before?
-
-ProvenLoop should answer:
-
-> Why did the earlier implementation miss this issue? What later evidence established it? How can it be avoided next time?
+This is direct overlap in both workflow and interface. Compare the relevance of reused
+findings, treatment of changed conditions and counterevidence, and the work a later task
+actually avoids. The reviewed pages do not establish a controlled advantage for either
+product or the absence of other learning mechanisms.
 
 ### 5.8 Basic Memory
 
@@ -974,7 +1000,7 @@ Ordinary `agency copilot` invocation is unaffected.
 
 ---
 
-## 10. Latest recommended architecture
+## 10. Historical architecture proposal (2026-08-20)
 
 ```text
                     agency copilot
@@ -1036,7 +1062,11 @@ Session / Git / GitHub   agency copilot -p|
 
 ---
 
-## 11. Revised MVP
+## 11. Historical MVP proposal (2026-08-20)
+
+This proposal included delayed outcomes and retrospective analysis in P0. The current
+[roadmap](../roadmap.md) requires the first useful correction and investigation reuse
+scenarios before those later milestones.
 
 ### P0: Differentiated capabilities
 
@@ -1132,7 +1162,7 @@ Supporting metrics:
 
 ---
 
-## 12. Build vs Integrate decision
+## 12. Historical Build vs Integrate recommendation (2026-08-20)
 
 ### Integrate Memorix
 
@@ -1220,7 +1250,11 @@ Mitigation:
 
 ---
 
-## 14. Final assessment
+## 14. Historical assessment (2026-08-20)
+
+This section preserves the original recommendation. It is not a description of the
+released installer or completed integrations. The current product judgment and
+competitive boundaries are in [section 1](#1-summary-of-findings).
 
 ### Extending Memorix is feasible
 
@@ -1302,6 +1336,12 @@ No additional API Key, change to the launch command, or manual learning trigger 
 
 ### Other Memory solutions
 
+- [Mem0 Open Source overview](https://docs.mem0.ai/open-source/overview) (reviewed 2026-09-11)
+- [Claude Code auto memory](https://code.claude.com/docs/en/memory#auto-memory) (reviewed 2026-09-11)
+- [Codex memories](https://developers.openai.com/codex/customization/memories) (reviewed 2026-09-11)
+- [Codex project instructions](https://developers.openai.com/codex/agent-configuration/agents-md) (reviewed 2026-09-11)
+- [Claude-Mem introduction](https://docs.claude-mem.ai/introduction), [knowledge agents](https://docs.claude-mem.ai/usage/knowledge-agents), and [export/import](https://docs.claude-mem.ai/usage/export-import) (reviewed 2026-09-11)
+- [Letta stateful agents, legacy V1 SDK](https://docs.letta.com/v1-sdk/concepts/stateful-agents/) (reviewed 2026-09-11)
 - <https://github.com/mem0ai/mem0>
 - <https://github.com/getzep/graphiti>
 - <https://github.com/letta-ai/letta-code>

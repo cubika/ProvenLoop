@@ -1,21 +1,29 @@
 # ProvenLoop Product Acceptance and Quality Evaluation Plan
 
-**Current boundary (2026-09-07):** `0.1.0-alpha.0.11` is a Windows Design Partner Preview
+**Historical baseline (2026-09-07):** `0.1.0-alpha.0.11` is a Windows Design Partner Preview
 evidence candidate with observation export, strict native proof chains, bounded current-Session
 reconciliation, and revised field-effectiveness gates. Synthetic regression, field observation,
 controlled benefit comparisons, and release approval are four distinct forms of evidence;
 none substitutes for another. New-version artifacts require separate validation. The M0/MVP
 quality release remains No-Go, and `0.1.0-alpha.1` has not been approved.
 
-**New first-product gate (2026-09-07, not yet implemented):** Ordinary natural-language
+**First-product requirement introduced on 2026-09-07:** Ordinary natural-language
 corrections must trigger background extraction and produce source-backed rule candidates.
 Rules that meet the evidence requirements must be reused in later relevant tasks without
 manual reminders. A `remember` demonstration, fixed-format correction, or manually
 constructed verification event cannot replace this acceptance test. 0.11 has not passed it.
 
 **Status:** Proposed validation plan
-**Version:** 1.0
-**Updated:** 2026-09-07
+**Version:** 1.2
+**Updated:** 2026-09-11
+
+The [Design Partner plan in section 9.6](#96-validating-the-product-promise-with-design-partners)
+adds validation for the product positioning: less repeated investigation and rework.
+It is a proposed study, not a completed trial or a new release approval. The
+[README](../README.md#initial-integration) and dated release notes describe current
+preview capabilities; older version-specific records below retain their original scope.
+The [distillation checks in section 9.7](#97-distillation-quality-noise-and-missed-learning)
+address FB-008's reported noise, missed learning, and instruction-quality output.
 
 ---
 
@@ -944,6 +952,197 @@ Keep: Supported by evidence; leave unchanged
 Change: A clear gap and a validation plan exist
 Stop: No benefit, excessive harm, or unreasonable maintenance cost
 ```
+
+### 9.6 Validating the product promise with Design Partners
+
+The [product positioning](product-design.md#4-product-positioning) prioritizes reuse of
+investigation findings and corrections, with sources and user controls that make reuse
+inspectable. Validate whether this reduces total developer effort beyond an existing
+memory setup. The [competitive review](research/competitive-analysis.md#1-summary-of-findings)
+records why automatic capture, local storage, citations, and a Viewer are insufficient
+on their own to establish differentiation.
+
+#### Participants and duration
+
+Recruit 8-12 developers who maintain a repository over time and still repeat
+investigations or corrections weekly despite native memory and maintained project
+instructions. Ask for concrete recent examples before enrollment. Frequent use of an
+agent alone does not establish unmet need.
+
+Plan an initial four-week trial within the D0 discovery window. This is a proposed
+sample and duration, not a claim that recruitment or field research has taken place.
+Record installation effort, assistance needed, permissions accepted, and first-use
+failures as part of the study.
+
+#### Baselines and assignments
+
+Use the participant's supported agent and keep model/version, permissions, task
+instructions, and repository starting state comparable. Record native-memory settings
+and availability; an unavailable feature cannot be counted as an enabled baseline.
+
+| Condition | Purpose |
+|---|---|
+| Existing native memory and maintained project instructions | Measure the user's actual starting workflow |
+| Existing workflow plus deliberate manual instruction updates | Measure whether manually preserving the same lesson is sufficient, including editing effort |
+| Existing workflow plus ProvenLoop | Measure the incremental benefit and cost of the product |
+| A representative open-source memory alternative on the same supported host | Compare the complete workflow where a compatible integration exists |
+
+Assign matched later tasks before observing their results. Counterbalance task order
+and isolate experimental memory stores to prevent lessons leaking between conditions.
+Learning tasks and later evaluation tasks must be separate. If agent or model changes
+are necessary for a competitor, report a separate comparison and its confounds.
+
+#### Required user scenarios
+
+| Scenario | What to observe |
+|---|---|
+| Investigation reuse without a correction | A finding from captured agent work is supplied in a later related task; its sources remain inspectable and the agent checks applicability before relying on it |
+| Ordinary correction | A natural-language correction leads to supported guidance in a later Session without manual rule creation or a reminder to retrieve |
+| Unrelated task or repository | Guidance is withheld when the conditions do not apply |
+| Unrelated code change followed by a new commit | A still-useful finding can be rechecked; record eligible reuse and missed opportunities rather than assuming every new revision invalidates every lesson |
+| Changed premise or contrary evidence | Old guidance is withheld or explicitly revalidated; record whether detecting the change required manual help |
+| User correction, archive, or deletion of knowledge | The resulting control takes effect and is understandable without database inspection |
+
+Current shell-recovery guidance checks exact command, worktree, branch, and commit
+identity. Development research references can cross a commit boundary while requiring
+revalidation. Treat these as different delivery policies; test the installed version
+and record its behavior. A restrictive policy can be correct yet miss most useful
+opportunities. Finding such a gap does not justify bypassing evidence checks.
+
+#### Measures and interpretation
+
+Record the first unprompted reuse with its source, delivered item, subsequent agent
+action, and outcome. Time from installation to that event measures activation. Capture
+readiness, learning readiness, and repository-hook readiness should be observed
+separately, including failures before users reach the first event.
+
+For each participant and task family, report:
+
+- Repeated corrections per predeclared relevant opportunity, failed retries, and time
+  to the first valid action or verification.
+- Repeated investigation steps and their duration, using comparable tasks or trace
+  review. A shorter trace alone does not prove that the work was unnecessary.
+- Correct delivery, inappropriate guidance, and missed eligible reuse. Count tasks
+  with no returned guidance and unknown outcomes in their proper denominators.
+- Setup, rule review, manual instruction editing, cleanup, and troubleshooting time,
+  alongside runtime latency and model/service usage.
+- Voluntary continued use and concrete reasons for keeping or disabling the product.
+  Assess willingness to pay after an observed benefit; hypothetical enthusiasm is
+  weaker evidence than an actual purchase decision.
+
+Delivered guidance is not adoption, and adoption alone is not saved work. An avoided
+investigation or correction is a comparative claim; ordinary event counts cannot
+establish the counterfactual. Keep reported user impressions distinct from trace-backed
+observations and controlled comparisons. Do not turn a small sample into a market-size
+estimate, a pricing conclusion, or a population-wide improvement percentage.
+
+#### Product decisions after the trial
+
+Report individual outcomes and failure cases before pooling results. Continue expanding
+a scenario when several participants show recurring benefit over their existing setup
+and the savings exceed the added effort. If delivery is correct but value is absent,
+revisit the target task and relevance. If useful experience is repeatedly withheld,
+investigate capture, applicability, and revalidation coverage. If the first benefit
+requires maintainer intervention, improve onboarding before adding more capabilities.
+
+Use those results to choose the next learning type or adapter. The trial does not
+replace the release gates, and no willingness-to-pay or sustained-benefit claim is
+established until corresponding evidence has been retained.
+
+### 9.7 Distillation quality, noise, and missed learning
+
+Status: proposed acceptance work for
+[FB-008](feedback.md#fb-008-distillation-quality-noise-and-missed-learning). The
+[output contract](product-design.md#45-distillation-is-the-product) requires concise,
+supported guidance suitable in substance for the relevant Copilot instructions.
+Accurate quotations alone do not meet that standard, and suitable wording does not
+automatically confer authority or permission to deliver a rule.
+
+#### Evaluate the full set of learning opportunities
+
+Use authorized work samples with their relevant sources, current instructions, and
+existing knowledge. Before inspecting model output, independent reviewers identify
+the valuable reusable lessons, applicable scope, conditions, and acceptable meanings.
+Resolve or report disagreements; do not force one wording as the only valid answer.
+Count distinct concepts, not the number of supporting events.
+
+Include routine work with no durable lesson, temporary requests, precise lasting
+conventions, duplicates of effective instructions, investigated findings without a
+correction, valuable discoveries seen once, failed recoveries, and long investigations
+where the important evidence appears early. Add related later tasks, changed premises,
+and unrelated negative cases. Retain omitted and failed windows in the report.
+
+#### Keep quality dimensions separate
+
+| Dimension | Measurement |
+|---|---|
+| Retained quality | Useful, supported, nonredundant final lessons divided by all final lessons; report noise categories and duplicate burden |
+| Learning coverage | Reviewer-identified valuable concepts correctly distilled and retained divided by all identified valuable concepts |
+| Abstraction quality | Whether the output expresses a reusable decision or constraint, preserves conditions, and avoids incident-only retelling, generic advice, and unsupported generalization |
+| Instruction suitability | Whether a reviewer would deliberately include the scoped guidance with no or minor wording edits; report substantive rewriting separately |
+| Later use | Relevant opportunities receiving appropriate guidance, agent behavior afterward, wrong guidance, and missed retrieval |
+| User effort | Remember prompts, manual recovery of missed lessons, candidate approvals, noise cleanup, rewriting time, and disruptive notifications |
+
+Report retained quality and learning coverage together. A zero-output run has no
+measured retained precision and may have zero coverage; it cannot pass as noise-free
+success. Retaining every excerpt cannot pass on coverage while leaving the user to
+extract the lesson. Successful source matching and candidate isolation remain useful
+checks but do not establish semantic quality.
+
+For each missed concept, locate the loss at capture, source selection, interpretation,
+retention, consolidation, or retrieval. Report coverage over the original authorized
+sample as well as extraction coverage conditional on available evidence. Missing
+sources explain a failure without removing that opportunity from end-to-end coverage.
+Expected refusal due to inadequate evidence must remain distinct from an avoidable miss.
+
+#### Abstraction and reuse checks
+
+Ask reviewers to compare incident descriptions, candidate lessons, and source support.
+The chosen level of abstraction should transfer across irrelevant changes in filenames
+or task wording while retaining material repository and tool constraints. Necessary
+exact identifiers must remain. A repeated pattern can strengthen evidence, but one
+explicit lasting convention or well-supported finding need not recur to be valuable.
+
+Compare the proposed distillation with the current quotation/reference path and a
+human-edited instruction baseline. Test later tasks independently from extraction.
+An optional review rendering of structured guidance as instruction text checks content
+quality only; the evaluation does not write to the user's actual instruction files.
+
+Freeze labels, sampling rules, and acceptance thresholds before measuring model output.
+No numerical precision, coverage, or low-effort target is claimed as achieved here.
+Carry the results into the Design Partner trial alongside real task outcomes; the
+product must satisfy both useful retention and low maintenance burden.
+
+### 9.8 Improvement as experience accumulates
+
+Status: proposed outcome validation for the FB-008 follow-up. The
+[product promise](product-design.md#46-the-agent-should-improve-with-experience) is that
+developers experience an agent becoming more capable in their project through use.
+Evaluate the full path from distillation to later action; attractive knowledge cards
+or high extraction scores alone cannot establish this result.
+
+Compare frozen earlier and later learning collections on held-out tasks from the same
+relevant task families. Keep the agent/model version, repository starting state,
+native memory, instructions, and permissions comparable, and isolate evaluation
+stores from further learning. Include the existing-workflow baseline from section 9.6.
+Report model upgrades, task difficulty changes, and user practice as confounds rather
+than attributing their effects to ProvenLoop.
+
+Assess fewer repeated corrections and unnecessary investigations, better first actions,
+successful transfer to related situations, and correct refusal of stale or inapplicable
+guidance. Preserve correctness and verification requirements. Also track context cost,
+latency, and user maintenance effort as the collection grows.
+
+During real use, ask developers for concrete examples of needing less supervision,
+seeing no change, or encountering worse behavior. Keep these reports separate from
+controlled comparisons; both matter to the product decision. Show results by user and
+task family so an average gain does not hide recurring degradation.
+
+Record each comparison as improved, no discernible effect, degraded, or insufficient
+evidence. A growing collection with no effect calls for investigation of lesson quality,
+applicability, delivery, and actual adoption. Degradation calls for tracing and
+withdrawing or revising the responsible guidance under existing controls. No result
+here is a promise of monotonic improvement on every task or a current quality pass.
 
 ---
 

@@ -76,7 +76,12 @@ export const runProvenLoopCopilotExtension = async (
         deliveryNoticeSent = true;
         void host.session.log(`ProvenLoop provided ${response.items.length} scoped guidance item(s). Sources: ${response.items.map((item) => item.explanationRef).join(", ")}`, { ephemeral: true }).catch(() => undefined);
       }
-      return response.items.map((item) => `${item.guidance}\nSource: ${item.explanationRef}`).join("\n\n");
+      return response.items.map((item) => [
+        item.guidance,
+        `Applicability: ${item.applicabilitySummary}`,
+        `Scope: ${item.scope}${item.scopeId === undefined ? "" : ` (${item.scopeId})`}`,
+        `Source: ${item.explanationRef}`,
+      ].join("\n")).join("\n\n");
     }),
     onStopped: () => {
       stopScheduling();

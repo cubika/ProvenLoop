@@ -71,6 +71,7 @@ import {
   sha256,
   KnowledgeAdmissionPolicy,
   validateLearningResponse,
+  hasAcceptedLearningDistillation,
   conflictingShellLearning,
   selectAgentResearchEvents,
   closedAgentResearchTurn,
@@ -706,6 +707,11 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
     version: 17,
     // Preflight failures and bounded legacy input-budget recovery require the current reader.
     sql: "CREATE INDEX learning_jobs_input_failure ON learning_jobs(json_extract(body_json, '$.failureKind'), json_extract(body_json, '$.extractorVersion'));",
+  },
+  {
+    version: 18,
+    // Bound model-review metadata and job review summaries require the current reader.
+    sql: "CREATE INDEX learning_proposal_distillation ON learning_proposals(json_extract(body_json, '$.distillation.inputDigest'));",
   },
 ] as const satisfies readonly SqliteMigration[];
 
@@ -2507,20 +2513,29 @@ export class CanonicalSqliteStore {
     const jobId = `learning-job-${sha256([window.windowId, window.revision]).slice(0, 24)}`;
     // Reconciliation can fill missing proof without changing the extracted correction.
     const saved = previous ? this.learningProposalsForJob(previous.jobId) : [];
+    // A model review is bound to its full captured window. Enrichment requires a
+    // new review with the original lifetime and attempt budget, not a copied digest.
+    const needsDistillationReview = saved.some((proposal) => {
+      const candidate = this.knowledgeCandidates([proposal.knowledgeId])[0];
+      return hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) &&
+        candidate?.state === "candidate" && candidate.evidenceTier === "inferred" && candidate.conflictsWith.length === 0 &&
+        !this.feedbackEvents(proposal.knowledgeId).some((entry) => entry.source === "user") &&
+        sha256(proposal.sourceDigests) !== sha256(window.sources);
+    });
     const retained = previous && ["waiting_evidence", "superseded"].includes(previous.state)
       ? saved.filter((proposal) => {
+        if (proposal.distillation) return false;
         const candidate = this.knowledgeCandidates([proposal.knowledgeId])[0];
         if (candidate?.state !== "candidate" || this.feedbackEvents(proposal.knowledgeId).some((entry) => entry.source === "user")) return false;
         const { rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate, retention, supportingSources, canonicalKey } = proposal;
         try {
-          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate, retention, supportingSources, canonicalKey }] });
-          return true;
+          return validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate, retention, supportingSources, canonicalKey }] }).proposals.length === 1;
         } catch { return false; }
       }).map((proposal) => ruleProposalSchema.parse({ ...proposal, jobId, proposalId: `learning-proposal-${sha256([jobId, proposal.proposalId]).slice(0, 24)}`, sourceDigests: window.sources })) : [];
     const job = learningJobSchema.parse({ schemaVersion: 1, jobId,
       windowId: window.windowId, revision: window.revision, state: "pending", attempts, createdAt: window.createdAt,
       updatedAt: now.toISOString(), expiresAt: prior?.expiresAt ?? (typeof taskBudget?.expires_at === "string" ? taskBudget.expires_at : expiresAt), extractorVersion: "correction-extractor-1",
-      ...(saved.length ? { state: retained.length ? "waiting_evidence" : "evaluated", result: previous?.result } : {}),
+      ...(saved.length && !needsDistillationReview ? { state: retained.length ? "waiting_evidence" : "evaluated", result: previous?.result } : {}),
       ...(previous?.state === "paused" ? { state: "paused", retryAfter: previous.retryAfter, pauseReason: previous.pauseReason } : {}),
       ...(previousRepair === undefined ? {} : { inputBudgetRecovery: previousRepair }),
     });
@@ -2643,6 +2658,31 @@ export class CanonicalSqliteStore {
           if (existing.state === "candidate" && candidate.state === "active" && !userControls && newReceipt && originEventId && (input.reevaluation || !existing.sourceEvidenceIds.includes(originEventId))) {
             this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?").run(JSON.stringify(candidate), sha256(candidate), candidate.validatedAt ?? candidate.createdAt, candidate.knowledgeId);
             this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
+          }
+          if (existing.state === "candidate" && existing.evidenceTier === "inferred" && existing.conflictsWith.length === 0 &&
+              candidate.state === "candidate" && candidate.evidenceTier === "inferred" && !userControls && !input.reevaluation &&
+              (existing.expiresAt === undefined || Date.parse(job.updatedAt) < Date.parse(existing.expiresAt))) {
+            const incoming = proposals.find((proposal) => proposal.knowledgeId === candidate.knowledgeId &&
+              hasAcceptedLearningDistillation(proposal, window.sources) && sha256(proposal.sourceDigests) === sha256(window.sources) &&
+              candidate.content === proposal.rule && sha256(candidate.appliesWhen) === sha256([proposal.trigger]) &&
+              sha256(candidate.nonApplicability) === sha256(proposal.exclusions));
+            const priorProposals = this.learningProposals().filter((proposal) => proposal.knowledgeId === existing.knowledgeId &&
+              proposal.jobId !== job.jobId && hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) &&
+              existing.content === proposal.rule && sha256(existing.appliesWhen) === sha256([proposal.trigger]) &&
+              sha256(existing.nonApplicability) === sha256(proposal.exclusions) &&
+              existing.sourceEvidenceIds.length === proposal.sourceDigests.length &&
+              proposal.sourceDigests.every((source) => existing.sourceEvidenceIds.includes(source.eventId)));
+            const priorWindows = priorProposals.map((proposal) => this.learningWindow(proposal.jobId));
+            if (incoming && priorWindows.some((priorWindow) => priorWindow?.windowId === window.windowId) &&
+                priorWindows.every((priorWindow) => priorWindow !== undefined && !this.learningSourcesCurrent(priorWindow))) {
+              const expiry = [existing.expiresAt, candidate.expiresAt].filter((value): value is string => value !== undefined)
+                .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+              const refreshed = normalizedKnowledgeCandidate({ ...candidate, createdAt: existing.createdAt,
+                importance: existing.importance, utility: existing.utility, coverage: existing.coverage,
+                ...(expiry ? { expiresAt: expiry } : {}) });
+              this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
+                .run(JSON.stringify(refreshed), sha256(refreshed), job.updatedAt, candidate.knowledgeId);
+            }
           }
           continue;
         }

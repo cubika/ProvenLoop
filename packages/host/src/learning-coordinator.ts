@@ -4,9 +4,10 @@ import type { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
 
 export interface LearningInferenceProvider {
+  readonly timeoutMs?: number;
   readonly identity: { readonly provider: string; readonly model: string; readonly version: string };
   prepare?(window: LearningWindow): void;
-  infer(window: LearningWindow, options: { readonly signal: AbortSignal }): Promise<unknown>;
+  infer(window: LearningWindow, options: { readonly signal: AbortSignal; readonly reserveReviewAttempt?: () => boolean | Promise<boolean> }): Promise<unknown>;
 }
 export interface LearningCoordinatorOptions {
   readonly store: CanonicalSqliteStore; readonly provider: LearningInferenceProvider;
@@ -22,7 +23,7 @@ export interface LearningRunResult {
 
 export class LearningCoordinator {
   public constructor(private readonly options: LearningCoordinatorOptions) {
-    for (const [name, value, maximum] of [["dailyLimit", options.dailyLimit ?? 200, 10_000], ["candidateDays", options.candidateDays ?? 30, 365], ["deadlineMs", options.deadlineMs ?? 60_000, 60_000]] as const) {
+    for (const [name, value, maximum] of [["dailyLimit", options.dailyLimit ?? 200, 10_000], ["candidateDays", options.candidateDays ?? 30, 365], ["deadlineMs", options.deadlineMs ?? options.provider.timeoutMs ?? 60_000, 120_000]] as const) {
       if (!Number.isInteger(value) || value <= 0 || value > maximum) throw new RangeError(`Invalid learning ${name}.`);
     }
   }
@@ -137,7 +138,7 @@ export class LearningCoordinator {
           retryAfter: new Date(Date.UTC(time.getUTCFullYear(), time.getUTCMonth(), time.getUTCDate() + 1)).toISOString() }, pending.state);
         return evidenceResult ?? { status: "paused", jobId: pending.jobId, reason: "daily_budget" };
       }
-      const deadlineMs = this.options.deadlineMs ?? 60_000;
+      const deadlineMs = this.options.deadlineMs ?? provider.timeoutMs ?? 60_000;
       const running: LearningJob = { ...pending, state: "running", attempts: Math.min(3, attempts + 1), updatedAt: time.toISOString(),
         ...(recoveryAvailable && pending.inputBudgetRecovery !== undefined ? { inputBudgetRecovery: { ...pending.inputBudgetRecovery, retryDispatched: true } } : {}),
         deadline: new Date(time.getTime() + deadlineMs).toISOString(), provider: provider.identity.provider, model: provider.identity.model, extractorVersion: `correction-extractor-1/${provider.identity.version}` };
@@ -161,7 +162,10 @@ export class LearningCoordinator {
         inference = Promise.resolve().then(() => {
           if (providerSignal.aborted) throw new Error("Learning inference cancelled.");
           providerCalled = true;
-          return provider.infer(window, { signal: providerSignal });
+          return provider.infer(window, { signal: providerSignal, reserveReviewAttempt: async () => {
+            if (providerSignal.aborted || !await this.options.enabled() || store.hasActiveDeletion() || !store.learningSourcesCurrent(window)) return false;
+            return store.reserveLearningAttempt(now(), this.options.dailyLimit ?? 200);
+          } });
         });
         const output = await Promise.race([inference, timeout, aborted]);
         clearTimeout(timer);
@@ -187,7 +191,7 @@ export class LearningCoordinator {
         const candidates = proposals.map((proposal) => learningKnowledgeCandidate(window, proposal, receipts.find((entry) => entry.proposalId === proposal.proposalId)));
         const waiting = proposals.some((proposal) => !receipts.some((receipt) => receipt.proposalId === proposal.proposalId) &&
           learningRecoveryMayGainEvidence(proposal, window.events, this.options.contracts?.() ?? []));
-        const updated: LearningJob = { ...running, state: waiting ? "waiting_evidence" : "evaluated", updatedAt: now().toISOString(),
+        const updated: LearningJob = { ...running, ...(parsed.distillation ? { distillation: parsed.distillation } : {}), state: waiting ? "waiting_evidence" : "evaluated", updatedAt: now().toISOString(),
           result: proposals.length === 0 ? "no_rule" : receipts.length > 0 ? "qualified" : "candidate" };
         const committed = store.commitLearningResult({ job: updated, proposals, receipts, candidates });
         return committed ? { status: "evaluated", jobId: running.jobId, proposals: proposals.length + (evidenceResult?.proposals ?? 0), qualified: receipts.length + (evidenceResult?.qualified ?? 0) } : evidenceResult ?? { status: "cancelled", jobId: running.jobId };
@@ -196,17 +200,21 @@ export class LearningCoordinator {
         const cancelled = this.options.signal?.aborted === true;
         const disabled = !await this.options.enabled();
         const code = error instanceof Error && "code" in error ? error.code : undefined;
+        const inputTooLarge = code === "input_too_large";
         const unavailable = code === "signed_out" || code === "rate_limited" || code === "unavailable" ? code : undefined;
-        const pauseReason = cancelled ? "host_stopped" : disabled ? "learning_disabled" : unavailable;
+        const pauseReason = cancelled ? "host_stopped" : disabled ? "learning_disabled" : code === "daily_budget" ? "daily_budget" : unavailable;
         const finished = now();
         const state = !store.learningSourcesCurrent(window) ? (store.learningSourcesExist(window) ? "superseded" : "cancelled")
           : Date.parse(running.expiresAt) <= finished.getTime() ? "archived" : pauseReason ? "paused" : "failed";
         store.transitionLearningJob({ ...running, state, attempts: !providerCalled || pauseReason ? attempts : running.attempts,
+          ...(inputTooLarge ? { failureKind: "input_too_large" as const } : {}),
           ...(!providerCalled && pending.inputBudgetRecovery !== undefined ? { inputBudgetRecovery: pending.inputBudgetRecovery } : {}),
           updatedAt: finished.toISOString(), result: "error", error: sanitizeDiagnostic(error).slice(0, 512),
-          ...(pauseReason ? { pauseReason, retryAfter: new Date(finished.getTime() + (unavailable === "signed_out" ? 300_000 : unavailable ? 60_000 : 0)).toISOString() } : {}),
+          ...(pauseReason ? { pauseReason, retryAfter: pauseReason === "daily_budget"
+            ? new Date(Date.UTC(finished.getUTCFullYear(), finished.getUTCMonth(), finished.getUTCDate() + 1)).toISOString()
+            : new Date(finished.getTime() + (unavailable === "signed_out" ? 300_000 : unavailable ? 60_000 : 0)).toISOString() } : {}),
         }, "running");
-        return evidenceResult ?? { status: cancelled ? "cancelled" : disabled ? "disabled" : unavailable ? "paused" : "failed", jobId: running.jobId, reason: pauseReason ?? "inference_or_validation_failed" };
+        return evidenceResult ?? { status: cancelled ? "cancelled" : disabled ? "disabled" : pauseReason ? "paused" : "failed", jobId: running.jobId, reason: pauseReason ?? "inference_or_validation_failed" };
       } finally {
         clearTimeout(timer);
         if (abortListener) providerSignal.removeEventListener("abort", abortListener);

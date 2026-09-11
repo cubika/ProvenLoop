@@ -18,6 +18,7 @@ import {
   type RetrievedKnowledge,
 } from "./types.js";
 import { learningApplicable } from "./learning-applicability.js";
+import { knowledgeProjectionFromCandidate } from "./projection.js";
 
 const eligible = (
   candidate: KnowledgeCandidate,
@@ -94,6 +95,7 @@ export class CanonicalKnowledgeRetriever {
     const applicableById = new Map<string, boolean>();
     const sourceUseById = new Map<string, LearningSourceUse>();
     const learningApplicabilityById = new Map<string, readonly string[]>();
+    const projectionsById = new Map<string, ReturnType<typeof knowledgeProjectionFromCandidate>>();
     const deadline =
       options.timeoutMs === undefined
         ? undefined
@@ -149,6 +151,7 @@ export class CanonicalKnowledgeRetriever {
           unevaluatedCandidates,
         );
         for (const candidate of unevaluatedCandidates) {
+          projectionsById.set(candidate.knowledgeId, knowledgeProjectionFromCandidate(candidate, evidence.learningProposals));
           const sourceUse = learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords);
           if (sourceUse) sourceUseById.set(candidate.knowledgeId, sourceUse);
           const sourceApplicable = sourceUse !== undefined && query.worktree !== undefined &&
@@ -186,13 +189,15 @@ export class CanonicalKnowledgeRetriever {
       }
       for (const hit of hits) {
         const candidate = byId.get(hit.knowledgeId);
+        const projection = projectionsById.get(hit.knowledgeId);
         if (
           candidate === undefined ||
           deleted.has(candidate.knowledgeId) ||
           !eligible(candidate, query, now, sourceUseById.get(candidate.knowledgeId)) ||
           applicableById.get(candidate.knowledgeId) !== true ||
           admissionById.get(candidate.knowledgeId)?.admitted !== true ||
-          hit.sourceDigest !== sha256(candidate)
+          hit.sourceDigest !== projection?.sourceDigest ||
+          sha256(hit.searchAliases ?? []) !== sha256(projection?.searchAliases ?? [])
         ) {
           continue;
         }
@@ -200,6 +205,7 @@ export class CanonicalKnowledgeRetriever {
         retrieved.push({
           ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
           ...(sourceUse?.researchSummary ? { researchSummary: sourceUse.researchSummary } : {}),
+          ...(sourceUse?.distilledLesson ? { distilledLesson: sourceUse.distilledLesson } : {}),
           ...(sourceUse?.mode === "reference" && sourceUse.commitSha && query.headSha ? { reference: {
             capturedCommitSha: sourceUse.commitSha, currentCommitSha: query.headSha,
             revisionStatus: sourceUse.commitSha === query.headSha ? "unchanged" as const : "changed" as const,
@@ -207,6 +213,7 @@ export class CanonicalKnowledgeRetriever {
           } } : {}),
           candidate: learningApplicabilityById.has(candidate.knowledgeId)
             ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
+          ...(projection?.searchAliases ? { searchAliases: projection.searchAliases } : {}),
           score: hit.score,
         });
         if (retrieved.length === query.limit) {

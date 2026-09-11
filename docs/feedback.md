@@ -1,10 +1,11 @@
 # Product feedback backlog
 
-Feedback was collected on 2026-09-10 and the user then requested implementation.
-The entries preserve the reported problems and proposals. The implementation
-record below states what the development checkout now covers and what remains
-unverified. These changes are included in the 0.15 preview; existing installations
-keep their behavior until upgraded.
+Feedback collection began on 2026-09-10, followed by an implementation request.
+Later entries retain their own dates and status. FB-001 through FB-006 describe
+changes included in the 0.15 preview; FB-007 remains unreleased. FB-008 records a
+product requirement with an unreleased implementation update below; it is not a
+general quality-pass claim.
+The dated implementation records distinguish source changes from verified outcomes.
 
 | ID | Collected | Topic | Status | Implementation |
 |---|---|---|---|---|
@@ -15,6 +16,7 @@ keep their behavior until upgraded.
 | FB-005 | 2026-09-10 | Duplicate knowledge, incorrect repository scope, and task context stored as repository rules | Implemented with limits | Identity stability, duplicate suggestions, scope correction, and task isolation |
 | FB-006 | 2026-09-10 | Captured-event growth, count explanations, and retention controls | Implemented with limits | Growth/storage metrics and reviewed retention cleanup; reported database unavailable |
 | FB-007 | 2026-09-11 | Oversized learning input repeated three times | Implemented, unreleased | Select source excerpts, preflight request size, and recover eligible old failures once |
+| FB-008 | 2026-09-11 | Distillation quality, noise, and missed valuable learning | Implemented first slice, unreleased; broader quality validation pending | Separate quality review, concise delivery, mixed-message learning, source-change recovery, bilingual discovery, and repository readiness |
 
 FB-002 adds concrete examples and changes the implementation order: establish
 useful retention before widening reference delivery. Source accuracy and lasting
@@ -870,3 +872,104 @@ full unit run also exercised concurrently changing MCP diagnostics; its two
 temporary mock failures passed on the final 18-test rerun. A Windows plugin
 fixture rename failure passed on a separate 52-test rerun. This change remains
 unreleased and does not modify the existing 0.15 installation.
+
+## FB-008: Distillation quality, noise, and missed learning
+
+### User feedback
+
+The following is an English summary of the user's 2026-09-11 feedback, not a verbatim
+quotation:
+
+- Actual use already leaves the user uncertain whether retained experience contains
+  noise and whether valuable learning was missed. Both concerns matter at once.
+- Extraction should derive a more reusable lesson from the work instead of simply
+  retaining original text.
+- The experience should feel effortless, with the final collection containing the
+  useful substance rather than requiring the user to sort and rewrite it.
+- Retained learning should be close to something the user would put in Copilot
+  instructions, stored in a structured form. The product's central job is distillation.
+- In a follow-up, the user defined the desired experience as an agent that becomes
+  noticeably more capable with use. No discernible improvement or worsening behavior
+  would fail that expectation, even if the product stores more experience.
+
+### Product interpretation
+
+This refines the earlier investigation-reuse positioning. Fewer repeated investigations
+and corrections remain the desired benefit; the product must earn it by selecting and
+formulating high-value guidance. Source-preserving reference delivery addressed an
+earlier loss of useful material but does not by itself meet this output standard.
+The report establishes a user experience problem, not measured noise or miss rates.
+
+The [distillation contract](product-design.md#45-distillation-is-the-product) separates
+final lessons from evidence and intermediate candidates. It requires a concise useful
+conclusion, supported scope and conditions, and enough rationale to explain future
+use. Original quotations remain evidence; rewriting must not invent a cause, broaden
+scope, or inherit a user-confirmed authority label. An existing precise convention
+can already be suitable without changing its wording.
+
+Instruction quality is a content benchmark. This feedback does not request writing
+Copilot instruction files, activating every extracted rule, or deleting existing
+history. Routine manual filtering or approving every candidate would shift the
+product's work back to the user. Optional inspection and correction remain necessary.
+
+### Acceptance direction
+
+Evaluate retained noise and missed valuable lessons separately using independently
+reviewed work samples. Include investigation findings without a user correction,
+valuable one-off discoveries, existing-instruction duplicates, and cases with no
+worthwhile lesson. Measure abstraction quality, conditions retained, and the amount
+of substantive user rewriting required. Distinguish capture omissions, extraction
+misses, retention rejection, and later retrieval misses.
+
+The [evaluation plan](product-validation.md#97-distillation-quality-noise-and-missed-learning)
+defines these checks. The initial feedback record was a requirement; the development
+update below records the implemented subset and its validation limits.
+
+The follow-up adds [improvement over time](product-validation.md#98-improvement-as-experience-accumulates)
+as the outcome criterion. Evaluate whether accumulated lessons improve later decisions
+and reduce supervision, while recording unchanged results and regressions. This is a
+requirement for observable benefit, not evidence that such improvement has occurred.
+
+### Development update: reviewed distillation and usable delivery
+
+The unreleased schema 18 implementation adds a separate bounded model review for new
+untyped conventions and references. It assesses each proposed lesson against its
+captured sources and full anchor message, including exceptions outside the selected
+quotation. Six criteria must pass before retention: supported meaning, correct scope,
+lasting value, actionability, concision, and no redundant concept within the batch.
+The host binds the assessment to proposal content, source digests, and review metadata.
+The extraction model cannot supply its own pre-approved review.
+
+Accepted lessons remain inferred. They do not acquire user confirmation or a recovery
+receipt. Existing path, source-role, secret, deletion, and applicability checks still
+apply. Both extraction and review consume the shared daily request budget. Each model
+request has a 45-second limit; the provider has a 100-second total budget for both
+stages. Failed review cannot silently fall back to unreviewed concise guidance.
+
+The changes address several observed implementation gaps:
+
+- A whole-message keyword filter no longer discards an independently reviewed lasting
+  requirement merely because another sentence concerns the current task.
+- Reviewed conventions and user-origin references deliver their distilled lesson,
+  including complete conditions, rather than repeating the whole user message or
+  dropping the proposed conclusion. Source excerpts remain available through Explain.
+- Source enrichment schedules a fresh review instead of copying a stale assessment
+  into an already-finished job. User controls, expiry, and attempt limits survive.
+- English concept keys from bound reviews participate in search, allowing an English
+  task to discover a Chinese lesson without translating its operative content.
+- Automatic hook context includes applicability and scope as well as the lesson.
+- Learning details record proposed, accepted, and rejected counts with bounded reasons.
+  Installation and the viewer distinguish capture, extraction, and repository reuse
+  readiness instead of equating an enabled setting with successful use.
+
+This release candidate does not bulk-rewrite old knowledge, solve general semantic
+deduplication, or establish population-level precision, recall, or improvement over
+time. Current exact-revision recovery rules retain their existing proof requirements.
+No user's installed database was migrated during development.
+
+Actual Copilot provider checks on authored cases retained a documentation convention
+and a generated-client workflow, while a temporary setting request produced no lesson.
+A separate before/after documentation task changed from Chinese output to English
+after receiving the distilled convention. These bounded examples and the runtime
+regressions are recorded in [agent experience validation](agent-experience-validation.md#reviewed-distillation-development-check-2026-09-11);
+they do not establish broad semantic quality or sustained productivity gains.

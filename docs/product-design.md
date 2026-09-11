@@ -1,18 +1,26 @@
 # ProvenLoop Product Design
 
-> **A correction should keep helping; each outcome should improve the next attempt.**
+> Distill engineering experience into concise, reusable guidance.
 
 **Status:** Canonical Product Design
-**Version:** 2.1
-**Updated:** 2026-09-08
+**Version:** 2.3
+**Updated:** 2026-09-11
 
-**Implementation boundary:** This document includes both product goals and phased designs.
-`0.1.0-alpha.0.12` is a Windows Design Partner Preview evidence candidate with opt-in user/agent learning, Knowledge
-management, local observations, trusted Session authorization, strict native proof chains,
-and bounded current-Session reconciliation. M3-M6 are not current capabilities. Passing
-synthetic regressions does not establish controlled benefit evidence or M0/MVP approval;
-`0.1.0-alpha.1` remains an unapproved quality-release target. Validation of new-version
-artifacts must be retained separately; earlier source-code test results cannot serve as approval.
+**Implementation boundary:** This document includes product goals and phased designs.
+The [0.15 release notes](releases/0.1.0-alpha.0.15.md) describe the published Windows
+Design Partner Preview; dated development updates may describe newer source changes.
+Delayed outcome linking, cross-task retrospectives, evaluated Playbooks, and additional
+Agent adapters remain future work. Source checks and synthetic regressions do not
+establish controlled benefit or M0/MVP approval. `0.1.0-alpha.1` remains an unapproved
+quality-release target, and each release requires its own acceptance evidence.
+
+**Product requirement update (2026-09-11):** The product is the process of extracting
+high-value lessons from ordinary work. Retained learning should approach the quality
+of guidance a developer would deliberately include in Copilot instructions. Raw
+quotations preserve evidence but do not, by themselves, satisfy that standard.
+[FB-008](feedback.md#fb-008-distillation-quality-noise-and-missed-learning) records the
+reported noise and missed-learning concerns. Its unreleased implementation adds bounded
+model review and concise delivery; the broader quality bar remains unvalidated.
 
 **First-product requirement update (2026-09-07):** Automatic rule extraction, evidence
 assessment, and later-task reuse after natural-language corrections are required for the
@@ -26,21 +34,22 @@ diagnose storage and retrieval, and are not substitutes for that acceptance.
 
 ## 0. Executive summary
 
-ProvenLoop is a **continuous improvement layer for Coding Agents**, built for individual developers.
+ProvenLoop distills a developer's actual work into concise, reusable guidance. It
+selects what deserves to persist, extracts the supported lesson, and preserves the
+conditions that make it useful. The intended benefit is less repeated investigation
+and rework, with little effort spent reviewing noise or manually recovering missed
+lessons. Source evidence remains available for inspection and correction.
+Users should experience the agent becoming more capable in their project as useful
+experience accumulates: less supervision, better decisions, and fewer repeated mistakes.
+Distillation succeeds when it improves later behavior, not merely the stored text.
 
-Users continue to work with GitHub Copilot CLI, Claude Code, Codex, or other Coding Agents.
-Outside those tools, ProvenLoop maintains continuity memory, engineering evidence, and
-learning capabilities that belong to the user:
+The initial product serves individual developers using GitHub Copilot CLI on Windows.
+Carrying experience between agent vendors is a later expansion. The
+[positioning](#4-product-positioning) leads with user benefits; the
+[competitive research](research/competitive-analysis.md#1-summary-of-findings) records
+overlap with existing memory products and the evidence needed to establish an advantage.
 
-```text
-Stop explaining the same Context repeatedly
-              +
-Stop correcting the same errors repeatedly
-              +
-Keep what has been learned when switching Agents
-```
-
-ProvenLoop pursues both efficiency and quality through three connected engines:
+The complete design organizes this work into three engines:
 
 1. **Continuity Memory**
    - Addresses efficiency.
@@ -53,7 +62,7 @@ ProvenLoop pursues both efficiency and quality through three connected engines:
    - Addresses quality.
    - Links user corrections, tests, builds, Review, CI, Revert, and later Bug Fixes to the
      original work traces to identify methods that worked and conclusions later overturned.
-   - This is ProvenLoop's main differentiator and primary area of in-house development.
+   - This is a product differentiation hypothesis and a primary area of in-house development.
 
 3. **Deep Retrospective**
    - Finds lessons that nobody stated explicitly but that work experience can reveal.
@@ -93,14 +102,15 @@ ProvenLoop's final criterion concerns outcomes, not the volume of records:
 > development outcomes and safely carry verified lessons into future Sessions, Repositories,
 > and Agents.
 
-Today's Coding Agents are capable, but often work as though they need onboarding each time:
+The target users still encounter recurring costs despite existing agent memory and
+project instructions. Discovery must establish which of these problems remain:
 
-- Sessions lack continuity.
+- Useful investigation findings are missed in later Sessions.
 - Important background must be explained again after `/clear`.
-- Previous corrections and preferences are usually lost when switching Agents.
+- Previous corrections and preferences need to be transferred when switching Agents.
 - An Agent may remember a conversation without knowing that a Revert several days later
   showed a problem with the approach.
-- Memory can retrieve history without knowing whether it is correct, outdated, or useful.
+- Retrieved history may have valid sources without establishing that an approach improved outcomes.
 - Skills can reuse procedures but may also preserve mistakes when they lack reliable
   sources, baseline evaluation, and rollback mechanisms.
 
@@ -158,7 +168,10 @@ Typical characteristics:
 - Want Agents to learn from corrections, tests, Review, and later Bugs.
 - Want local data storage by default and visibility into what the system has learned.
 
-The first supported Agent is GitHub Copilot CLI.
+The first supported Agent is GitHub Copilot CLI. Recruit initial Design Partners who
+maintain the same repository over time and still repeat investigations or corrections
+weekly after using native memory and project instructions. Frequent agent use alone
+does not establish a need for another learning layer.
 
 Support for multiple Agents is part of the product direction, with capabilities added progressively:
 
@@ -227,6 +240,8 @@ that they belong to the same task, or whether later outcomes overturned earlier 
 
 Recurring costs include:
 
+- Repeating code reads and diagnostic steps from an earlier investigation.
+- Rediscovering why an earlier approach was rejected or when a workaround applies.
 - Pasting the same background again.
 - Explaining again that the project uses Vitest rather than Jest.
 - Asking again not to modify generated files.
@@ -236,19 +251,16 @@ Recurring costs include:
 
 ProvenLoop's central product principle is:
 
-> **A verified correction should be a one-time investment, not a permanently recurring cost.**
+> Time spent establishing a finding or correcting an error should help with later work.
 
-### 3.3 Memory and learning are different
+### 3.3 Engineering experience and memory infrastructure
 
-Memory can answer:
+Existing memory products already support combinations of extraction, retrieval,
+provenance, feedback, and lifecycle management. Some native products validate stored
+facts against current code. These capabilities overlap with ProvenLoop and may be
+reused through a backend. See the [dated comparison](research/competitive-analysis.md).
 
-```text
-What happened before?
-What did the user say?
-What information might be relevant to the current project?
-```
-
-Learning must also answer:
+ProvenLoop organizes those capabilities around engineering work and asks:
 
 ```text
 What happened later?
@@ -258,14 +270,17 @@ Does using it improve later tasks?
 Should it be kept, revised, down-ranked, or deleted?
 ```
 
-This distinction defines the boundary between ProvenLoop and ordinary Agent Memory.
+The product hypothesis is that connecting work, evidence, and later use reduces the
+developer's total effort beyond their existing memory setup. A source citation, a
+successful operation, and a measured improvement support different claims. None alone
+establishes all three.
 
-### 3.4 Correction summaries are not deep learning
+### 3.4 Learning from investigations and later outcomes
 
-If ProvenLoop only saves the mistakes users point out, it remains a more automated form of Memory.
-
-Deep learning requires the system to discover patterns across traces that the original
-records do not state directly:
+Natural-language corrections are one source of experience. Agent investigations and
+self-directed recovery can also produce useful findings without a user correction.
+The later retrospective stage aims to discover patterns across traces that the
+original records do not state directly:
 
 ```text
 Several apparently independent failures
@@ -285,7 +300,7 @@ But several Episodes show:
 3. A later build regenerated the file and overwrote the changes.
 4. Repository configuration and official tool documentation show that the actual input is a Schema.
 
-ProvenLoop can propose:
+In that planned retrospective workflow, ProvenLoop could propose:
 
 > Before modifying a file of unknown origin, check whether it is generated and locate its generation input.
 
@@ -299,49 +314,51 @@ checks, and later tasks support it.
 
 ### 4.1 One-sentence positioning
 
-> ProvenLoop is a continuous improvement layer for Coding Agents, built for individual
-> developers: it reuses existing Memory to maintain work continuity and uses software
-> outcome feedback to help multiple Agents reduce repeated mistakes based on actual results.
+> ProvenLoop distills everyday engineering work into concise, reusable guidance so
+> coding agents can avoid repeated investigation and rework.
 
 ### 4.2 Main benefits
 
-#### 1. Less repeated explanation: Continuity
+#### Continue from earlier investigations
 
-Automatically retrieve a small amount of Context relevant to the current task after a
-new Session, `/clear`, or an Agent switch.
+Retain useful code relationships, eliminated causes, and findings from actual agent
+work so a later task can start from that evidence. For example, an earlier build
+investigation may identify a generation step as the cause; the next related task
+can check that finding before repeating the whole investigation. A user correction
+or an explicit request to remember is not a prerequisite.
 
-#### 2. Learn from failures as well as successes: Outcome Learning
+Captured references remain subject to source availability, scope, and freshness
+checks. A retained finding supplies a starting point; its interpretation may still
+need verification against current code.
 
-Passing tests, Review corrections, CI failures, Reverts, and later Bugs all change how
-well a lesson is supported.
+#### Apply a correction in later similar work
 
-#### 3. Study experience beyond recording it: Deep Retrospective
+A developer corrects the agent in ordinary language. ProvenLoop connects the correction
+to relevant operations and evidence, then supplies eligible guidance when a later task
+needs it. The intended benefit is less repeated supervision and less manual rule
+maintenance. Supported automatic recovery proofs currently cover narrow invocation
+and repository test-command cases; broader lessons require further verification.
 
-ProvenLoop actively compares successful and failed traces across Sessions and time to
-find common patterns, hidden assumptions, missing checks, and inefficient strategies.
-When needed, it gathers more evidence instead of waiting for the user to supply an answer.
+#### Check and control reused experience
 
-#### 4. Traceable evidence for every suggestion: Proof Chain
+Users can inspect where a rule came from, what its evidence supports, and where it
+applies. They can correct its content or scope and stop its use. Conflicts, expiry,
+and revocation affect delivery. Automatically discovering later PR, CI, or revert
+evidence to revise earlier lessons remains planned outcome-learning work.
 
-Every Knowledge item and Playbook can answer:
+Use the following order when presenting the product:
 
-- Which Sessions and Episodes did it come from?
-- Which tests, Commits, Reviews, or user feedback support it?
-- Is there counterevidence?
-- Why does it apply now?
-- What happened after its last use?
+| Role | Message | Evidence boundary |
+|---|---|---|
+| Primary benefit | Less repeated investigation and rework | Requires comparison with the user's existing workflow |
+| How users receive it | Useful lessons are distilled during normal work and supplied when relevant | Capture and delivery paths exist; instruction-quality distillation and reliable benefit remain to be established |
+| Basis for trust | Sources are inspectable, scope is explicit, and guidance can be withdrawn | Existing controls support use; these features are also present in competing products |
+| Later expansion | Keep useful experience when switching agents | Additional adapters and transfer acceptance remain future work |
 
-#### 5. Keep learning when switching Agents: Portable Intelligence
-
-Personal preferences, project knowledge, and verified working methods are independent
-of any Agent vendor. Different Agents use the same personal learning results through
-shared retrieval, explanation, and Feedback interfaces.
-
-#### 6. Demonstrate improvement: Measured Improvement
-
-ProvenLoop establishes baselines, Held-out replays, and online metrics for Memory,
-Knowledge, and Playbooks. An improvement without comparable results does not count
-as product success, regardless of claims that the system has become smarter.
+Deep retrospectives and generated Skills are implementation paths toward these
+benefits. They do not take priority over a working investigation or correction reuse
+scenario. Local storage and a Viewer support adoption but are insufficient evidence
+of a competitive advantage.
 
 ### 4.3 Product feedback loop
 
@@ -362,6 +379,115 @@ flowchart LR
 
 The feedback loop works only when outcomes return to the system. Saving Memory in
 one direction does not close the loop.
+
+### 4.4 Competitive position and first demonstration
+
+The proposed difference is a complete engineering-experience workflow: determine what
+a task established, preserve its conditions and sources, reuse it in later work, and
+measure the result. Automatic memory and retrieval overlap with open-source plugins
+and native agents. ProvenLoop must show an incremental benefit over those alternatives;
+this product focus is not a claim of unique technology or established superiority.
+
+The first demonstration should show one real investigation or correction, followed by
+a related task in a new Session without a reminder to retrieve memory. Show the source,
+the experience actually delivered, and the agent's subsequent actions. Include an
+unrelated task and a normal code change to test the limits. Any claimed reduction in
+work needs a comparable baseline. See the
+[Design Partner validation plan](product-validation.md#96-validating-the-product-promise-with-design-partners).
+
+In the current preview, sources, controls, scoped retrieval, and narrow recovery
+verification support that demonstration. General semantic learning quality, ongoing
+benefit as code evolves, delayed result-driven revision, and cross-agent reuse remain
+open work. Messaging must keep those boundaries visible.
+
+### 4.5 Distillation is the product
+
+The user's reported experience raises two failures at once: low-value material may
+enter the knowledge collection, while useful experience may never be retained.
+Reducing one by ignoring the other does not satisfy the product. The desired result
+is a small, useful collection that the developer trusts without routinely sorting it.
+
+The output quality bar is guidance a developer would deliberately place in Copilot
+instructions for the relevant scope, with little substantive rewriting. Structured
+storage adds applicability, evidence, and lifecycle information. This is a content
+standard, not a request to write instruction files or grant model-authored text the
+authority of user instructions.
+
+#### What a distilled lesson must establish
+
+| Question | Required result |
+|---|---|
+| What should a later agent do or understand? | A concise action, decision rule, or durable project constraint that changes relevant work |
+| When does it apply? | A supported trigger and scope, with material exceptions or conditions that require rechecking |
+| Why retain it? | A specific future use and a rationale grounded in the work, without inventing a cause or adding generic advice |
+| What supports it? | Separate source references and exact evidence, preserving authorship, uncertainty, and verification level |
+| Does it add anything? | Useful meaning beyond existing instructions and retained lessons; equivalent evidence should enrich the existing concept |
+
+Abstraction should identify the reusable decision behind an episode. It should remove
+incidental chronology and one-off identifiers while preserving details needed to act
+correctly. Broader wording must not imply broader scope or stronger proof. A precise
+existing user convention may already meet the standard and need no paraphrase.
+
+For example, suppose an investigation establishes that a repository regenerates a
+client from a schema and that generation overwrote a direct client edit. A suitable
+lesson could be: "For client contract changes in this repository, edit the schema
+and regenerate the client; direct edits to generated client files will be overwritten."
+The original paths and tool output remain supporting evidence. "The client edit was
+overwritten yesterday" is a record of the incident; "always inspect everything before
+editing" loses the useful decision and exceeds the evidence.
+
+#### Product collection and supporting material
+
+Captured events, exact quotations, and intermediate proposals support extraction and
+auditing. They are distinct from the final learning collection. An accurate excerpt
+can be necessary evidence without being a worthwhile lesson. Unresolved proposals
+may remain available for bounded processing or deliberate inspection under the
+existing retention and deletion rules; they must not inflate the apparent amount
+learned or force the user to triage every item.
+
+The current reference mode preserves findings and sources for later checking. It is
+an intermediate capability, not proof that instruction-quality distillation is solved.
+The schema 18 development update adds separately reviewed lessons to this path while
+retaining the inferred evidence label. See the [implementation record](feedback.md#development-update-reviewed-distillation-and-usable-delivery).
+This requirement does not bulk-promote, rewrite, or delete existing records. Model
+summaries retain their authorship and evidence tier, and delivery still follows the
+existing authority and applicability rules.
+
+#### Low-effort use and quality assessment
+
+Discovery must cover valuable experience even without an explicit correction, a
+failed command, or repeated occurrences. Final retention should reject noise,
+redundant summaries, transient details, and unsupported generalizations. Measure
+missed valuable opportunities across capture, selection, extraction, retention, and
+later retrieval; an empty collection cannot pass as high quality merely by avoiding
+incorrect entries.
+
+Normal use should require neither a remember ritual nor routine rewriting, cleanup,
+and candidate approval. Keep optional inspection and correction accessible, and
+surface actionable exceptions without per-item interruptions. The
+[distillation evaluation](product-validation.md#97-distillation-quality-noise-and-missed-learning)
+assesses output quality, coverage, abstraction, and user effort separately. The
+implemented subset does not establish that the current preview meets all these goals.
+
+### 4.6 The agent should improve with experience
+
+The user-facing success criterion is a noticeable improvement in the agent's work
+over time. In familiar project situations, it should need fewer repeated explanations,
+start from useful prior findings, apply a lesson to a related problem, and recognize
+when old guidance no longer fits. Progress must be visible in ordinary tasks without
+requiring users to inspect a knowledge dashboard.
+
+Distillation, timely scoped delivery, and revision from later evidence must work
+together. Well-written lessons that never change behavior fail the product promise.
+More stored knowledge or more confident responses do not establish better performance.
+Noise, stale rules, and excessive context can make the agent worse and must be detected.
+
+This is a goal of sustained improvement on relevant work, not a guarantee that every
+task improves or that the underlying model gains general intelligence. Track the
+developer's concrete experience alongside matched-task outcomes. Use the
+[longitudinal evaluation](product-validation.md#98-improvement-as-experience-accumulates)
+to distinguish improvement, no discernible effect, and degradation, including the
+effort required to maintain the learning collection.
 
 ---
 
@@ -504,6 +630,10 @@ Types:
 - Engineering lessons applicable under specific conditions.
 
 Knowledge aggregates by stable Topic instead of creating a permanent record for every discovery.
+The [distillation contract](#45-distillation-is-the-product) defines the intended
+quality of final Knowledge Cards. Captured evidence and unresolved references are
+supporting material, even where the current implementation stores them alongside
+knowledge candidates.
 
 Example:
 
@@ -872,6 +1002,11 @@ No wrapper command or additional model API Key is required. Automatic extraction
 
 ### 9.2 First use
 
+The first-use design must distinguish capture readiness, learning readiness, and
+automatic reuse in the current repository. An enabled capability does not establish
+that repository hooks are approved or a new Session has loaded them. Guide users
+through those prerequisites before asking them to assess the value of learning.
+
 The default workflow does not scan history and directly generate long-term knowledge. Initial acceptance starts with a real correction during normal work:
 
 1. The Agent makes an incorrect tool call or operation in the target repository, and the user corrects it directly in natural language.
@@ -881,6 +1016,11 @@ The default workflow does not scan history and directly generate long-term knowl
 5. The user can inspect provenance, correct, disable, or delete the rule. The rule must not be misapplied in other repositories or inapplicable tasks.
 
 The existing `remember` -> retrieval in a new Session -> Explain workflow remains available for diagnosis and manual management, but cannot replace this automatic-learning acceptance test. See the [README first-use workflow](../README.md#first-useful-workflow) for executable commands and released-version limitations.
+
+Also test investigation reuse without a user correction: capture a supported finding,
+start a later related task, and observe whether the agent uses the source appropriately.
+The [product validation scenarios](product-validation.md#96-validating-the-product-promise-with-design-partners)
+cover the first useful action, repeated investigation, and normal repository changes.
 
 Optional historical import remains a future design, not a full-history ingestion capability in 0.10. Current automatic reconciliation covers only the observation window of the trusted SDK's current Session. Missing workspace metadata produces a diagnostic and a skip, without guessing paths. Future optional historical import will only:
 
@@ -1129,6 +1269,10 @@ Model self-assessment is not independent evidence of success.
 
 Both efficiency and quality are final goals. A combined score must not hide the trade-offs
 between them.
+The customer-level interpretation is sustained improvement as useful experience
+accumulates, assessed through [later-task behavior and user experience](product-validation.md#98-improvement-as-experience-accumulates).
+Extraction quality is an intermediate measure; unchanged or worse agent behavior
+does not satisfy the product promise.
 
 #### Quality: correction recurrence rate (RCR)
 
@@ -1275,6 +1419,12 @@ D: Candidate Playbook
 Success in D alone does not establish that the Candidate is effective. It must show a gain
 relative to A, B, or C.
 
+These are component comparisons. Product differentiation also requires a baseline with
+the user's native memory and maintained repository instructions enabled. Compare the
+incremental effect of ProvenLoop with manual instruction updates and a representative
+open-source alternative on a supported host. Include setup and ongoing maintenance in
+total effort; see the [Design Partner plan](product-validation.md#96-validating-the-product-promise-with-design-partners).
+
 ### 12.8 Core Guardrails
 
 The following are the final gates for a mature version and formal release. The more permissive
@@ -1388,6 +1538,8 @@ solutions fall short?
 Deliverables:
 
 - 8-12 Design Partners who match the target profile.
+- Prioritize developers who still repeat investigations or corrections weekly despite
+  native memory and maintained repository instructions.
 - 4-6 weeks of real work samples.
 - Manually assisted Branch Handoff and Correction Guidance prototypes.
 - A baseline of current alternatives: native Memory, Repository instruction files, Memorix,
@@ -1399,6 +1551,10 @@ Acceptance criteria:
 - The target problem recurs weekly for most Design Partners.
 - At least one core scenario provides perceptible value relative to existing alternatives.
 - Users are willing to grant the required local observation permissions.
+
+Use the [Design Partner plan](product-validation.md#96-validating-the-product-promise-with-design-partners)
+to compare total effort, first unprompted reuse, continued use, and willingness to pay.
+These are research questions until the trial produces evidence.
 
 ### F0: Technical and trust feasibility
 
@@ -1721,7 +1877,7 @@ details and restoration limitations.
 The following decisions are fixed in the current version:
 
 1. The final goals include both Memory efficiency and Outcome Learning quality.
-2. Outcome Learning is the main differentiator. Integrate general-purpose Memory where possible.
+2. Outcome Learning is a differentiation hypothesis. Integrate general-purpose Memory where possible and establish incremental benefit through comparisons.
 3. Deep Retrospective is a first-class Outcome Learning capability for actively discovering
    new patterns.
 4. Target users are individual Coding Agent users. Team sharing is out of scope.
@@ -1731,10 +1887,12 @@ The following decisions are fixed in the current version:
 7. An Insight Candidate must distinguish observations, hypotheses, evidence, and counterevidence.
 8. A Knowledge Card is the default learning artifact.
 9. A Proven Playbook is a rare promotion artifact.
-10. Candidates are not automatically injected.
+10. Candidates do not become authoritative guidance merely by being stored. Explicitly
+    assessed reference modes remain distinct from verified rules.
 11. Early versions use Evidence Tier, avoiding falsely precise probabilities unsupported by data.
-12. Inferred Knowledge requires confirmation before use. Verified Knowledge remains subject
-    to Scope and Trigger constraints.
+12. Delivery follows the assessed use mode: bounded conventions and research references
+    retain their inferred label; verified guidance requires supported proof or a distinct
+    user confirmation. Scope and Trigger constraints remain in force.
 13. Valid counterevidence immediately stops automatic use.
 14. Branch Context is generated asynchronously only when state changes that can be carried
     forward occur.
@@ -1750,12 +1908,14 @@ The following decisions are fixed in the current version:
 24. Natural language is not the only control surface. All critical feedback must have
     deterministic actions.
 25. Small Milestones remove risks one at a time without changing the final product vision.
+26. Final learning must meet the distillation standard in section 4.5. Quotation fidelity,
+    useful-opportunity coverage, and instruction-quality output are separate requirements.
 
 ---
 
 ## 16. Product principles
 
-1. **Memory addresses continuity; Outcome Learning and Deep Retrospective address quality.**
+1. **Lead with reduced investigation and rework; evaluate the contribution of each capability.**
 2. **A correction should be a one-time investment.**
 3. **Record lessons and investigate them.**
 4. **Retrospectives may propose new insights, but must not present hypotheses as facts.**
@@ -1765,7 +1925,7 @@ The following decisions are fixed in the current version:
 8. **Knowledge is the default artifact; Playbooks require strict promotion.**
 9. **Every recommendation must retain its Proof Chain.**
 10. **Automatic proposal and automatic activation must remain separate.**
-11. **Correct abstention from injection matters as much as correct retrieval.**
+11. **Avoid noisy guidance and missed learning; evaluate both without trading one away silently.**
 12. **The database may grow, but Context must not grow linearly with it.**
 13. **Every improvement must support comparison.**
 14. **All learning must be correctable, deletable, and reversible.**
@@ -1776,42 +1936,22 @@ The following decisions are fixed in the current version:
 
 ## 17. Final product assessment
 
-The final ProvenLoop product extends beyond a Memory Plugin or Skill Generator. It is a
-continuous improvement system for individual developers that remains independent of any
-specific Agent:
+The current foundation supports a trial of investigation and correction reuse, with
+inspectable sources and user controls. Those capabilities do not yet establish that
+ProvenLoop reduces effort beyond native memory, maintained instructions, or an
+open-source plugin.
 
-```text
-Remember Context that needs to carry forward
-  +
-Recognize when multiple Sessions belong to the same work
-  +
-Use real software outcomes to determine whether a lesson holds
-  +
-Actively discover unstated patterns across multiple experiences
-  +
-Expand the evidence, search for counterexamples, and verify those patterns
-  +
-Bring verified lessons into the next task
-  +
-Prove whether that use produced a benefit
-```
+The next investment should establish instruction-quality distillation on a recurring
+scenario, then supply the lesson without a reminder and observe the next task. Audit
+both retained material and valuable opportunities that produced nothing. Test
+unrelated tasks and code evolution as well as a matching case. Users' review, cleanup,
+and troubleshooting time count against any savings.
 
-Its long-term defensibility comes from six capabilities:
-
-1. **Continuity:** Users do not need to repeat themselves.
-2. **Outcome Learning:** The Agent looks beyond apparent success when learning.
-3. **Deep Retrospective:** The system records what users said and discovers new patterns
-   in their experiences.
-4. **Proof Chain:** Every lesson has provenance and counterevidence.
-5. **Portable Intelligence:** Switching Agents does not lose what has been learned.
-6. **Measured Improvement:** The system can demonstrate that it has improved.
-
-The intended experience is:
-
-> I keep using my Coding Agent as usual. ProvenLoop remembers what I have done, compares
-> those experiences, actively gathers more evidence, and discovers lessons I have not
-> stated explicitly. Over time, I repeat fewer explanations and the Agent repeats fewer
-> mistakes. Even when I switch tools, these verified capabilities remain available.
+Longer-term opportunities include revising lessons from later outcomes, discovering
+patterns across tasks, and carrying experience between agents. Evidence of sustained
+benefit should determine when to expand into those capabilities. The
+[positioning](#4-product-positioning) and [competitive research](research/competitive-analysis.md)
+separate the customer benefit from implementation choices and unproven advantages.
 
 ---
 

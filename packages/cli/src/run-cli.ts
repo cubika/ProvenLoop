@@ -86,6 +86,7 @@ import {
 } from "./observation-summary.js";
 import { invalidateLocalObservationProjection } from "./collect-observations.js";
 import { runUi } from "./run-ui.js";
+import { readLearningReadiness } from "./run-learning.js";
 import { previewRecordsReset, resetAllRecords } from "./reset-records.js";
 
 export interface CliIo {
@@ -153,6 +154,7 @@ const usage = `Usage:
   provenloop disable <capability> [--data-root <directory>]
   provenloop collection <enable|disable> [--data-root <directory>]
   provenloop learning <status|enable|disable|mute|unmute> [--confirm] [--data-root <directory>]
+  provenloop learning status [--cwd <repository-directory>] [--data-root <directory>]
   provenloop learning approve-hooks --cwd <repository-directory> --confirm
   provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop knowledge list [--state <state>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
@@ -1300,7 +1302,8 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
   }
   if (!["status", "enable", "disable", "mute", "unmute"].includes(action ?? "") ||
       hasInvalidOptionValue(args, "--data-root") ||
-      !hasOnlyOptions(args, 2, { values: ["--data-root"], flags: ["--confirm"] })) {
+      (action === "status" && hasInvalidOptionValue(args, "--cwd")) ||
+      !hasOnlyOptions(args, 2, { values: action === "status" ? ["--data-root", "--cwd"] : ["--data-root"], flags: ["--confirm"] })) {
     io.error(usage); return 2;
   }
   if (action === "enable") {
@@ -1323,11 +1326,13 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
             createdAt: job.createdAt, updatedAt: job.updatedAt, expiresAt: job.expiresAt,
             pauseReason: job.pauseReason, retryAfter: job.retryAfter,
             failureKind: job.failureKind, preflightFailures: job.preflightFailures, inputBudgetRecovery: job.inputBudgetRecovery,
+            distillation: job.distillation,
           }));
         } finally { store.close(); }
         io.log(JSON.stringify({
           automaticLearning: resolveAutomaticLearning(state),
           prerequisites: resolveAutomaticLearning(state).prerequisites,
+          readiness: await readLearningReadiness(state, { cwd: option(args, "--cwd") ?? process.cwd(), dataRoot: paths.root }),
           disclosure: AUTOMATIC_LEARNING_DISCLOSURE,
           hostHooks: { ...getCopilotAutomaticLearningHostCapability(state.detectedCopilotVersion),
             permission: "extension-permission-access", extension: "plugin:provenloop:event-capture",

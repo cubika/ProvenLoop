@@ -20,6 +20,7 @@ export interface KnowledgeProjection {
   readonly nonApplicability: readonly string[];
   readonly projectionVersion: 1;
   readonly sourceDigest: string;
+  readonly searchAliases?: readonly string[];
   readonly topicKey: string;
 }
 
@@ -62,6 +63,7 @@ export interface KnowledgeBackend {
 }
 
 export interface CanonicalKnowledgeStore {
+  learningProposals?(knowledgeIds?: readonly string[]): readonly RuleProposal[];
   knowledgeCandidates(
     ids?: readonly string[],
   ): readonly KnowledgeCandidate[];
@@ -144,10 +146,12 @@ export interface KnowledgeRetrievalQuery {
 
 export interface RetrievedKnowledge {
   readonly candidate: KnowledgeCandidate;
+  readonly searchAliases?: readonly string[];
   readonly score: number;
   readonly deliveryMode?: "convention" | "reference";
   readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
   readonly researchSummary?: string;
+  readonly distilledLesson?: string;
   readonly reference?: ReferenceContextMetadata;
 }
 

@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureQueueItemSchema, type LearningJob, type RuleProposal } from "@provenloop/contracts";
 import { createCaptureEnvelope, sha256 } from "@provenloop/domain";
 import { KnowledgeControlService } from "@provenloop/host";
 import { CanonicalSqliteStore, DatabaseSync, readInspection } from "@provenloop/storage-sqlite";
 import { beginUpgradeMaintenance, resolveWindowsProvenLoopPaths } from "@provenloop/platform-windows";
 import { runCli } from "@provenloop/cli";
-import { createDefaultCopilotAdapterState, writeCopilotAdapterState } from "@provenloop/copilot-adapter";
+import { createDefaultCopilotAdapterState, SpawnCommandRunner, writeCopilotAdapterState } from "@provenloop/copilot-adapter";
 import { startUiServer, type UiServer } from "../../packages/cli/src/run-ui.js";
 
 const directories: string[] = [];
 const servers: UiServer[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks(); vi.unstubAllEnvs();
   for (const server of servers.splice(0)) await server.close();
   for (const directory of directories.splice(0)) {
     assert(resolve(directory).startsWith(resolve(process.cwd()) + "\\") || resolve(directory).startsWith(resolve(process.cwd()) + "/"));
@@ -61,6 +62,23 @@ const serve = async (root: string): Promise<UiServer> => { const server = await 
 const getText = async (url: string) => { const response = await fetch(url); return { status: response.status, body: await response.text(), headers: response.headers }; };
 
 describe("local read-only learning explorer", () => {
+  it("explains quality rejections even when extraction retains no proposal", async () => {
+    const data = await fixture(); const database = new DatabaseSync(data.paths.database);
+    try {
+      const stored = database.prepare("SELECT body_json FROM learning_jobs WHERE job_id='job-ui'").get(); assert(stored);
+      const job: LearningJob = { ...JSON.parse(String(stored.body_json)), state: "evaluated", result: "no_rule",
+        distillation: { proposed: 2, accepted: 0, rejected: 2, reasons: ["Repeats the transcript without a future action.", "The source does not support this scope."] } };
+      database.prepare("UPDATE learning_jobs SET state=?,body_json=? WHERE job_id='job-ui'").run(job.state, JSON.stringify(job));
+    } finally { database.close(); }
+    const server = await serve(data.root); const page = await getText(server.url + "jobs/job-ui");
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("Quality review");
+    expect(page.body).toContain("Rejected by quality review</dt><dd>2</dd>");
+    expect(page.body).toContain("Accepted for evidence checks</dt><dd>0</dd>");
+    expect(page.body).toContain("Repeats the transcript without a future action.");
+    expect(page.body).toContain("Accepted proposals still need evidence checks before delivery.");
+  });
+
   it("explains preparation failures and the separate legacy recovery allowance", async () => {
     const data = await fixture();
     const database = new DatabaseSync(data.paths.database);
@@ -141,6 +159,27 @@ describe("local read-only learning explorer", () => {
     expect(detail.body).toContain(`events/${data.sourceId}`);
   });
 
+  it("distinguishes a model-reviewed summary from externally verified guidance", async () => {
+    const data = await fixture();
+    const proposal: RuleProposal = { schemaVersion: 1, proposalId: "proposal-reviewed-ui", jobId: "job-ui", knowledgeId: data.knowledgeId,
+      rule: "Use the package test script from the repository root", trigger: "Running tests", exclusions: ["Other repository"],
+      userSource: { eventId: data.sourceId, quote: "Use the package script" }, sourceDigests: [{ eventId: data.sourceId, digest: "c".repeat(64) }],
+      createdAt: timestamp, expiresAt: "2026-10-01T00:00:00.000Z",
+      distillation: { schemaVersion: 1, inputDigest: "d".repeat(64), reviewDigest: "e".repeat(64), comparisonBasis: "provided_material",
+        criteria: { supported: true, scoped: true, reusable: true, actionable: true, concise: true, nonredundant: true },
+        rationale: "Connects the repository constraint to the next test run.", reviewedAt: timestamp,
+        reviewer: { provider: "fixture", model: "fixture", version: "1" } } };
+    const database = new DatabaseSync(data.paths.database);
+    try { database.prepare("INSERT INTO learning_proposals VALUES (?,?,?,?,NULL)").run(proposal.proposalId, proposal.jobId, proposal.knowledgeId, JSON.stringify(proposal)); } finally { database.close(); }
+    const server = await serve(data.root);
+    const page = await getText(server.url + "knowledge/" + data.knowledgeId);
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("Model-reviewed lesson; not external verification.");
+    expect(page.body).toContain("Connects the repository constraint to the next test run.");
+    expect(page.body).toContain("No supported recovery receipt");
+    expect(page.body).toContain("It does not compare all stored knowledge or project instructions.");
+  });
+
   it("redacts historical secret values in both prose and expandable records", async () => {
     const data = await fixture();
     const secret = "not-a-real-test-secret";
@@ -161,6 +200,33 @@ describe("local read-only learning explorer", () => {
     expect((await getText(server.url)).body).toContain("automatic learning: on (automatic)");
     await writeCopilotAdapterState(data.paths.adapterState, { ...state, automaticLearning: { enabled: false, notificationsEnabled: true } });
     expect((await getText(server.url)).body).toContain("automatic learning: off (explicitly_disabled)");
+  });
+
+  it("shows repository hook blockers before users mistake enabled extraction for automatic reuse", async () => {
+    const data = await fixture(); const initial = createDefaultCopilotAdapterState(new Date());
+    await writeCopilotAdapterState(data.paths.adapterState, { ...initial, installed: true, pluginInstalled: true, pluginEnabled: true,
+      detectedCopilotVersion: "1.0.84-1", capabilities: { ...initial.capabilities, capture: { enabled: true },
+        worker: { enabled: true }, correction_learning: { enabled: true }, retrieval: { enabled: true } } });
+    const copilotHome = join(data.root, "copilot"); await mkdir(copilotHome); vi.stubEnv("COPILOT_HOME", copilotHome);
+    vi.spyOn(SpawnCommandRunner.prototype, "run").mockResolvedValue({ exitCode: 0, stdout: data.root, stderr: "" });
+    const server = await serve(data.root);
+    const blocked = await getText(server.url);
+    expect(blocked.status).toBe(200);
+    expect(blocked.body).toContain("Ready for this repository?");
+    expect(blocked.body).toContain("repository hook approval missing");
+    expect(blocked.body).toContain("approve-hooks --cwd");
+    expect(blocked.body).toContain("Restart Copilot");
+    expect(blocked.body).toContain("Not verified by this check");
+    await writeFile(join(copilotHome, "permissions-config.json"), JSON.stringify({ locations: { [data.root]: {
+      tool_approvals: [{ kind: "extension-permission-access", extensionName: "plugin:provenloop:event-capture" }],
+    } } }));
+    const approved = await getText(server.url);
+    expect(approved.status).toBe(200);
+    expect(approved.body).toContain("configured for next session");
+    expect(approved.body).not.toContain("approve-hooks --cwd");
+    expect(approved.body).toContain("Not verified by this check");
+    expect(approved.body).toContain("With guidance provided");
+    expect(approved.body).toContain("With explicit adoption");
   });
 
   it("rejects unauthenticated, cross-origin, and mutating requests", async () => {

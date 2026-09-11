@@ -5,7 +5,14 @@ It requires canonical schema 16. Use `provenloop upgrade` before opening an olde
 database. See the [release notes](releases/0.1.0-alpha.0.15.md) for this preview
 and its validation limits.
 
-The unreleased input-budget fix uses schema 17. It selects exact source excerpts
+The unreleased distillation work uses schema 18, following the schema 17 input-budget
+fix. It adds a separate model quality review, concise lesson delivery, and recovery
+when captured sources change. Learning details show review counts and reasons;
+knowledge details distinguish model review from external verification. Overview
+checks the repository from which the viewer was launched and explains missing hook
+setup. These diagnostics do not prove that a live session has used a rule.
+
+The input-budget fix selects exact source excerpts
 before model dispatch and checks the complete prompt against both size limits.
 Learning details distinguish preparation failures from model attempts and show
 the one-time recovery request for eligible old input-size failures. An input

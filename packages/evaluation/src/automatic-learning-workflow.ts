@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { z } from "zod";
-import { type LearningWindow, type RuleProposal } from "@provenloop/contracts";
+import { learningDistillationSummarySchema, type LearningDistillationSummary, type LearningWindow, type RuleProposal } from "@provenloop/contracts";
 import { validateLearningResponse, verifyLearningRecovery, sha256 } from "@provenloop/domain";
 import { frozenLearningCorpusSchema, createFrozenLearningCorpus, type FrozenLearningCorpus } from "./automatic-learning-corpus.js";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
@@ -79,8 +79,9 @@ const loadLabels = async (paths: readonly string[], corpus: FrozenLearningCorpus
   return labels;
 };
 export interface FrozenLearningProvider {
+  readonly timeoutMs?: number;
   readonly identity: { readonly provider: string; readonly model: string; readonly version: string };
-  infer(window: LearningWindow, options: { readonly signal: AbortSignal }): Promise<unknown>;
+  infer(window: LearningWindow, options: { readonly signal: AbortSignal; readonly reserveReviewAttempt?: () => boolean | Promise<boolean> }): Promise<unknown>;
 }
 const rejectionReasonSchema = z.enum(["schema_invalid", "response_budget", "sensitive_content", "predicate_conflict",
   "source_quote", "source_unknown", "operation_kind", "validation_unknown"]);
@@ -104,6 +105,8 @@ const attemptSchema = z.object({
   proposalCount: z.number().int().nonnegative(), receiptCount: z.number().int().nonnegative(), inputDigest: digestSchema,
   outputDigest: digestSchema.nullable(), proposals: z.array(z.unknown()).max(3), receiptDigests: z.array(digestSchema),
   rejectionReason: rejectionReasonSchema.optional(),
+  reviewRequests: z.number().int().min(0).max(1).optional(),
+  distillation: learningDistillationSummarySchema.optional(),
 }).strict();
 export const frozenLearningRunSchema = z.object({
   version: z.literal(1), evidenceKind: z.enum(["synthetic_provider_replay", "captured_provider_replay"]),
@@ -123,7 +126,7 @@ const verifyRetainedRun = (run: FrozenLearningRun, corpus: FrozenLearningCorpus,
     provider: run.provider, providerMode: run.providerMode, codeVersion: run.codeVersion, executableDigest: run.executableDigest,
     maxRequests: run.maxRequests, maxAttempts: run.maxAttempts, inputLabelDigests: run.inputLabelDigests };
   if (!header || Object.entries(binding).some(([key, value]) => sha256(header[key]) !== sha256(value)) ||
-      entries.length !== 1 + run.attempts.length * 2 || run.attempts.length > run.maxRequests ||
+      entries.length !== 1 + run.attempts.length * 2 || run.attempts.reduce((sum, entry) => sum + 1 + (entry.reviewRequests ?? 0), 0) > run.maxRequests ||
       new Set(run.attempts.map((item) => item.id)).size !== run.attempts.length) {
     throw new Error("Machine report does not match the retained attempt ledger.");
   }
@@ -168,14 +171,15 @@ export const runFrozenLearningEvaluation = async (options: {
   const corpus = frozenLearningCorpusSchema.parse(JSON.parse(corpusBytes));
   const manifest = z.object({ corpusDigest: digestSchema }).passthrough().parse(await readJson(join(options.preparedDirectory, "frozen-manifest.json")));
   if (manifest.corpusDigest !== corpusDigest) throw new Error("Frozen corpus digest changed.");
-  const maxRequests = options.maxRequests ?? 40; const maxAttempts = options.maxAttempts ?? 1; const deadlineMs = options.deadlineMs ?? 60_000;
+  const maxRequests = options.maxRequests ?? 40; const maxAttempts = options.maxAttempts ?? 1; const deadlineMs = options.deadlineMs ?? options.provider.timeoutMs ?? 60_000;
   if (![maxRequests, maxAttempts, deadlineMs].every(Number.isInteger) || maxRequests < 1 || maxRequests > 200 ||
-      maxAttempts < 1 || maxAttempts > 3 || deadlineMs < 1 || deadlineMs > 60_000) throw new Error("Invalid evaluation budgets.");
+      maxAttempts < 1 || maxAttempts > 3 || deadlineMs < 1 || deadlineMs > 120_000) throw new Error("Invalid evaluation budgets.");
   digestSchema.parse(options.executableDigest);
   const labels = await loadLabels(options.inputLabelPaths ?? [], corpus, corpusDigest, startedAt);
   await mkdir(options.outputDirectory, { recursive: true });
   const ledger = await open(join(options.outputDirectory, "attempts.jsonl"), "wx");
   const attempts: FrozenLearningRun["attempts"] = []; const labelDigests: string[] = [];
+  const requestsUsed = () => attempts.reduce((sum, entry) => sum + 1 + (entry.reviewRequests ?? 0), 0);
   const ledgerWrite = async (value: unknown): Promise<void> => { await ledger.write(JSON.stringify(value) + "\n"); await ledger.sync(); };
   try {
     for (const [index, label] of labels.entries()) labelDigests.push(await writeNew(join(options.outputDirectory, "frozen-input-review-" + index + ".json"), label));
@@ -184,8 +188,8 @@ export const runFrozenLearningEvaluation = async (options: {
       providerMode: options.providerMode, codeVersion: options.codeVersion, executableDigest: options.executableDigest,
       maxRequests, maxAttempts, deadlineMs, inputLabelDigests: labelDigests });
     for (const item of corpus.cases) {
-      if (attempts.length >= maxRequests || options.signal?.aborted) break;
-      for (let attempt = 1; attempt <= maxAttempts && attempts.length < maxRequests; attempt += 1) {
+      if (requestsUsed() >= maxRequests || options.signal?.aborted) break;
+      for (let attempt = 1; attempt <= maxAttempts && requestsUsed() < maxRequests; attempt += 1) {
         if (options.signal?.aborted) break;
         if (options.reserveAttempt && !await options.reserveAttempt()) break;
         const attemptStarted = now(); const id = item.id + "-attempt-" + attempt;
@@ -196,11 +200,21 @@ export const runFrozenLearningEvaluation = async (options: {
         let status: z.infer<typeof attemptSchema>["status"] = "provider_failed";
         let rejectionReason: z.infer<typeof rejectionReasonSchema> | undefined;
         let proposals: RuleProposal[] = []; let receiptDigests: string[] = []; let outputDigest: string | null = null; let outputReceived = false;
+        let reviewRequests = 0;
+        let distillation: LearningDistillationSummary | undefined;
         try {
           const deadline = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("deadline")); }, deadlineMs); });
-          const output = await Promise.race([options.provider.infer(item.window, { signal: controller.signal }), deadline]);
+          const output = await Promise.race([options.provider.infer(item.window, { signal: controller.signal,
+            reserveReviewAttempt: async () => {
+              const used = requestsUsed() + 1 + reviewRequests;
+              if (reviewRequests > 0 || used >= maxRequests || controller.signal.aborted || options.signal?.aborted || (options.reserveAttempt && !await options.reserveAttempt())) return false;
+              reviewRequests += 1;
+              return true;
+            },
+          }), deadline]);
           outputReceived = true; outputDigest = sha256(output);
           const parsed = validateLearningResponse(item.window, output);
+          distillation = parsed.distillation;
           proposals = parsed.proposals.map((proposal, index) => ({ ...proposal, schemaVersion: 1, proposalId: id + "-proposal-" + index,
             jobId: id, knowledgeId: "learning-knowledge-" + sha256([item.window.repoId,
               proposal.shellPredicate ? [proposal.shellPredicate, item.window.events.find((entry) => entry.event.eventId === proposal.retryOperationEventId)?.event.commitSha] : proposal.predicate ?? proposal.rule]).slice(0, 24),
@@ -215,6 +229,8 @@ export const runFrozenLearningEvaluation = async (options: {
         const result = attemptSchema.parse({ id, caseId: item.id, attempt, startedAt: attemptStarted.toISOString(), completedAt: completedAt.toISOString(),
           durationMs: Math.max(0, completedAt.getTime() - attemptStarted.getTime()), status, proposalCount: proposals.length,
           receiptCount: receiptDigests.length, inputDigest: sha256(item.window), outputDigest, proposals, receiptDigests,
+          ...(reviewRequests ? { reviewRequests } : {}),
+          ...(distillation ? { distillation } : {}),
           ...(rejectionReason === undefined ? {} : { rejectionReason }) });
         attempts.push(result); await ledgerWrite({ kind: "attempt_completed", ...result });
         if (status === "extracted" || status === "no_rule" || status === "cancelled") break;
@@ -235,7 +251,7 @@ export const runFrozenLearningEvaluation = async (options: {
   await writeNew(join(options.outputDirectory, "output-review-b.json"), review);
   await writeNew(join(options.outputDirectory, "acceptance-summary.json"), { status: "insufficient_evidence",
     reason: "Provider replay measures extraction only. Independent human adjudication, installed activation, later host delivery, compliance and visible notices remain separate evidence.",
-    attemptedRequests: attempts.length, failedAttempts: attempts.filter((attempt) => !["extracted", "no_rule"].includes(attempt.status)).length,
+    attemptedRequests: requestsUsed(), failedAttempts: attempts.filter((attempt) => !["extracted", "no_rule"].includes(attempt.status)).length,
     pendingWindows: pendingCaseIds.length, tasksObserved: 0, humanLabelsFrozen: labels.length === 2 });
   return report;
 };

@@ -486,11 +486,19 @@ try {
         $null -ne $automaticLearningStatus.automaticLearning.PSObject.Properties['blockedBy']) {
         Write-Host ("Learning blocked by: " + ($automaticLearningStatus.automaticLearning.blockedBy -join ", "))
     }
+    Write-Host "These settings do not confirm that a Copilot session has loaded automatic reuse hooks."
     Write-Host ""
-    Write-Host "Start an evidence window with:"
-    Write-Host "  provenloop acceptance start"
-    Write-Host "Complete it after closing Copilot with:"
-    Write-Host "  provenloop acceptance complete"
+    Write-Host "Check readiness in the repository where you use Copilot:"
+    Write-Host '  provenloop learning status --cwd "C:\path\to\repository"'
+    Write-Host "Follow its next steps for any missing collection, extraction or repository hook setup."
+    Write-Host "Restart Copilot in that repository after setup so it can load the hooks."
+    Write-Host ""
+    Write-Host "See your first learned rule used:"
+    Write-Host "  1. Complete a real task in Copilot. Correct a mistake or work through a recovery."
+    Write-Host "  2. Run provenloop ui from that repository. Review Knowledge and its source evidence."
+    Write-Host "     If no rule appears, inspect Learning for pending work or a reason extraction stopped."
+    Write-Host "  3. Try a related task. Check Usage for guidance provided and inspect the linked rule."
+    Write-Host "Guidance provided and explicit adoption are recorded separately; compare the agent's behavior."
 } finally {
     Remove-Item `
         -LiteralPath $temporaryRoot `

@@ -3,6 +3,30 @@ import { captureEnvelopeSchema } from "./capture.js";
 import { identifierSchema, isoTimestampSchema, sha256DigestSchema } from "./common.js";
 
 const text = z.string().trim().min(1).max(2048);
+export const learningDistillationCriteriaSchema = z.object({
+  supported: z.boolean(), scoped: z.boolean(), reusable: z.boolean(),
+  actionable: z.boolean(), concise: z.boolean(), nonredundant: z.boolean(),
+}).strict();
+// A model assessment of the supplied material, not proof or user confirmation.
+export const learningDistillationReviewSchema = z.object({
+  criteria: learningDistillationCriteriaSchema, rationale: text.max(512),
+}).strict();
+export const learningDistillationSchema = learningDistillationReviewSchema.extend({
+  schemaVersion: z.literal(1), inputDigest: sha256DigestSchema, reviewDigest: sha256DigestSchema,
+  // Nonredundancy covers the supplied evidence and peer proposals only. It does
+  // not establish novelty against all knowledge or current project instructions.
+  comparisonBasis: z.literal("provided_material"),
+  reviewer: z.object({ provider: text.max(256), model: text.max(256), version: text.max(256) }).strict(),
+  reviewedAt: isoTimestampSchema,
+}).strict();
+export const learningDistillationSummarySchema = z.object({
+  proposed: z.number().int().min(0).max(3), accepted: z.number().int().min(0).max(3),
+  rejected: z.number().int().min(0).max(3), reasons: z.array(text.max(512)).max(3),
+}).strict().superRefine((value, context) => {
+  if (value.accepted + value.rejected !== value.proposed) {
+    context.addIssue({ code: "custom", message: "Reviewed proposal counts must account for every proposed lesson." });
+  }
+});
 export const learningSupportingSourceSchema = z.object({
   eventId: identifierSchema, quote: text,
 }).strict();
@@ -43,6 +67,7 @@ export const shellLearningPredicateSchema = z.object({
 }).strict();
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
+  distillation: learningDistillationSchema.optional(),
   retention: learningRetentionSchema.optional(),
   supportingSources: z.array(learningSupportingSourceSchema).min(1).max(8).optional(),
   canonicalKey: z.string().trim().min(1).max(256).optional(),
@@ -65,6 +90,7 @@ export const ruleProposalInputSchema = z.object({
 });
 export const learningInferenceResponseSchema = z.object({
   schemaVersion: z.literal(1), proposals: z.array(ruleProposalInputSchema).max(3),
+  distillation: learningDistillationSummarySchema.optional(),
 }).strict();
 export const learningJobSchema = z.object({
   schemaVersion: z.literal(1), jobId: identifierSchema, windowId: identifierSchema,
@@ -75,6 +101,7 @@ export const learningJobSchema = z.object({
   pauseReason: z.enum(["signed_out", "rate_limited", "unavailable", "daily_budget", "host_stopped", "learning_disabled"]).optional(),
   provider: text.optional(), model: text.optional(), extractorVersion: text,
   result: z.enum(["no_rule", "candidate", "qualified", "error"]).optional(),
+  distillation: learningDistillationSummarySchema.optional(),
   error: z.string().max(512).optional(),
   failureKind: z.literal("input_too_large").optional(),
   preflightFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -123,6 +150,10 @@ export const shellRecoveryReceiptSchema = z.object({
 });
 export const learningRecoveryReceiptSchema = z.discriminatedUnion("proves", [mcpRecoveryReceiptSchema, shellRecoveryReceiptSchema]);
 export type LearningWindow = z.infer<typeof learningWindowSchema>;
+export type LearningDistillationCriteria = z.infer<typeof learningDistillationCriteriaSchema>;
+export type LearningDistillationReview = z.infer<typeof learningDistillationReviewSchema>;
+export type LearningDistillation = z.infer<typeof learningDistillationSchema>;
+export type LearningDistillationSummary = z.infer<typeof learningDistillationSummarySchema>;
 export type LearningRetention = z.infer<typeof learningRetentionSchema>;
 export type LearningJob = z.infer<typeof learningJobSchema>;
 export type LearningPredicate = z.infer<typeof learningPredicateSchema>;

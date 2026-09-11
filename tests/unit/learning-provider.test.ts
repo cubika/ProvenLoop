@@ -20,7 +20,7 @@ const window = (): LearningWindow => {
     eventType: "prompt.submitted", trust: "user", sourceEventId: "source-1", sessionId: "session-1",
     repoId: "repo-1", repositoryState: "known_repo", worktree: "C:/repo", timestamp: "2026-09-07T00:00:00Z",
     content: { message: "Supply path before retrying." } });
-  return { schemaVersion: 1, windowId: "window-1", revision: sha256(event), sessionId: "session-1", repoId: "repo-1",
+  return { schemaVersion: 1, windowId: "learning-window-" + sha256(event.event.eventId).slice(0, 24), revision: sha256(event), sessionId: "session-1", repoId: "repo-1",
     worktree: "C:/repo", createdAt: event.event.timestamp,
     sources: [{ eventId: event.event.eventId, digest: learningSourceDigest(event) }], events: [event] };
 };

@@ -4,6 +4,7 @@ import { sha256 } from "./digest.js";
 import { validAgentLearningSource } from "./agent-learning-source.js";
 import { isInternalWorkSource } from "./work-source.js";
 import { containsPotentialSecret } from "./redaction.js";
+import { hasAcceptedLearningDistillation } from "./learning-distillation.js";
 
 export interface LearningSourceUse {
   readonly mode: "convention" | "reference";
@@ -12,6 +13,7 @@ export interface LearningSourceUse {
   readonly worktree: string;
   readonly commitSha?: string;
   readonly researchSummary?: string;
+  readonly distilledLesson?: string;
 }
 
 /** Eligibility for quoted conventions and references; never an execution-verification receipt. */
@@ -52,11 +54,14 @@ export const learningSourceUse = (
         Date.parse(record.createdAt) <= end && record.returnedKnowledgeIds.some((id) =>
           id === candidate.knowledgeId || id === `knowledge:${candidate.knowledgeId}`))) continue;
     const mode = proposal.retention?.kind;
+    const distilled = hasAcceptedLearningDistillation(proposal, proposal.sourceDigests);
     if (mode === "convention" && proposal.userSource) {
       const original = anchor.content?.message;
       // Keep exceptions outside the extractor's selected span. Long messages need deliberate review.
-      if (!original || original.length > 2048) continue;
-      return { mode, proposal, worktree: anchor.event.worktree, sources: [{ ...proposal.userSource, quote: original, role: "user" }] };
+      if (!original || (!distilled && original.length > 2048)) continue;
+      return { mode, proposal, worktree: anchor.event.worktree,
+        ...(distilled ? { distilledLesson: proposal.rule } : {}),
+        sources: [{ ...proposal.userSource, quote: distilled ? proposal.userSource.quote : original, role: "user" }] };
     }
     if (mode === "reference") {
       const quotes = (proposal.supportingSources ?? proposal.agentSource?.evidenceSources ?? [])
@@ -69,7 +74,7 @@ export const learningSourceUse = (
       if (!commitSha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(commitSha)) continue;
       if (proposal.agentSource?.kind === "research" && containsPotentialSecret(proposal.rule)) continue;
       return { mode, proposal, worktree: anchor.event.worktree, ...(commitSha ? { commitSha } : {}),
-        ...(proposal.agentSource?.kind === "research" ? { researchSummary: proposal.rule } : {}),
+        ...(distilled ? { distilledLesson: proposal.rule } : proposal.agentSource?.kind === "research" ? { researchSummary: proposal.rule } : {}),
         sources: quotes.map((quote) => ({ ...quote, role: "tool" })) };
     }
   }

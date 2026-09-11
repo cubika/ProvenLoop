@@ -24,6 +24,9 @@ vi.mock("../../packages/cli/src/reconcile-capture.js", () => ({
 
 import { runProvenLoopCopilotExtension } from "@provenloop/cli";
 import { runInstalledCopilotExtension } from "../../packages/cli/src/extension-entry.js";
+import { LocalMcpToolHandlers } from "../../packages/cli/src/run-mcp-server.js";
+import type { InstalledCopilotExtensionOptions } from "@provenloop/copilot-adapter";
+import { estimateRenderedTokens, type ContextItem } from "@provenloop/retrieval";
 
 let stop: (() => void) | undefined;
 const options = {
@@ -67,6 +70,30 @@ afterEach(() => {
 });
 
 describe("automatic Extension observation scheduling", () => {
+  it("preserves complete applicability and scope in the native hook context", async () => {
+    const item: ContextItem = {
+      id: "docs-language", kind: "knowledge", rank: 20, evidenceTier: "inferred", deliveryMode: "convention", sources: [],
+      guidance: "Lesson distilled from prior user guidance. Model-reviewed, not user-confirmed; current instructions take precedence.\nLesson: Write repository documentation in English.",
+      applicabilitySummary: "Writing or editing repository documentation; Not when: Preserve original quotations and identifiers without translation.; Not when: The task concerns another repository or executable code.",
+      scope: "repository", scopeId: "repo-docs", explanationRef: "knowledge:docs-language",
+    };
+    const context = vi.spyOn(LocalMcpToolHandlers.prototype, "context").mockResolvedValue({ items: [item], latencyMs: 1,
+      renderedTokens: estimateRenderedTokens(JSON.stringify([item])), requestId: "request-docs", status: "ok" });
+    await runProvenLoopCopilotExtension(options, { runLearning: async () => ({ status: "disabled" }) });
+    const installedOptions = work.installed.mock.calls[0]?.[0] as InstalledCopilotExtensionOptions;
+    const additionalContext = await installedOptions.onAutomaticContext?.({ sessionId: "current-session", prompt: "Write documentation",
+      workspace: { repositoryState: "known_repo", repoId: "repo-docs", cwd: "C:/repo-docs" } });
+    expect(context).toHaveBeenCalledWith(expect.objectContaining({ tokenBudget: 600 }));
+    expect(additionalContext).toContain(item.guidance);
+    expect(additionalContext).toContain("Applicability: " + item.applicabilitySummary);
+    expect(additionalContext).toContain("Preserve original quotations and identifiers without translation.");
+    expect(additionalContext).toContain("The task concerns another repository or executable code.");
+    expect(additionalContext).toContain("Scope: repository (repo-docs)");
+    expect(additionalContext).toContain("Source: knowledge:docs-language");
+    expect(estimateRenderedTokens(additionalContext ?? "")).toBeLessThanOrEqual(estimateRenderedTokens(JSON.stringify([item])));
+    expect(estimateRenderedTokens(additionalContext ?? "")).toBeLessThanOrEqual(600);
+  });
+
   it("exports the complete scheduler under the entry name used by installed plugins", () => {
     expect(runInstalledCopilotExtension).toBe(runProvenLoopCopilotExtension);
   });

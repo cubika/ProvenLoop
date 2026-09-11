@@ -1085,7 +1085,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
               );
             }
             await activeBackend.index([
-              knowledgeProjectionFromCandidate(current),
+              knowledgeProjectionFromCandidate(current, store.learningProposals([current.knowledgeId])),
             ]);
           };
           if (knowledgeLeaseHeld) {

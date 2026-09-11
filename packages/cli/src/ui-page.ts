@@ -2,6 +2,7 @@ import type { InspectionCollection, InspectionReader } from "@provenloop/storage
 import type { ContextUseRecord } from "@provenloop/contracts";
 import { containsPotentialSecret, redactKnownSecrets, redactPotentialSecrets } from "@provenloop/domain";
 import { releaseMetadata } from "./release-metadata.js";
+import type { LearningReadiness } from "./run-learning.js";
 
 export const uiCss = `
 :root{color-scheme:light;--bg:#f5f5f0;--paper:#fff;--ink:#182b29;--muted:#65716e;--line:#dce2dc;--accent:#136950;--soft:#e9f2eb}
@@ -35,7 +36,23 @@ const empty = (message: string): string => `<div class="empty"><strong>No record
 const navigation = [["", "Overview"], ["knowledge", "Knowledge"], ["events", "Activity"], ["episodes", "Work episodes"], ["jobs", "Learning"], ["usage", "Usage"]] as const;
 
 export interface UiPageContext { readonly base: string; readonly dataRoot: string; readonly url: URL; readonly csrfToken?: string;
+  readonly readiness?: LearningReadiness;
   readonly runtime?: { readonly databaseBytes: number; readonly knowledgeBytes: number; readonly queueDepth?: number }; }
+
+const readinessPanel = (context: UiPageContext): string => {
+  const readiness = context.readiness;
+  if (!readiness) return panel("Ready for this repository?", "<p>Readiness could not be checked. Run <code>provenloop learning status</code> from your repository to inspect collection, extraction and automatic reuse.</p>");
+  const stage = (status: string, blockers: readonly string[]): string => `${status.replaceAll("_", " ")}${blockers.length ? ` (${blockers.map((item) => item.replaceAll("_", " ")).join(", ")})` : ""}`;
+  return panel("Ready for this repository?", fields([
+    ["Repository checked", readiness.repositoryPath ?? "No Git repository found"],
+    ["Collection", stage(readiness.capture.status, readiness.capture.blockedBy)],
+    ["Extraction", stage(readiness.extraction.status, readiness.extraction.blockedBy)],
+    ["Automatic reuse", stage(readiness.automaticReuse.status, readiness.automaticReuse.blockedBy)],
+    ["Repository hook approval", readiness.automaticReuse.hookApproval.replaceAll("_", " ")],
+    ["Last detected Copilot", readiness.lastDetectedCopilotVersion ?? "Unknown"],
+    ["Current session hooks", "Not verified by this check"],
+  ]) + `<p class="muted">${text(readiness.detail)} This repository is determined by the directory where the explorer was launched.</p><h3>Next steps</h3><ol>${readiness.nextSteps.map((step) => `<li>${text(step)}</li>`).join("")}</ol>`);
+};
 
 const repositoryLabel = (value: unknown): string => String(value ?? "Unknown").replace(/[\\/]\.git[\\/]?$/iu, "");
 const hidden = (name: string, value: string): string => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
@@ -103,6 +120,7 @@ const proposalsView = (context: UiPageContext, proposals: ReturnType<InspectionR
   return proposals.slice(0, 100).map(({ proposal, receipt }) => {
     const source = proposal.userSource ?? proposal.agentSource;
     return panel("Learning proposal", `<p>${prose(proposal.rule)}</p><div class="chips">${badge(proposal.agentSource ? `agent_${proposal.agentSource.kind}` : "user_correction")}${badge(receipt ? "qualified" : "candidate")}</div>
+      ${proposal.distillation ? `<h3>Quality review</h3><p>Model-reviewed lesson; not external verification.</p>${fields(Object.entries(proposal.distillation.criteria).map(([criterion, passed]) => [criterion, passed ? "Passed" : "Did not pass"]))}<p>${prose(proposal.distillation.rationale)}</p><p class="muted">Nonredundancy was assessed against the supplied material and peer proposals. It does not compare all stored knowledge or project instructions.</p>` : ""}
       <h3>Source quotation</h3><blockquote>${prose(source?.quote)}</blockquote>${source ? eventLinks(context, [source.eventId]) : ""}
       ${proposal.retention ? `<h3>Retention assessment</h3><p>${badge(proposal.retention.kind)} ${prose(proposal.retention.rationale)}</p>` : ""}
       ${(proposal.supportingSources ?? proposal.agentSource?.evidenceSources ?? []).map((evidence) => `<blockquote>${prose(evidence.quote)}</blockquote>${eventLinks(context, [evidence.eventId])}`).join("")}
@@ -126,6 +144,7 @@ export const renderUiPage = (reader: InspectionReader, context: UiPageContext, i
     const metrics = [["knowledge", "Knowledge cards"], ["events", "Captured events · cumulative"], ["jobs", "Learning jobs"], ["episodes", "Work episodes"]];
     const distribution = (label: string, records: readonly Record<string, unknown>[]) => panel(label, table(["Group", "Events"], records.map((entry) => row([text(entry.label), text(entry.count)]))));
     return finish("Overview", `<div class="kicker">Your local learning record</div><h1>Learning overview</h1>${notification}<p class="intro">Browse captured activity, review knowledge and inspect the evidence behind each rule.</p>
+      ${readinessPanel(context)}
       <div class="metrics">${metrics.map(([key, label]) => `<a class="metric" href="${context.base}${key}"><span>${label}</span><strong>${summary.counts[key ?? ""] ?? 0}</strong></a>`).join("")}</div>
       <div class="grid">${panel("Knowledge states", summary.states.length ? `<div class="links">${summary.states.map((item) => `<div>${badge(item.state)} <strong>${text(item.count)}</strong></div>`).join("")}</div>` : `<p class="muted">No knowledge has been stored yet. Captured events may still be awaiting learning or verification.</p>`)}
       ${panel("Guidance use", fields([["Requests recorded", summary.usage?.requests ?? 0], ["With guidance provided", summary.usage?.provided ?? 0], ["With explicit adoption", summary.usage?.adopted ?? 0]]) + `<p class="muted">These counts describe recorded use. Task outcomes and productivity benefit remain unknown.</p>`)}</div>
@@ -169,7 +188,11 @@ export const renderUiPage = (reader: InspectionReader, context: UiPageContext, i
       return finish("Learning job", `${back}<h1>Learning job</h1><div class="chips">${badge(detail.job.state)}${badge(detail.job.result)}</div>
         ${panel("Processing status", fields([["Created", detail.job.createdAt], ["Updated", detail.job.updatedAt], ["Attempts", detail.job.attempts], ["Preparation failures", detail.job.preflightFailures ?? 0], ["Pause reason", detail.job.pauseReason ?? "Not paused"], ["Retry after", detail.job.retryAfter ?? "Not scheduled"], ["Expires", detail.job.expiresAt], ["Error", detail.job.error ?? "None"]]) +
           (detail.job.failureKind === "input_too_large" ? "<p>Source excerpts could not fit the input limit. No model request was sent for this preparation failure. The same input will not be retried until the source or extractor changes.</p>" : "") +
-          (detail.job.inputBudgetRecovery ? `<p>Previous extractor input-size failure: ${detail.job.inputBudgetRecovery.previousAttempts} historical attempt(s). One recovery request ${detail.job.inputBudgetRecovery.retryDispatched ? "was dispatched" : "is available"}; the original expiry is unchanged.</p>` : ""))}${proposalsView(context, detail.proposals)}${raw(detail.job)}`);
+          (detail.job.inputBudgetRecovery ? `<p>Previous extractor input-size failure: ${detail.job.inputBudgetRecovery.previousAttempts} historical attempt(s). One recovery request ${detail.job.inputBudgetRecovery.retryDispatched ? "was dispatched" : "is available"}; the original expiry is unchanged.</p>` : ""))}
+        ${detail.job.distillation ? panel("Quality review", fields([["Proposed lessons", detail.job.distillation.proposed], ["Accepted for evidence checks", detail.job.distillation.accepted], ["Rejected by quality review", detail.job.distillation.rejected]]) +
+          (detail.job.distillation.rejected ? `<h3>Why lessons were rejected</h3>${list(detail.job.distillation.reasons)}` : "") +
+          `<p class="muted">This model review checks whether a proposed lesson is useful and supported by the supplied material. Accepted proposals still need evidence checks before delivery.</p>`) : ""}
+        ${proposalsView(context, detail.proposals)}${raw(detail.job)}`);
     }
     if (section === "episodes") {
       const episode = reader.episode(id); if (!episode) return missing();

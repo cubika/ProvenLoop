@@ -132,7 +132,9 @@ const validateProjection = (
     record.knowledgeId.trim().length === 0 ||
     record.topicKey.trim().length === 0 ||
     record.content.trim().length === 0 ||
-    !/^[a-f0-9]{64}$/u.test(record.sourceDigest)
+    !/^[a-f0-9]{64}$/u.test(record.sourceDigest) ||
+    (record.searchAliases !== undefined && (!Array.isArray(record.searchAliases) ||
+      record.searchAliases.some((alias) => typeof alias !== "string" || alias.trim().length === 0 || alias.length > 256)))
   ) {
     throw new Error("Knowledge projection is invalid.");
   }
@@ -143,6 +145,7 @@ const validateProjection = (
     nonApplicability: [...record.nonApplicability],
     projectionVersion: 1,
     sourceDigest: record.sourceDigest,
+    ...(record.searchAliases === undefined ? {} : { searchAliases: [...record.searchAliases] }),
     topicKey: record.topicKey.trim(),
   };
 };
@@ -700,7 +703,7 @@ implements KnowledgeBackend {
     for (const record of records) {
       insert.run(
         record.knowledgeId,
-        searchableText(record.topicKey),
+        searchableText([record.topicKey, ...(record.searchAliases ?? [])].join("\n")),
         searchableText(record.content),
         searchableText(record.appliesWhen.join("\n")),
         record.nonApplicability.join("\n"),

@@ -146,6 +146,10 @@ describe("automatic long research memory", () => {
         if (!prompt.includes('"origin":"agent"')) return { exitCode: 0, stdout: '{"schemaVersion":1,"proposals":[]}', stderr: "" };
         expect(prompt).toContain(quote);
         expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(32 * 1024);
+        if (prompt.startsWith("Review proposed engineering lessons")) return { exitCode: 0, stdout: JSON.stringify({ reviews: [{
+          index: 0, criteria: { supported: true, scoped: true, reusable: true, actionable: true, concise: true, nonredundant: true },
+          rationale: "The captured cache implementation supports the scoped key-composition finding.",
+        }] }), stderr: "" };
         return { exitCode: 0, stdout: JSON.stringify({ schemaVersion: 1, proposals: [finding] }), stderr: "" };
       }) };
       const provider = new CopilotLearningProvider({ temporaryRoot: join(root, "scratch"), enabled: async () => true, runner });
