@@ -2,13 +2,30 @@
 
 All notable changes to ProvenLoop are documented here.
 
-## Unreleased
+## [0.1.0-alpha.0.16] - 2026-09-11
+
+- Classify experience by purpose, technical topics, entities, and applicability.
+  Combine lexical and concept retrieval, preserve conditions and source controls,
+  and rank by relevance before evidence and scope weights.
+- Add `provenloop_search`, optional file/directory/URL references, reviewed
+  metadata editing, and task-specific feedback for irrelevant results.
+- Enrich existing lessons in bounded idle jobs with separate model review and
+  the existing learning opt-out and daily budget. Schema 23 retains job state.
+- Distill new lessons in English with original-language source quotations and
+  reviewed search aliases. Preserve accepted replacement, renewal, and expiry rules.
+- Reduce history grouping, canonical evidence, and index-update work; add
+  growth regressions without claiming sustained production capacity.
+- Keep session identity diagnostics explicit and retain useful findings from
+  long investigations. Stabilize Windows observation-file replacement.
 
 - Select source excerpts before learning inference, including instructions in the
   byte and character limits. Preserve raw evidence and recovery chains.
 - Stop repeating deterministic input-size failures without charging model
   attempts. Give eligible 0.15 size failures one bounded recovery request with
   the new extractor. Schema 17 records preparation and recovery separately.
+
+See the [0.16 release notes](docs/releases/0.1.0-alpha.0.16.md) for schema 23
+upgrade requirements, background data use, and validation boundaries.
 
 ## [0.1.0-alpha.0.15] - 2026-09-11
 

@@ -125,7 +125,8 @@ describe("typed MCP correction proof", () => {
     const result = await retriever.search({ limit: 1, text: "files read", repositoryScopeId: "repo-1",
       toolInvocation: { serverName: "files", toolName: "read", contractDigest: input.contract.digest } });
     expect(result).toHaveLength(1);
-    expect(result[0]?.candidate.appliesWhen).toEqual(["Calling files/read under its verified tool contract."]);
+    expect(result[0]?.displayApplicability).toEqual(["Calling files/read under its verified tool contract."]);
+    expect(result[0]?.candidate.appliesWhen).toEqual(candidate.appliesWhen);
     expect(candidate.appliesWhen[0]).toContain(input.contract.digest);
     const controls = new KnowledgeControlService({
       projection: { acquireLease: async () => ({ release: async () => undefined }), rebuild: async () => undefined },

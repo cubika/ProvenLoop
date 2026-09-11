@@ -231,7 +231,7 @@ describe("CanonicalKnowledgeRetriever correction admission", () => {
         verificationEnvelope.event.eventId,
       ]),
     ];
-    await expect(retriever.search(query)).resolves.toEqual([
+    await expect(retriever.search(query)).resolves.toMatchObject([
       {
         candidate: knowledge,
         score: 1,

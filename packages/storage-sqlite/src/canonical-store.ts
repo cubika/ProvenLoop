@@ -30,6 +30,7 @@ import {
 
 import {
   branchContextSchema,
+  discoveryEnrichmentJobSchema, discoveryProfileSchema, type DiscoveryEnrichmentJob, type DiscoveryProfile,
   learningWindowSchema, learningJobSchema, ruleProposalSchema, learningRecoveryReceiptSchema,
   type LearningWindow, type LearningJob, type RuleProposal, type LearningRecoveryReceipt, type LearningComparisonCandidate,
   learningComparisonCandidateSchema, learningProposalSource,
@@ -77,6 +78,7 @@ import {
   conflictingShellLearning,
   selectAgentResearchEvents,
   closedAgentResearchTurn,
+  knowledgeDiscoveryDigest, validateDiscoveryProfile, DISCOVERY_VOCABULARY_VERSION,
   type ResearchTurnEvent,
 } from "@provenloop/domain";
 import {
@@ -741,10 +743,24 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
       "OR (json_extract(safe_envelope_json,'$.event.exitCode') IS NOT NULL AND json_extract(safe_envelope_json,'$.event.exitCode')!=0) " +
       "OR json_extract(safe_envelope_json,'$.event.mcp.isError')=1 OR json_extract(safe_envelope_json,'$.event.mcp.resultType')='failure');",
   },
+  {
+    version: 22,
+    // Optional discovery and query-feedback fields require this JSON reader.
+    sql: "CREATE INDEX knowledge_discovery_metadata ON knowledge_candidates(json_type(body_json, '$.discovery'));" +
+      "CREATE INDEX context_use_retrieval_mode ON context_use_records(json_extract(body_json, '$.retrievalMode'));",
+  },
+  {
+    version: 23,
+    sql: `CREATE TABLE discovery_enrichment (knowledge_id TEXT PRIMARY KEY REFERENCES knowledge_candidates(knowledge_id) ON DELETE CASCADE,
+      state TEXT NOT NULL, body_json TEXT NOT NULL, profile_json TEXT, updated_at TEXT NOT NULL) STRICT;
+      CREATE INDEX discovery_enrichment_due ON discovery_enrichment(state,updated_at);
+      CREATE TABLE discovery_enrichment_cursor (singleton INTEGER PRIMARY KEY CHECK(singleton=1), knowledge_id TEXT NOT NULL) STRICT;`,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 // Dependent rows precede their source tables; reset retains only schema and replay protection.
 const RECORD_RESET_TABLES = [
+  "discovery_enrichment", "discovery_enrichment_cursor",
   "learning_sources", "learning_proposals", "learning_notices", "learning_notice_work", "learning_auto_expiry", "learning_relation_conflicts",
   "learning_event_changes", "learning_prompt_work", "raw_event_enrichments",
   "correction_key_sources", "correction_opportunities", "context_use_records",
@@ -1883,6 +1899,7 @@ const RUNTIME_SCHEMA_INDEXES = {
       origin: "c",
       unique: false,
     },
+    { columns: ["null"], name: "context_use_retrieval_mode", origin: "c", unique: false },
     {
       columns: ["created_at", "request_id"],
       name: "context_use_time",
@@ -1915,6 +1932,7 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   knowledge_candidates: [
+    { columns: ["null"], name: "knowledge_discovery_metadata", origin: "c", unique: false },
     {
       columns: [
         "knowledge_id",
@@ -2499,6 +2517,7 @@ export class CanonicalSqliteStore {
       const mutable = this.#automaticLearningMutable(candidate);
       const reviewed = this.learningProposals([candidate.knowledgeId]).filter((proposal) =>
         hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) && proposal.rule === candidate.content &&
+        sha256(proposal.discovery ?? null) === sha256(candidate.discovery ?? null) &&
         sha256([proposal.trigger]) === sha256(candidate.appliesWhen) && sha256(proposal.exclusions) === sha256(candidate.nonApplicability) &&
         proposal.sourceDigests.length === candidate.sourceEvidenceIds.length &&
         proposal.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)) &&
@@ -2716,6 +2735,112 @@ export class CanonicalSqliteStore {
       .run(job.state, JSON.stringify(job), job.updatedAt, job.updatedAt, job.jobId, expectedState).changes) === 1;
   }
 
+  #discoverySourceDigest(candidate: KnowledgeCandidate): string {
+    const evidence = this.knowledgeAdmissionEvidence([candidate]);
+    return sha256({ sources: evidence.envelopes.map((entry) => [entry.event.eventId, sha256(entry)]).sort(),
+      episodes: evidence.workEpisodes.map((episode) => [episode.episodeId, sha256(episode)]).sort(),
+      proposals: (evidence.learningProposals ?? []).map((proposal) => [proposal.proposalId, sha256(proposal)]).sort() });
+  }
+
+  #discoveryEligible(candidate: KnowledgeCandidate, now: Date): boolean {
+    if (this.hasActiveDeletion() || !["active", "candidate"].includes(candidate.state) || candidate.discovery?.producer === "user" ||
+        candidate.expiresAt && Date.parse(candidate.expiresAt) <= now.getTime() ||
+        this.knowledgeCandidatesWithUnavailableSources([candidate]).has(candidate.knowledgeId)) return false;
+    const evidence = this.knowledgeAdmissionEvidence([candidate]);
+    return new KnowledgeAdmissionPolicy().evaluate({ candidate, ...evidence }).admitted;
+  }
+
+  /** Scan a bounded durable page without copying source material into the job queue. */
+  public scheduleDiscoveryEnrichment(now: Date, limit = 32): number {
+    this.#assertNoRestoreBarrier();
+    if (this.hasActiveDeletion()) return 0;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 128) throw new RangeError("Invalid discovery page size.");
+    const cursor = String(this.#database.prepare("SELECT knowledge_id FROM discovery_enrichment_cursor WHERE singleton=1").get()?.knowledge_id ?? "");
+    const rows = this.#database.prepare("SELECT body_json FROM knowledge_candidates WHERE knowledge_id>? ORDER BY knowledge_id LIMIT ?").all(cursor, limit);
+    let scheduled = 0; let last = "";
+    for (const row of rows) {
+      const candidate = knowledgeCandidateSchema.parse(JSON.parse(String(row.body_json))); last = candidate.knowledgeId;
+      if (candidate.discovery?.producer === "user" || !["active", "candidate"].includes(candidate.state) ||
+          candidate.expiresAt && Date.parse(candidate.expiresAt) <= now.getTime()) continue;
+      const knowledgeDigest = knowledgeDiscoveryDigest(candidate);
+      const metadataDigest = sha256(candidate.discovery ?? null);
+      const priorRow = this.#database.prepare("SELECT body_json FROM discovery_enrichment WHERE knowledge_id=?").get(candidate.knowledgeId);
+      const prior = priorRow ? discoveryEnrichmentJobSchema.parse(JSON.parse(String(priorRow.body_json))) : undefined;
+      const sourceDigest = this.#discoverySourceDigest(candidate);
+      if (prior && prior.knowledgeDigest === knowledgeDigest && prior.metadataDigest === metadataDigest && prior.sourceDigest === sourceDigest &&
+          prior.vocabularyVersion === DISCOVERY_VOCABULARY_VERSION) continue;
+      if (!this.#discoveryEligible(candidate, now)) continue;
+      const job: DiscoveryEnrichmentJob = { schemaVersion: 1, knowledgeId: candidate.knowledgeId, knowledgeDigest, sourceDigest, metadataDigest,
+        vocabularyVersion: DISCOVERY_VOCABULARY_VERSION, state: "pending", attempts: 0, createdAt: now.toISOString(), updatedAt: now.toISOString() };
+      this.#database.prepare("INSERT INTO discovery_enrichment VALUES (?,?,?,NULL,?) ON CONFLICT(knowledge_id) DO UPDATE SET state=excluded.state,body_json=excluded.body_json,profile_json=NULL,updated_at=excluded.updated_at")
+        .run(job.knowledgeId, job.state, JSON.stringify(job), job.updatedAt); scheduled += 1;
+    }
+    this.#database.prepare("INSERT INTO discovery_enrichment_cursor VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET knowledge_id=excluded.knowledge_id")
+      .run(rows.length === limit ? last : "");
+    return scheduled;
+  }
+
+  public discoveryEnrichmentJob(now: Date): DiscoveryEnrichmentJob | undefined {
+    this.#assertNoRestoreBarrier();
+    const row = this.#database.prepare("SELECT body_json FROM discovery_enrichment WHERE " +
+      "(state IN ('pending','paused','failed') AND json_extract(body_json,'$.attempts')<3 AND " +
+      "(json_extract(body_json,'$.retryAfter') IS NULL OR json_extract(body_json,'$.retryAfter')<=?)) OR " +
+      "(state='running' AND json_extract(body_json,'$.deadline')<=?) ORDER BY updated_at,knowledge_id LIMIT 1").get(now.toISOString(), now.toISOString());
+    return row ? discoveryEnrichmentJobSchema.parse(JSON.parse(String(row.body_json))) : undefined;
+  }
+
+  public discoveryEnrichmentCandidate(job: DiscoveryEnrichmentJob, now: Date): KnowledgeCandidate | undefined {
+    this.#assertNoRestoreBarrier();
+    const candidate = this.knowledgeCandidates([job.knowledgeId])[0];
+    return candidate && job.vocabularyVersion === DISCOVERY_VOCABULARY_VERSION && knowledgeDiscoveryDigest(candidate) === job.knowledgeDigest &&
+      sha256(candidate.discovery ?? null) === job.metadataDigest && this.#discoveryEligible(candidate, now) &&
+      this.#discoverySourceDigest(candidate) === job.sourceDigest ? candidate : undefined;
+  }
+
+  public transitionDiscoveryEnrichmentJob(input: DiscoveryEnrichmentJob, expectedState: DiscoveryEnrichmentJob["state"]): boolean {
+    this.#assertNoRestoreBarrier(); const job = discoveryEnrichmentJobSchema.parse(input);
+    if (this.hasActiveDeletion()) return false;
+    return Number(this.#database.prepare("UPDATE discovery_enrichment SET state=?,body_json=?,updated_at=? WHERE knowledge_id=? AND state=? " +
+      "AND json_extract(body_json,'$.knowledgeDigest')=? AND json_extract(body_json,'$.sourceDigest')=? AND json_extract(body_json,'$.metadataDigest')=?")
+      .run(job.state, JSON.stringify(job), job.updatedAt, job.knowledgeId, expectedState, job.knowledgeDigest, job.sourceDigest, job.metadataDigest).changes) === 1;
+  }
+
+  public commitDiscoveryEnrichment(input: DiscoveryEnrichmentJob, profile: DiscoveryProfile, now: Date): boolean {
+    this.#assertNoRestoreBarrier(); const job = discoveryEnrichmentJobSchema.parse(input);
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const candidate = this.discoveryEnrichmentCandidate(job, now);
+      if (!candidate || !validateDiscoveryProfile(candidate, profile) || profile.producer !== "model_reviewed") { this.#database.exec("ROLLBACK;"); return false; }
+      const accepted = { ...job, state: "accepted" as const, updatedAt: now.toISOString() }; delete accepted.deadline; delete accepted.retryAfter; delete accepted.reason;
+      const changed = this.#database.prepare("UPDATE discovery_enrichment SET state='accepted',body_json=?,profile_json=?,updated_at=? WHERE knowledge_id=? AND state='running' " +
+        "AND json_extract(body_json,'$.knowledgeDigest')=? AND json_extract(body_json,'$.sourceDigest')=? AND json_extract(body_json,'$.metadataDigest')=?")
+        .run(JSON.stringify(accepted), JSON.stringify(profile), accepted.updatedAt, job.knowledgeId, job.knowledgeDigest, job.sourceDigest, job.metadataDigest);
+      this.#database.exec("COMMIT;"); return Number(changed.changes) === 1;
+    } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
+  }
+
+  public discoveryProfiles(candidates: readonly KnowledgeCandidate[]): ReadonlyMap<string, DiscoveryProfile> {
+    this.#assertNoRestoreBarrier(); const profiles = new Map<string, DiscoveryProfile>();
+    if (asNumber(this.#database.prepare("PRAGMA user_version").get()?.user_version) < 23 || this.hasActiveDeletion()) return profiles;
+    for (const candidate of candidates) {
+      if (candidate.discovery?.producer === "user") continue;
+      const row = this.#database.prepare("SELECT body_json,profile_json FROM discovery_enrichment WHERE knowledge_id=? AND state='accepted'").get(candidate.knowledgeId);
+      if (!row) continue;
+      const job = discoveryEnrichmentJobSchema.parse(JSON.parse(String(row.body_json)));
+      const current = this.discoveryEnrichmentCandidate(job, this.#now());
+      const profile = discoveryProfileSchema.safeParse(JSON.parse(String(row.profile_json)));
+      if (current && knowledgeDiscoveryDigest(current) === knowledgeDiscoveryDigest(candidate) && profile.success && validateDiscoveryProfile(current, profile.data)) profiles.set(candidate.knowledgeId, profile.data);
+    }
+    return profiles;
+  }
+
+  public discoveryEnrichmentStatus(): Readonly<Record<string, number>> {
+    this.#assertNoRestoreBarrier();
+    if (asNumber(this.#database.prepare("PRAGMA user_version").get()?.user_version) < 23) return {};
+    return Object.fromEntries(this.#database.prepare("SELECT state,count(*) AS count FROM discovery_enrichment GROUP BY state").all()
+      .map((row) => [String(row.state), Number(row.count)]));
+  }
+
   public reserveLearningAttempt(now: Date, limit: number): boolean {
     this.#assertNoRestoreBarrier();
     this.#database.exec("BEGIN IMMEDIATE;");
@@ -2838,10 +2963,12 @@ export class CanonicalSqliteStore {
             const incoming = proposals.find((proposal) => proposal.knowledgeId === candidate.knowledgeId &&
               hasAcceptedLearningDistillation(proposal, window.sources) && sha256(proposal.sourceDigests) === sha256(window.sources) &&
               candidate.content === proposal.rule && sha256(candidate.appliesWhen) === sha256([proposal.trigger]) &&
+              sha256(proposal.discovery ?? null) === sha256(candidate.discovery ?? null) &&
               sha256(candidate.nonApplicability) === sha256(proposal.exclusions));
             const priorProposals = this.learningProposals().filter((proposal) => proposal.knowledgeId === existing.knowledgeId &&
               proposal.jobId !== job.jobId && hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) &&
               existing.content === proposal.rule && sha256(existing.appliesWhen) === sha256([proposal.trigger]) &&
+              sha256(proposal.discovery ?? null) === sha256(existing.discovery ?? null) &&
               sha256(existing.nonApplicability) === sha256(proposal.exclusions) &&
               existing.sourceEvidenceIds.length === proposal.sourceDigests.length &&
               proposal.sourceDigests.every((source) => existing.sourceEvidenceIds.includes(source.eventId)));
@@ -3111,6 +3238,7 @@ export class CanonicalSqliteStore {
     const requiredLearningSuppressions = new Set<string>();
     const requiredUserFeedback = new Map<string, string>();
     const requiredLifecycleStates = new Map<string, string>();
+    const requiredDiscoveryOverrides = new Map<string, string>();
     const requiredLearningMutability = new Map<string, boolean>();
     let requiredResetCutoff: string | undefined;
     let installedIncompleteDeletion = false;
@@ -3151,6 +3279,9 @@ export class CanonicalSqliteStore {
           requiredUserFeedback.set(String(row.feedback_id), sha256(JSON.parse(String(row.body_json))));
         }
         if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 3) {
+          for (const row of current.prepare("SELECT knowledge_id,body_json FROM knowledge_candidates WHERE json_extract(body_json,'$.discovery.producer')='user'").all()) {
+            requiredDiscoveryOverrides.set(String(row.knowledge_id), sha256(JSON.parse(String(row.body_json)).discovery));
+          }
           for (const row of current.prepare("SELECT knowledge_id,body_json FROM knowledge_candidates WHERE json_extract(body_json, '$.state') IN ('archived','disputed','superseded')").all()) {
             requiredLifecycleStates.set(String(row.knowledge_id), String(JSON.parse(String(row.body_json)).state));
             if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 20) {
@@ -3239,6 +3370,13 @@ export class CanonicalSqliteStore {
           source,
           options.migrations ?? DEFAULT_SQLITE_MIGRATIONS,
         );
+        for (const [knowledgeId, digest] of requiredDiscoveryOverrides) {
+          const prior = asNumber(source.prepare("PRAGMA user_version").get()?.user_version) >= 3
+            ? source.prepare("SELECT body_json FROM knowledge_candidates WHERE knowledge_id=?").get(knowledgeId) : undefined;
+          if (!prior || sha256(JSON.parse(String(prior.body_json)).discovery) !== digest) {
+            throw new InvalidCanonicalSchemaError("Backup predates a user discovery correction.");
+          }
+        }
         if (requiredResetCutoff !== undefined) {
           const reset = asNumber(source.prepare("PRAGMA user_version").get()?.user_version) >= 16
             ? source.prepare("SELECT cutoff FROM record_reset WHERE singleton=1").get() : undefined;
@@ -7902,6 +8040,12 @@ export class CanonicalSqliteStore {
     }
   }
 
+  public contextUseRecord(requestId: string): ContextUseRecord | undefined {
+    this.#assertNoRestoreBarrier();
+    const row = this.#database.prepare("SELECT body_json FROM context_use_records WHERE request_id = ?").get(requestId);
+    return row === undefined ? undefined : contextUseRecordSchema.parse(JSON.parse(String(row.body_json)));
+  }
+
   #assertNoRestoreBarrier(): void {
     if (this.#path === ":memory:") {
       return;
@@ -8423,6 +8567,7 @@ export class CanonicalSqliteStore {
                       )) ||
                       (expectedVersion < 14 && index.name === "raw_events_learning_agents") ||
                       (expectedVersion < 21 && ["raw_events_session_type", "raw_events_operation", "raw_events_counterevidence"].includes(index.name)) ||
+                      (expectedVersion < 22 && ["context_use_retrieval_mode", "knowledge_discovery_metadata"].includes(index.name)) ||
                       (expectedVersion < 10 && (
                         index.name === "raw_events_observed" ||
                         index.name === "context_use_observed"

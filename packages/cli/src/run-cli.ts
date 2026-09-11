@@ -8,8 +8,10 @@ import type {
   AgentAdapter,
   KnowledgeCandidate,
   Scope,
+  SourceReference,
 } from "@provenloop/contracts";
 import {
+  experiencePurposeSchema,
   provenLoopCapabilitySchema,
   scopeSchema,
 } from "@provenloop/contracts";
@@ -47,6 +49,7 @@ import {
   planCaptureRetention,
   applyCaptureRetention,
   type CaptureWorkerRunResult,
+  type RememberKnowledgeInput,
 } from "@provenloop/host";
 import {
   resolveWindowsProvenLoopDataRoot,
@@ -141,6 +144,29 @@ const option = (
   return index === -1 ? undefined : args[index + 1];
 };
 
+const discoveryOptions = (
+  args: readonly string[],
+): Pick<RememberKnowledgeInput, "purposes" | "topics" | "sourceReferences"> | undefined => {
+  const purpose = option(args, "--purpose");
+  const purposeResult = purpose === undefined ? undefined : experiencePurposeSchema.safeParse(purpose);
+  const topics = option(args, "--topics")?.split(",").map((topic) => topic.trim());
+  const source = option(args, "--source")?.trim();
+  const sourceKind = option(args, "--source-kind") ?? (source && /^https?:\/\//iu.test(source) ? "url" : "file");
+  if (purposeResult?.success === false ||
+      (topics !== undefined && (topics.length > 8 || topics.some((topic) => !topic || topic.length > 128))) ||
+      (source !== undefined && (!source || source.length > 2_048)) ||
+      (source === undefined && option(args, "--source-kind") !== undefined) ||
+      !["file", "directory", "url"].includes(sourceKind)) return undefined;
+  return {
+    ...(purposeResult?.success ? { purposes: [purposeResult.data] } : {}),
+    ...(topics === undefined ? {} : { topics }),
+    ...(source === undefined ? {} : { sourceReferences: [{
+      kind: sourceKind as SourceReference["kind"],
+      locator: sourceKind === "url" ? source : resolve(option(args, "--cwd") ?? process.cwd(), source),
+    }] }),
+  };
+};
+
 const usage = `Usage:
   provenloop records clear [--confirm] [--data-root <directory>]
   provenloop ui [--port <0-65535>] [--no-open] [--data-root <directory>]
@@ -156,11 +182,13 @@ const usage = `Usage:
   provenloop learning <status|enable|disable|mute|unmute> [--confirm] [--data-root <directory>]
   provenloop learning status [--cwd <repository-directory>] [--data-root <directory>]
   provenloop learning approve-hooks --cwd <repository-directory> --confirm
-  provenloop remember --content <text> --when <condition> [--not-when <condition>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop remember --content <text> --when <condition> [--not-when <condition>] [--purpose <fact|constraint|lesson|procedure|rationale>] [--topics <concept-ids>] [--source <locator>] [--source-kind <file|directory|url>] [--scope <personal|workflow|repository|branch>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+    Source references are saved as pointers. Local paths resolve from --cwd; no source is opened or fetched.
   provenloop knowledge list [--state <state>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop knowledge show <knowledge-id> [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
   provenloop knowledge confirm <knowledge-id> --expect <review-digest> --confirm [--resolve <evidence-ids>] [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
-  provenloop knowledge replace <knowledge-id> --content <text> --expect <review-digest> --confirm [--resolve <evidence-ids>] [--when <condition>] [--not-when <condition>] [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+  provenloop knowledge replace <knowledge-id> --content <text> --expect <review-digest> --confirm [--resolve <evidence-ids>] [--when <condition>] [--not-when <condition>] [--purpose <purpose>] [--topics <concept-ids>] [--source <locator>] [--source-kind <file|directory|url>] [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
+    Metadata-only replacements preserve unspecified user metadata. Content, conditions, or scope changes discard previous discovery metadata.
   provenloop knowledge revoke <knowledge-id> --expect <review-digest> --confirm [--reason <text>] [--scope <scope>] [--workflow <id>] [--cwd <directory>] [--data-root <directory>]
     Workflow scope requires the matching live SDK workflow and workspace; --workflow alone is not authority.
   provenloop correct <knowledge-id> [--reason <text>] [--data-root <directory>]
@@ -392,6 +420,10 @@ const runKnowledgeControlCommand = async (
             "--scope",
             "--when",
             "--workflow",
+            "--purpose",
+            "--topics",
+            "--source",
+            "--source-kind",
           ],
         })
       : args[0] === "correct"
@@ -425,7 +457,11 @@ const runKnowledgeControlCommand = async (
     hasInvalidOptionValue(args, "--workflow") ||
     hasInvalidOptionValue(args, "--cwd") ||
     hasInvalidOptionValue(args, "--reason") ||
-    hasInvalidOptionValue(args, "--session")
+    hasInvalidOptionValue(args, "--session") ||
+    hasInvalidOptionValue(args, "--purpose") ||
+    hasInvalidOptionValue(args, "--topics") ||
+    hasInvalidOptionValue(args, "--source") ||
+    hasInvalidOptionValue(args, "--source-kind")
   ) {
     io.error(usage);
     return 2;
@@ -436,13 +472,14 @@ const runKnowledgeControlCommand = async (
       case "remember": {
         const content = option(args, "--content");
         const appliesWhen = option(args, "--when");
+        const discovery = discoveryOptions(args);
         const scopeResult = scopeSchema.safeParse(
           option(args, "--scope") ?? "repository",
         );
         if (
           !content ||
           !appliesWhen ||
-          !scopeResult.success
+          !scopeResult.success || discovery === undefined
         ) {
           io.error(usage);
           return 2;
@@ -471,6 +508,7 @@ const runKnowledgeControlCommand = async (
               ],
               scope: scopeResult.data,
               ...(scopeId === undefined ? {} : { scopeId }),
+              ...discovery,
             }),
           scopeResult.data === "workflow" ? scopeId : undefined,
         );
@@ -577,8 +615,9 @@ const runKnowledgeReviewCommand = async (
     values.push("--resolve");
   }
   if (action === "replace") {
-    values.push("--content", "--when", "--not-when");
+    values.push("--content", "--when", "--not-when", "--purpose", "--topics", "--source", "--source-kind");
   }
+  const discovery = action === "replace" ? discoveryOptions(args) : {};
   const state = option(args, "--state");
   const scope = scopeSchema.safeParse(option(args, "--scope") ?? "repository");
   const knowledgeId = args[2]?.trim();
@@ -599,7 +638,7 @@ const runKnowledgeReviewCommand = async (
       expectedDigest === undefined ||
       !/^[a-f0-9]{64}$/u.test(expectedDigest)
     )) ||
-    (action === "replace" && !option(args, "--content")?.trim())
+    (action === "replace" && (!option(args, "--content")?.trim() || discovery === undefined))
   ) {
     io.error(usage);
     return 2;
@@ -660,6 +699,7 @@ const runKnowledgeReviewCommand = async (
         ...(when === undefined ? {} : { appliesWhen: [when] }),
         ...(notWhen === undefined ? {} : { nonApplicability: [notWhen] }),
         ...(reason === undefined ? {} : { reason }),
+        ...(action === "replace" && discovery && Object.keys(discovery).length ? { replacementDiscovery: discovery } : {}),
       });
       io.log(`User-confirmed rule ${result.candidate?.knowledgeId} recorded; this is not external verification.`);
       return 0;
@@ -1320,7 +1360,9 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
         await access(paths.database);
         const store = new CanonicalSqliteStore(paths.database);
         let jobs;
+        let discoveryEnrichment;
         try {
+          discoveryEnrichment = store.discoveryEnrichmentStatus();
           jobs = store.learningJobs().map((job) => ({
             jobId: job.jobId, state: job.state, attempts: job.attempts, result: job.result,
             createdAt: job.createdAt, updatedAt: job.updatedAt, expiresAt: job.expiresAt,
@@ -1338,6 +1380,7 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
             permission: "extension-permission-access", extension: "plugin:provenloop:event-capture",
             detail: "Copilot must approve this extension in each repository before automatic retrieval hooks can start. Background learning does not grant host permissions." },
           jobs,
+          discoveryEnrichment,
         }, null, 2));
         return 0;
       }

@@ -12,6 +12,7 @@ import { validAgentLearningSource } from "./agent-learning-source.js";
 import { assessLearningRetention } from "./learning-retention.js";
 import { isInternalWorkSource } from "./work-source.js";
 import { closedAgentResearchTurn, selectAgentResearchEvents } from "./agent-research-window.js";
+import { hasAcceptedLearningDistillation, validLearningDiscoveryMetadata } from "./learning-distillation.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -171,6 +172,9 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
         throw new Error("Learning query terms must occur in quoted evidence.");
       }
     }
+    if (!validLearningDiscoveryMetadata(proposal, window.events)) {
+      throw new Error("Learning discovery metadata requires valid clauses and captured source references.");
+    }
     if (proposal.predicate && proposal.shellPredicate) throw new Error("A proposal cannot mix shell and MCP predicates.");
     const user = sources.get(source.eventId);
     if (proposal.agentSource) {
@@ -326,6 +330,8 @@ export const learningKnowledgeCandidate = (window: LearningWindow, proposal: Rul
   appliesWhen: receipt?.proves === "repository_test_command" ? [`Running ${receipt.predicate.failedCommand} or ${receipt.predicate.command} in the verified repository revision.`] : receipt ? [`Calling ${receipt.predicate.serverName}/${receipt.predicate.toolName} under its verified tool contract.`] : [proposal.trigger],
   nonApplicability: receipt ? ["Other repositories, tools, or contract versions; semantic correctness of returned data."] : proposal.exclusions, conflictsWith: [],
   sourceEpisodeIds: [], sourceEvidenceIds: proposal.sourceDigests.map((item) => item.eventId),
+  ...(!receipt && proposal.discovery && hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) &&
+    validLearningDiscoveryMetadata(proposal, window.events) ? { discovery: proposal.discovery } : {}),
   createdAt: proposal.createdAt, ...(receipt ? { validatedAt: receipt.verifiedAt } : { expiresAt: proposal.expiresAt }),
   evidenceMarks: receipt ? ["externally_verified"] : [], evidenceTier: receipt ? "externally_verified" : "inferred",
   state: receipt ? "active" : "candidate", importance: 0, utility: { applied: 0, harmful: 0, helpful: 0 }, coverage: { applicableOpportunities: 0, observedOutcomes: 0 },

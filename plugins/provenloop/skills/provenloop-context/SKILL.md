@@ -21,6 +21,11 @@ On degraded or unavailable identity, briefly explain that local context is
 unavailable and continue without pretending it was retrieved.
 
 Use `provenloop_explain` when the user asks where a returned item came from.
+When a task needs more past experience, call `provenloop_search` with
+`protocolVersion: 1`, a concise prompt, and optional `alternateQueries`,
+`conceptHints`, or `entityHints`. It can deliberately return previously seen
+items and supports purpose/topic filters. Treat unresolved applicability
+conditions as checks to make; open source pointers only when needed.
 Use the separate review/control commands to inspect candidate or disputed
 knowledge; never try to expose those items by weakening ordinary retrieval.
 Review reports expose `unresolvedEvidenceIds`. Resolving a dispute requires the

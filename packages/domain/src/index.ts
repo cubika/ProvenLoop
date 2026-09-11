@@ -94,3 +94,4 @@ export * from "./agent-research-window.js";
 export * from "./shell-learning.js";
 export * from "./learning-source-use.js";
 export * from "./knowledge-duplicates.js";
+export * from "./discovery.js";

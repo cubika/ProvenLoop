@@ -162,3 +162,7 @@ export { prepareFrozenLearningEvaluation, runFrozenLearningEvaluation, reviewFro
 } from "./automatic-learning-workflow.js";
 export { createGeneralLearningCorpus, GENERAL_LEARNING_EXAMPLES } from "./general-learning-corpus.js";
 export { createAgentExperienceCorpus } from "./agent-experience-corpus.js";
+export { experienceRetrievalCorpusSchema, createSyntheticExperienceRetrievalCorpus, evaluateExperienceRetrieval,
+  runLocalExperienceRetrievalEvaluation, type ExperienceRetrievalCorpus, type ExperienceRetrievalQuery,
+  type ExperienceRetrievalObservation, type ExperienceRetrievalRunner, type ExperienceRetrievalCaseResult,
+  type ExperienceRetrievalMetrics, type ExperienceRetrievalReport } from "./experience-retrieval-evaluation.js";

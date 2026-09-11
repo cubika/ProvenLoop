@@ -1,8 +1,8 @@
 # Local learning viewer
 
-The viewer in `0.1.0-alpha.0.15` includes knowledge management and record cleanup.
-It requires canonical schema 16. Use `provenloop upgrade` before opening an older
-database. See the [release notes](releases/0.1.0-alpha.0.15.md) for this preview
+The viewer in `0.1.0-alpha.0.16` includes knowledge management and record cleanup.
+It requires canonical schema 23. Use `provenloop upgrade` before opening an older
+database. See the [release notes](releases/0.1.0-alpha.0.16.md) for this preview
 and its validation limits.
 
 The unreleased distillation work uses schema 20, following schema 19 source-language

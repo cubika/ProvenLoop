@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { discoveryMetadataSchema } from "./discovery.js";
 
 import {
   finiteNumberSchema,
@@ -63,6 +64,7 @@ export const knowledgeCandidateSchema = z
     content: nonEmptyStringSchema,
     coverage: knowledgeCoverageSchema,
     createdAt: isoTimestampSchema,
+    discovery: discoveryMetadataSchema.optional(),
     evidenceMarks: z.array(evidenceMarkSchema),
     evidenceTier: evidenceTierSchema,
     expiresAt: isoTimestampSchema.optional(),

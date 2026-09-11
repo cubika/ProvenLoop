@@ -11,7 +11,7 @@
 | npm | `>=11` |
 | GitHub Copilot CLI | `>=1.0.71` |
 | Automatic retrieval hooks | Copilot CLI `1.0.84-1`, with repository approval |
-| ProvenLoop | `0.1.0-alpha.0.15` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.16` evidence candidate |
 
 The relaxed Node.js/npm ranges apply starting with `0.1.0-alpha.0.11`. Older
 tagged installers and tarballs retain their original requirements; use the new
@@ -24,11 +24,11 @@ The runtime also suppresses only SQLite's experimental-feature notice
 during SQLite module loading, including the background search reader. Other
 warnings and SQLite errors remain visible.
 
-The URLs below target the `0.1.0-alpha.0.15` Windows Design Partner Preview.
-The preview adds source-qualified conventions and references, clearer work
-episodes, and knowledge review and cleanup through `provenloop ui`. It uses
-schema 16 and enables background learning when prerequisites are met, preserving
-explicit opt-outs. See the [release notes](releases/0.1.0-alpha.0.15.md).
+The URLs below target the `0.1.0-alpha.0.16` Windows Design Partner Preview.
+The preview adds experience classification, concept-assisted retrieval, deeper
+search, and reviewed enrichment of saved lessons. It uses
+schema 23 and enables background learning when prerequisites are met, preserving
+explicit opt-outs. See the [release notes](releases/0.1.0-alpha.0.16.md).
 M0/MVP remain No-Go for quality release; `0.1.0-alpha.1` is still an unapproved
 target.
 
@@ -80,7 +80,7 @@ may disconnect; load the updated integration in a new session or through a
 host-supported reload. See [Upgrade](#upgrade) before migrating an older data root.
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1 | iex
 ```
 
 The installer:
@@ -111,7 +111,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -123,14 +123,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1)
 )) -NoLearning
 ```
 
 For a manual tarball installation (without the bootstrap's orchestration):
 
 ```powershell
-$version = "0.1.0-alpha.0.15"
+$version = "0.1.0-alpha.0.16"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $downloadRoot = New-Item -ItemType Directory -Force .\.provenloop\downloads
 $package = Join-Path $downloadRoot.FullName "provenloop-cli-$version.tgz"
@@ -191,7 +191,7 @@ Keep the previous runtime slot and stop
 on any failed command before editing PATH.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.15` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.16` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -213,7 +213,7 @@ reload after success. The bootstrap stages the new runtime in a separate slot,
 performs the integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1 | iex
 ```
 
 For a manually downloaded and verified release tarball, use the same
@@ -222,7 +222,7 @@ global prefix or an unqualified `provenloop` command, because either can select
 an older runtime:
 
 ```powershell
-$version = "0.1.0-alpha.0.15"
+$version = "0.1.0-alpha.0.16"
 $runtimeSlot = Join-Path `
   $env:LOCALAPPDATA `
   "ProvenLoopRuntime\versions\$version"
@@ -279,10 +279,10 @@ not invent Copilot `source_sha` metadata. Rollback errors remain explicit.
 See [plugin process recovery](plugin-process-recovery.md) for the recovery contract
 and the separately labeled historical 0.12 manual repair.
 
-This release uses schema 16. Versions 0.12 through 0.14 use schema 14, and
+This release uses schema 23. Version 0.15 uses schema 16; versions 0.12 through 0.14 use schema 14, and
 published 0.11 uses schema 10. Existing older databases require explicit
 `provenloop upgrade`; ordinary runtime opens do not silently migrate them.
-Older readers reject schema 16. Keep the pre-upgrade snapshot and runtime
+Older readers reject schema 23. Keep the pre-upgrade snapshot and runtime
 identity if rollback may be needed.
 
 The following coordination applies to sessions running a participating runtime.

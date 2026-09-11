@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { captureEnvelopeSchema } from "./capture.js";
 import { identifierSchema, isoTimestampSchema, sha256DigestSchema } from "./common.js";
+import { discoveryMetadataSchema } from "./discovery.js";
 
 const text = z.string().trim().min(1).max(2048);
 export const learningComparisonCandidateSchema = z.object({
@@ -84,6 +85,7 @@ export const ruleProposalInputSchema = z.object({
     include: z.array(z.string().trim().min(2).max(64)).max(8),
     exclude: z.array(z.string().trim().min(2).max(64)).max(8),
   }).strict().optional(),
+  discovery: discoveryMetadataSchema.optional(),
   distillation: learningDistillationSchema.optional(),
   retention: learningRetentionSchema.optional(),
   supportingSources: z.array(learningSupportingSourceSchema).min(1).max(8).optional(),

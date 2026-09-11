@@ -51,6 +51,7 @@ export interface RecordLocalObservationBatchOptions {
 }
 
 interface SafeContext {
+  retrievalMode?: "context" | "search";
   observedAt: string;
   returned: number;
   adopted: boolean;
@@ -100,6 +101,7 @@ export interface LocalObservationSummary {
   readonly lastObservedAt: string;
   readonly coverage: "bounded_sample" | "observed_records";
   readonly retrieval: {
+    readonly search?: { readonly invocationCount: number; readonly providedCount: number; readonly explicitlyAdoptedCount: number };
     readonly state: "not_observed" | "not_invoked" | "disabled" | "no_match" | "provided" | "explicitly_adopted" | "unknown";
     readonly invocationCount: number | null;
     readonly noMatchCount: number;
@@ -166,7 +168,13 @@ const atomicJson = async (path: string, value: unknown): Promise<void> => {
   const staging = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(staging, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 });
-    await rename(staging, path);
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(staging, path); break; } catch (error) {
+        if (process.platform !== "win32" || attempt >= 4 ||
+            !["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        await sleep(10 * 2 ** attempt);
+      }
+    }
   } finally {
     await removeStagingFile(staging);
   }
@@ -220,7 +228,8 @@ const withLock = async <T>(path: string, operation: () => Promise<T>): Promise<T
 };
 
 const summarize = (archive: ObservationArchive): LocalObservationSummary => {
-  const contexts = Object.values(archive.contexts);
+  const contexts = Object.values(archive.contexts).filter((item) => item.retrievalMode !== "search");
+  const searches = Object.values(archive.contexts).filter((item) => item.retrievalMode === "search");
   const events = Object.values(archive.events);
   const opportunities = Object.values(archive.opportunities);
   const providedCount = contexts.filter((item) => item.returned > 0).length;
@@ -243,6 +252,8 @@ const summarize = (archive: ObservationArchive): LocalObservationSummary => {
     lastObservedAt: archive.lastObservedAt,
     coverage: archive.truncated ? "bounded_sample" : "observed_records",
     retrieval: {
+      ...(searches.length ? { search: { invocationCount: searches.length, providedCount: searches.filter((item) => item.returned > 0).length,
+        explicitlyAdoptedCount: searches.filter((item) => item.adopted).length } } : {}),
       state: adoptedCount > 0 ? "explicitly_adopted"
         : providedCount > 0 ? "provided"
           : contexts.length > 0 && noMatchCount === contexts.length ? "no_match"
@@ -311,6 +322,7 @@ const assertArchive = (value: unknown): ObservationArchive => {
     ].includes(kind)) ||
     Object.values(archive.contexts).some((item) =>
       item === null || typeof item !== "object" ||
+      (item.retrievalMode !== undefined && !["context", "search"].includes(item.retrievalMode)) ||
       !Number.isSafeInteger(item.returned) || item.returned < 0 ||
       typeof item.adopted !== "boolean" ||
       ![null, "helpful", "ignored", "irrelevant", "wrong", "stale"].includes(item.feedback) ||
@@ -352,6 +364,7 @@ const assertArchive = (value: unknown): ObservationArchive => {
     contextCoverage: archive.contextCoverage,
     events: Object.fromEntries(Object.entries(archive.events)),
     contexts: Object.fromEntries(Object.entries(archive.contexts).map(([id, item]) => [id, {
+      ...(item.retrievalMode ? { retrievalMode: item.retrievalMode } : {}),
       observedAt: timestamp(item.observedAt),
       returned: item.returned,
       adopted: item.adopted,
@@ -457,6 +470,7 @@ export const recordLocalObservationBatch = async (
         archive.lastObservedAt = observedAt;
       }
       put(archive, archive.contexts, context.requestId, {
+        ...(context.retrievalMode ? { retrievalMode: context.retrievalMode } : {}),
         observedAt,
         returned: context.returnedKnowledgeIds.length,
         // Legacy records may contain inferred application, before explicit user-report semantics.

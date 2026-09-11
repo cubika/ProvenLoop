@@ -1,20 +1,20 @@
 # ProvenLoop 0.1.0 Alpha Release Plan
 
-**Status:** 0.15 preview published and downloaded artifact verified; quality-release acceptance remains open
+**Status:** 0.16 preview release; quality-release acceptance remains open
 **Target:** `0.1.0-alpha.1` (planned, not published by this work)
 **Repository:** `https://github.com/cubika/ProvenLoop`  
 **Updated:** 2026-09-11
 
-**Evidence candidate:** `0.1.0-alpha.0.15` is the Windows Design Partner Preview
+**Evidence candidate:** `0.1.0-alpha.0.16` is the Windows Design Partner Preview
 for collecting the real Windows, provider-degradation, and remote-upgrade
 evidence required by the target `0.1.0-alpha.1`. It is a prerelease, not M0/MVP
 approval or evidence of controlled benefit. See the
-[0.15 release notes](releases/0.1.0-alpha.0.15.md).
+[0.16 release notes](releases/0.1.0-alpha.0.16.md).
 
-The 0.15 scope adds source-aware learning retention and reference delivery,
-task-context isolation, knowledge management in the local UI, capture metrics,
-and record cleanup that preserves installation and configuration. Schema 16
-requires the maintenance upgrade path. Explicit learning opt-out is preserved.
+The 0.16 scope adds classification, concept-assisted retrieval, deeper search,
+and reviewed enrichment of saved experience. It also includes the intervening
+distillation, lifecycle, and scalability fixes. Schema 23 requires the maintenance
+upgrade path from 0.15/schema 16. Explicit learning opt-out is preserved.
 
 Knowledge review, automatic local observations, trusted Session approval,
 strict native proof binding, bounded current-session reconciliation, and
@@ -103,7 +103,7 @@ returning success-shaped placeholders.
 The candidate's versioned installation command is:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1 | iex
 ```
 
 For the Microsoft-internal Design Partner preview, the versioned GitHub

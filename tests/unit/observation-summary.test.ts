@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import { PROVENLOOP_CODE_VERSION } from "../../packages/cli/src/release-metadata
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, unlink: vi.fn(original.unlink) };
+  return { ...original, unlink: vi.fn(original.unlink), rename: vi.fn(original.rename) };
 });
 
 const directories: string[] = [];
@@ -41,10 +41,28 @@ const context = (changes: Partial<ObservationContextUse> = {}): ObservationConte
 afterEach(async () => {
   const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
   vi.mocked(unlink).mockReset().mockImplementation(original.unlink);
+  vi.mocked(rename).mockReset().mockImplementation(original.rename);
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe("incremental local observations", () => {
+  it.skipIf(process.platform !== "win32")("retries a transient Windows archive replacement denial", async () => {
+    const dataRoot = await root();
+    await recordLocalObservationBatch({ dataRoot, contextUseRecords: [context()] });
+    vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error("busy reader"), { code: "EPERM" }));
+    await expect(recordLocalObservationBatch({ dataRoot, contextUseRecords: [context({ feedback: "helpful" })] }))
+      .resolves.toHaveLength(1);
+    expect((await readLocalObservationSummary({ dataRoot, date: "2026-09-05" }))[0]?.retrieval.feedbackCount).toBe(1);
+  });
+  it("counts deliberate search separately from automatic context and adoption", async () => {
+    const dataRoot = await root();
+    await recordLocalObservationBatch({ dataRoot, contextUseRecords: [
+      context(), context({ requestId: "deliberate-search", retrievalMode: "search" }),
+    ] });
+    const summary = (await readLocalObservationSummary({ dataRoot, date: "2026-09-05" }))[0];
+    expect(summary?.retrieval).toMatchObject({ invocationCount: 1, providedCount: 1, explicitlyAdoptedCount: 0,
+      search: { invocationCount: 1, providedCount: 1, explicitlyAdoptedCount: 0 } });
+  });
   it.each(["identity", "archive"] as const)(
     "surfaces %s staging cleanup errors and supports an idempotent retry",
     async (stage) => {

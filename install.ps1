@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.15",
+    [string]$Version = "0.1.0-alpha.0.16",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -374,6 +374,7 @@ try {
     if (-not $NoLearning) {
         Write-Host "The installed runtime reports automatic-learning eligibility with provenloop learning status."
         Write-Host "It sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in and service quota."
+        Write-Host "Idle learning also classifies saved lesson text and conditions through the same provider, with a separate review and shared daily budget."
         Write-Host "Copilot service usage and retention policies apply. Use -NoLearning or provenloop learning disable to opt out."
     }
     $alreadyCurrent = (

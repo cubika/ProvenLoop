@@ -1,22 +1,29 @@
 # @provenloop/cli
 
-Windows Design Partner Preview `0.1.0-alpha.0.15` for ProvenLoop and GitHub
+Windows Design Partner Preview `0.1.0-alpha.0.16` for ProvenLoop and GitHub
 Copilot CLI (2026-09-11). M0/MVP remain No-Go for quality release; controlled
 benefit has not been established.
 
 Install or upgrade through the versioned bootstrap:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1 | iex
 ```
 
 The installer verifies the GitHub Release tarball checksum and uses npm as
 the local package installer. This preview is not published to the public npm
-registry. This release migrates to schema 16 from schema 14 in 0.12 through
-0.14. Retain the prior runtime and verified snapshots before upgrading; older
+registry. This release migrates to schema 23 from schema 16 in 0.15 (0.12 through
+0.14 used schema 14). Retain the prior runtime and verified snapshots before upgrading; older
 readers cannot open the new schema.
 
 ## Browse local knowledge and evidence
+
+Version 0.16 adds purpose/topic classification, concept-assisted retrieval, and
+`provenloop_search` for deeper queries. Existing lessons can gain independently
+reviewed search metadata during idle learning. Use `provenloop learning status`
+to inspect enrichment counts. Learning opt-out also disables model enrichment.
+`remember` and reviewed `knowledge replace` accept `--purpose`, `--topics`,
+`--source`, and `--source-kind`; source pointers are not fetched automatically.
 
 ```powershell
 provenloop ui
@@ -87,6 +94,6 @@ helpers. Foreground Copilot sessions do not all need to close, but old tools
 may disconnect. Open a new session or use a host-supported reload afterward;
 hot reconnection is not guaranteed.
 
-See the [release notes](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.15/docs/releases/0.1.0-alpha.0.15.md),
-[viewer guide](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.15/docs/local-viewer.md),
-and [installation guide](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.15/docs/alpha-installation.md).
+See the [release notes](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.16/docs/releases/0.1.0-alpha.0.16.md),
+[viewer guide](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.16/docs/local-viewer.md),
+and [installation guide](https://github.com/cubika/ProvenLoop/blob/v0.1.0-alpha.0.16/docs/alpha-installation.md).

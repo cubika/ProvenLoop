@@ -10,6 +10,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 
 import {
@@ -558,7 +559,7 @@ describe("M1 context retrieval", () => {
         store,
       }).context({
         cwd: "C:\\repo",
-        prompt: "test",
+        prompt: "Run package validation tests",
         sessionId: "session-global-budget",
         tokenBudget: 4_096,
       });
@@ -1703,12 +1704,13 @@ describe("M1 context retrieval", () => {
       },
     };
     try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       const service = new ContextRetrievalService({
         backend,
         store,
         timeoutMs: 100,
       });
-      const responses = await Promise.all([
+      const pending = Promise.all([
         service.context({
           cwd: "C:\\repo",
           prompt: "queued deadline guidance",
@@ -1724,6 +1726,8 @@ describe("M1 context retrieval", () => {
           tokenBudget: 300,
         }),
       ]);
+      await vi.advanceTimersByTimeAsync(101);
+      const responses = await pending;
 
       expect(responses.map((response) => response.status)).toEqual([
         "ok",
@@ -1733,6 +1737,7 @@ describe("M1 context retrieval", () => {
         items: [],
       });
     } finally {
+      vi.useRealTimers();
       store.close();
     }
   });

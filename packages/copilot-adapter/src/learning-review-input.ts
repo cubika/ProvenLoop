@@ -1,4 +1,5 @@
 import type { LearningComparisonCandidate, LearningWindow, RuleProposalInput } from "@provenloop/contracts";
+import { learningDiscoverySourceContext } from "@provenloop/domain";
 import { LearningInputBudgetError, LEARNING_REQUEST_MAX_BYTES, LEARNING_REQUEST_MAX_CHARACTERS } from "./learning-input.js";
 
 /** All spans have already passed extraction-view and canonical source validation. */
@@ -26,6 +27,9 @@ export const prepareLearningReviewInput = (
   });
   const prompt = instructions + JSON.stringify({ repoId: window.repoId, worktree: window.worktree, origin: window.origin ?? "user",
     proposals: compact, sourceContext, citations, priorKnowledge,
+    ...(proposals.some((proposal) => proposal.discovery?.sourceReferences?.length) ? {
+      sourceMetadata: learningDiscoverySourceContext(proposals, window.events),
+    } : {}),
     evidenceLimit: "Only captured anchors and validated cited passages are shown; do not infer absent proof or expand scope.",
   });
   if (Buffer.byteLength(prompt, "utf8") > LEARNING_REQUEST_MAX_BYTES || prompt.length > LEARNING_REQUEST_MAX_CHARACTERS) throw new LearningInputBudgetError();

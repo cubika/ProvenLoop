@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import { Worker } from "node:worker_threads";
 import { DatabaseSync, loadNodeSqlite } from "@provenloop/storage-sqlite";
 import { searchableText } from "./search-text.js";
+import { discoveryProfileSchema } from "@provenloop/contracts";
+import { discoverySearchText, DISCOVERY_VOCABULARY_VERSION } from "@provenloop/domain";
 
 import type {
   KnowledgeBackend,
@@ -150,6 +152,7 @@ const validateProjection = (
     throw new Error("Knowledge projection is invalid.");
   }
   return {
+    ...(record.discoveryProfile === undefined ? {} : { discoveryProfile: discoveryProfileSchema.parse(record.discoveryProfile) }),
     appliesWhen: [...record.appliesWhen],
     content: record.content.trim(),
     knowledgeId: record.knowledgeId.trim(),
@@ -617,6 +620,12 @@ implements KnowledgeBackend {
     }
   }
 
+  public needsDiscoveryRefresh(): boolean {
+    return this.#database.prepare(`SELECT 1 FROM knowledge_records WHERE
+      coalesce(json_extract(projection_json, '$.discoveryProfile.vocabularyVersion'), json_extract(projection_json, '$.retrievalMetadata.discoveryVersion'),'') != ? LIMIT 1`)
+      .get(DISCOVERY_VOCABULARY_VERSION) !== undefined;
+  }
+
   public search(
     query: KnowledgeQuery,
   ): Promise<readonly KnowledgeRecord[]> {
@@ -779,7 +788,7 @@ implements KnowledgeBackend {
       if (metadata?.eligible === false) continue;
       insert.run(
         row.record_id as number, record.knowledgeId,
-        searchableText([record.topicKey, ...(record.searchAliases ?? [])].join("\n")),
+        searchableText([record.topicKey, ...(record.searchAliases ?? []), ...(record.discoveryProfile ? [discoverySearchText(record.discoveryProfile)] : [])].join("\n")),
         searchableText(record.content), searchableText(record.appliesWhen.join("\n")),
         record.nonApplicability.join("\n"),
       );
@@ -813,7 +822,7 @@ implements KnowledgeBackend {
       insert.run(
         row.record_id as number,
         record.knowledgeId,
-        searchableText([record.topicKey, ...(record.searchAliases ?? [])].join("\n")),
+        searchableText([record.topicKey, ...(record.searchAliases ?? []), ...(record.discoveryProfile ? [discoverySearchText(record.discoveryProfile)] : [])].join("\n")),
         searchableText(record.content),
         searchableText(record.appliesWhen.join("\n")),
         record.nonApplicability.join("\n"),

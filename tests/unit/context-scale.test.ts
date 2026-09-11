@@ -58,7 +58,7 @@ describe("context selection with accumulated knowledge", () => {
   it("keeps already validated guidance when duplicate growth exhausts the candidate budget", async () => {
     const f = await fixture(Array.from({ length: 501 }, (_, index) => candidate("duplicate-" + index)));
     const result = await f.query("npm test");
-    expect(result.status).toBe("ok");
+    expect(result.status).toBe("degraded");
     expect(result.statusDetail).toContain("validated partial results");
     expect(result.items).toHaveLength(1);
     expect(result.items[0]?.guidance).toBe("Run npm test before merging code.");

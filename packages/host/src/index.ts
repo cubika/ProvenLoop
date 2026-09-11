@@ -63,4 +63,5 @@ export {
 } from "./work-episode-projector.js";
 
 export * from "./learning-coordinator.js";
+export * from "./discovery-enrichment.js";
 export * from "./capture-retention.js";

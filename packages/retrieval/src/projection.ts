@@ -2,8 +2,9 @@ import {
   knowledgeCandidateSchema,
   type KnowledgeCandidate,
   type RuleProposal,
+  type DiscoveryProfile,
 } from "@provenloop/contracts";
-import { containsPotentialSecret, hasAcceptedLearningDistillation, sha256 } from "@provenloop/domain";
+import { buildDiscoveryProfile, containsPotentialSecret, DISCOVERY_VOCABULARY_VERSION, hasAcceptedLearningDistillation, sha256, validateDiscoveryProfile } from "@provenloop/domain";
 
 import type {
   CanonicalKnowledgeStore,
@@ -16,6 +17,7 @@ const reviewedProposals = (candidate: KnowledgeCandidate, proposals: readonly Ru
   proposals.filter((proposal) =>
     proposal.knowledgeId === candidate.knowledgeId && proposal.rule === candidate.content &&
     sha256([proposal.trigger]) === sha256(candidate.appliesWhen) && sha256(proposal.exclusions) === sha256(candidate.nonApplicability) &&
+    sha256(proposal.discovery ?? null) === sha256(candidate.discovery ?? null) &&
     proposal.sourceDigests.length === candidate.sourceEvidenceIds.length &&
     proposal.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)) &&
     hasAcceptedLearningDistillation(proposal, proposal.sourceDigests),
@@ -32,8 +34,10 @@ export const reviewedRetrievalScope = (
 export const knowledgeProjectionFromCandidate = (
   input: KnowledgeCandidate,
   proposals: readonly RuleProposal[] = [],
+  enrichment?: DiscoveryProfile,
 ): KnowledgeProjection => {
   const candidate = knowledgeCandidateSchema.parse(input);
+  const acceptedEnrichment = enrichment && validateDiscoveryProfile(candidate, enrichment) ? enrichment : undefined;
   const reviewed = reviewedProposals(candidate, proposals);
   const retrievalScope = reviewedRetrievalScope(candidate, reviewed);
   const queryTerms = reviewed.flatMap((proposal) => {
@@ -55,6 +59,7 @@ export const knowledgeProjectionFromCandidate = (
   // This is a cheap discovery filter, not an evidence-admission certificate.
   // Candidate conventions/references still require the canonical source review.
   const retrievalMetadata = {
+    discoveryVersion: DISCOVERY_VOCABULARY_VERSION,
     scope: candidate.scope,
     ...(candidate.scopeId === undefined ? {} : { scopeId: candidate.scopeId }),
     eligible: (candidate.scope === "personal" || candidate.scopeId !== undefined) &&
@@ -63,6 +68,10 @@ export const knowledgeProjectionFromCandidate = (
     ...(candidate.expiresAt === undefined ? {} : { expiresAt: candidate.expiresAt }),
   };
   return {
+    ...(acceptedEnrichment ? { discoveryProfile: acceptedEnrichment } : candidate.state === "active" || reviewed.length > 0 ? { discoveryProfile: buildDiscoveryProfile(candidate, candidate.discovery, reviewed[0]?.distillation ? {
+      reviewedBy: reviewed[0].distillation.reviewer.provider + "/" + reviewed[0].distillation.reviewer.model,
+      reviewVersion: reviewed[0].distillation.reviewer.version,
+    } : {}) } : {}),
     appliesWhen: candidate.appliesWhen,
     content: candidate.content,
     knowledgeId: candidate.knowledgeId,
@@ -110,7 +119,8 @@ export class KnowledgeProjectionManager {
       const entries = proposalsById.get(proposal.knowledgeId) ?? [];
       entries.push(proposal); proposalsById.set(proposal.knowledgeId, entries);
     }
-    const records = available.map((candidate) => knowledgeProjectionFromCandidate(candidate, proposalsById.get(candidate.knowledgeId)));
+    const enrichment = this.#store.discoveryProfiles?.(available);
+    const records = available.map((candidate) => knowledgeProjectionFromCandidate(candidate, proposalsById.get(candidate.knowledgeId), enrichment?.get(candidate.knowledgeId)));
     if (incremental && this.#backend.synchronize !== undefined) {
       await this.#backend.synchronize({ records });
     } else {

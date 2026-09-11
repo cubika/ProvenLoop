@@ -11,9 +11,14 @@ import type {
   RepositoryState,
   Scope,
   WorkEpisode,
+  DiscoveryProfile,
+  ExperiencePurpose,
+  SourceReference,
 } from "@provenloop/contracts";
+import type { DiscoveryRelevance } from "@provenloop/domain";
 
 export interface KnowledgeProjection {
+  readonly discoveryProfile?: DiscoveryProfile;
   readonly appliesWhen: readonly string[];
   readonly content: string;
   readonly knowledgeId: string;
@@ -27,6 +32,7 @@ export interface KnowledgeProjection {
     readonly scopeId?: string;
     readonly eligible: boolean;
     readonly expiresAt?: string;
+    readonly discoveryVersion?: string;
   };
   readonly topicKey: string;
 }
@@ -75,6 +81,7 @@ export interface KnowledgeBackend {
 }
 
 export interface CanonicalKnowledgeStore {
+  discoveryProfiles?(candidates: readonly KnowledgeCandidate[]): ReadonlyMap<string, DiscoveryProfile>;
   learningProposals?(knowledgeIds?: readonly string[]): readonly RuleProposal[];
   knowledgeCandidates(
     ids?: readonly string[],
@@ -104,6 +111,7 @@ extends CanonicalKnowledgeStore {
 
 export interface CanonicalContextStore
 extends CanonicalKnowledgeAdmissionStore {
+  contextUseRecord?(requestId: string): ContextUseRecord | undefined;
   appendContextUseRecord(record: ContextUseRecord): boolean;
   branchContextFor(input: {
     readonly branch: string;
@@ -142,6 +150,7 @@ extends CanonicalKnowledgeAdmissionStore {
 }
 
 export interface KnowledgeRetrievalQuery {
+  readonly routes?: readonly { readonly route: "lexical" | "concept"; readonly text: string }[];
   readonly worktree?: string;
   readonly headSha?: string;
   readonly shellInvocation?: TrustedShellInvocation;
@@ -157,6 +166,9 @@ export interface KnowledgeRetrievalQuery {
 }
 
 export interface RetrievedKnowledge {
+  readonly displayApplicability?: readonly string[];
+  readonly discoveryProfile?: DiscoveryProfile;
+  readonly routeRanks?: Readonly<Partial<Record<"lexical" | "concept", number>>>;
   readonly candidate: KnowledgeCandidate;
   readonly retrievalScope?: RuleProposal["retrievalScope"];
   readonly searchAliases?: readonly string[];
@@ -197,6 +209,16 @@ export interface ContextRequest {
   readonly workflowScopeId?: string;
 }
 
+export interface ContextSearchRequest extends ContextRequest {
+  readonly protocolVersion: 1;
+  readonly alternateQueries?: readonly string[];
+  readonly conceptHints?: readonly string[];
+  readonly entityHints?: readonly string[];
+  readonly purposes?: readonly ExperiencePurpose[];
+  readonly topics?: readonly string[];
+  readonly limit?: number;
+}
+
 export interface TrustedToolInvocation {
   readonly serverName: string;
   readonly toolName: string;
@@ -222,6 +244,9 @@ export interface TrustedWorkspaceIdentity {
 export type ContextItemKind = "branch_context" | "knowledge";
 
 export interface ContextItem {
+  readonly relevance?: Pick<DiscoveryRelevance, "band" | "unresolvedConditions">;
+  readonly classification?: { readonly purposes: readonly string[]; readonly topics: readonly string[] };
+  readonly sourceReferences?: readonly SourceReference[];
   readonly deliveryMode?: "convention" | "reference";
   readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool"; truncated?: true }[];
   readonly reference?: ReferenceContextMetadata;
@@ -237,6 +262,9 @@ export interface ContextItem {
 }
 
 export interface ContextResponse {
+  readonly retrievalMode?: "context" | "search";
+  readonly moreAvailable?: boolean;
+  readonly truncatedByBudget?: boolean;
   readonly items: readonly ContextItem[];
   readonly latencyMs: number;
   readonly renderedTokens: number;

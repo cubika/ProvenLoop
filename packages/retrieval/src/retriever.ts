@@ -17,6 +17,7 @@ import {
   type KnowledgeBackend,
   type KnowledgeRetrievalQuery,
   type RetrievedKnowledge,
+  type KnowledgeRecord,
 } from "./types.js";
 import { learningApplicable } from "./learning-applicability.js";
 import { knowledgeProjectionFromCandidate, reviewedRetrievalScope } from "./projection.js";
@@ -94,7 +95,12 @@ export class CanonicalKnowledgeRetriever {
     if (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 10_000) {
       throw new RangeError("Knowledge retrieval candidate budget must be between 1 and 10000.");
     }
-    const pageSize = Math.max(query.limit * 5, 20);
+    const routes = query.routes?.length ? query.routes.map((route) => ({ ...route, offset: 0, done: false }))
+      : [{ route: "lexical" as const, text: query.text, offset: 0, done: false }];
+    if (routes.length > 8 || routes.some((route) => !route.text.trim() || route.text.length > 16_000)) {
+      throw new RangeError("Knowledge retrieval routes exceed the bounded query contract.");
+    }
+    const pageSize = routes.length > 1 ? 30 : Math.max(query.limit * 5, 20);
     let examined = 0;
     const retrieved: RetrievedKnowledge[] = [];
     const admissionById = new Map<
@@ -110,7 +116,8 @@ export class CanonicalKnowledgeRetriever {
       options.timeoutMs === undefined
         ? undefined
         : Date.now() + options.timeoutMs;
-    let offset = 0;
+    const returnedIds = new Set<string>();
+    const routeRanks = new Map<string, Partial<Record<"lexical" | "concept", number>>>();
     while (retrieved.length < query.limit) {
       if (
         deadline !== undefined &&
@@ -118,44 +125,60 @@ export class CanonicalKnowledgeRetriever {
       ) {
         throw new Error("Knowledge retrieval timed out.");
       }
-      const backendQuery = {
-        limit: Math.min(pageSize, maxCandidates - examined),
-        filter: {
-          now: now.toISOString(),
-          scopes: [
-            { scope: "personal" as const },
-            ...(query.repositoryScopeId === undefined ? [] : [{ scope: "repository" as const, scopeId: query.repositoryScopeId }]),
-            ...(query.workflowScopeId === undefined ? [] : [{ scope: "workflow" as const, scopeId: query.workflowScopeId }]),
-            ...(query.repositoryScopeId === undefined || query.branchScopeId === undefined ? [] : [{
-              scope: "branch" as const, scopeId: branchScopeIdFor(query.repositoryScopeId, query.branchScopeId),
-            }]),
-          ],
-        },
-        ...(query.match === undefined ? {} : { match: query.match }),
-        offset,
-        text: query.text,
-      };
-      const remaining =
-        deadline === undefined
-          ? undefined
-          : deadline - Date.now();
-      if (remaining !== undefined && remaining <= 0) {
-        throw new Error("Knowledge retrieval timed out.");
-      }
-      const hits =
-        remaining !== undefined &&
-        this.#backend.searchWithTimeout !== undefined
-          ? await this.#backend.searchWithTimeout(
-              backendQuery,
-              remaining,
-            )
+      const hits: KnowledgeRecord[] = [];
+      let reserved = examined;
+      const pages = routes.filter((route) => !route.done).flatMap((route) => {
+        const limit = Math.min(pageSize, maxCandidates - reserved);
+        reserved += limit;
+        return limit > 0 ? [{ route, limit }] : [];
+      });
+      const results = await Promise.all(pages.map(async ({ route, limit }) => {
+        const backendQuery = {
+          limit,
+          filter: {
+            now: now.toISOString(),
+            scopes: [
+              { scope: "personal" as const },
+              ...(query.repositoryScopeId === undefined ? [] : [{ scope: "repository" as const, scopeId: query.repositoryScopeId }]),
+              ...(query.workflowScopeId === undefined ? [] : [{ scope: "workflow" as const, scopeId: query.workflowScopeId }]),
+              ...(query.repositoryScopeId === undefined || query.branchScopeId === undefined ? [] : [{
+                scope: "branch" as const, scopeId: branchScopeIdFor(query.repositoryScopeId, query.branchScopeId),
+              }]),
+            ],
+          },
+          ...(query.match === undefined ? {} : { match: query.match }),
+          offset: route.offset,
+          text: route.text,
+        };
+        const remaining = deadline === undefined ? undefined : deadline - Date.now();
+        if (remaining !== undefined && remaining <= 0) throw new Error("Knowledge retrieval timed out.");
+        const page = remaining !== undefined && this.#backend.searchWithTimeout !== undefined
+          ? await this.#backend.searchWithTimeout(backendQuery, remaining)
           : await this.#backend.search(backendQuery);
-      if (hits.length === 0) {
-        break;
+        return { route, page, limit };
+      }));
+      for (const { route, page, limit } of results) {
+        for (const [index, hit] of page.entries()) {
+          const ranks = routeRanks.get(hit.knowledgeId) ?? {};
+          ranks[route.route] = Math.min(ranks[route.route] ?? Infinity, route.offset + index + 1);
+          routeRanks.set(hit.knowledgeId, ranks);
+          hits.push(hit);
+        }
+        route.offset += page.length;
+        route.done = page.length < limit;
+        examined += page.length;
       }
-      examined += hits.length;
+      if (hits.length === 0) break;
+      const uniqueHits = [...new Map(hits.map((hit) => [hit.knowledgeId, hit])).values()];
+      // Backend paging yields to writers. Evidence, controls, and source payloads
+      // can change without a candidate ID change, so admission is page-local.
+      admissionById.clear(); applicableById.clear(); sourceUseById.clear();
+      learningApplicabilityById.clear(); projectionsById.clear(); retrievalScopesById.clear();
+      const fusion = (hit: KnowledgeRecord) => Object.values(routeRanks.get(hit.knowledgeId) ?? {})
+        .reduce((sum, rank) => sum + 1 / (60 + rank), 0);
+      uniqueHits.sort((left, right) => fusion(right) - fusion(left) || right.score - left.score);
       const candidates = this.#store.knowledgeCandidates(
-        hits.map((hit) => hit.knowledgeId),
+        uniqueHits.map((hit) => hit.knowledgeId),
       ).filter((candidate) =>
         scopeMatches(candidate.scope, candidate.scopeId, query) &&
         (candidate.expiresAt === undefined || Date.parse(candidate.expiresAt) > now.getTime()) &&
@@ -173,11 +196,12 @@ export class CanonicalKnowledgeRetriever {
         (candidate) => !admissionById.has(candidate.knowledgeId),
       );
       if (unevaluatedCandidates.length > 0) {
+        const enrichment = this.#store.discoveryProfiles?.(unevaluatedCandidates);
         const evidence = this.#store.knowledgeAdmissionEvidence(
           unevaluatedCandidates,
         );
         for (const candidate of unevaluatedCandidates) {
-          projectionsById.set(candidate.knowledgeId, knowledgeProjectionFromCandidate(candidate, evidence.learningProposals));
+          projectionsById.set(candidate.knowledgeId, knowledgeProjectionFromCandidate(candidate, evidence.learningProposals, enrichment?.get(candidate.knowledgeId)));
           const retrievalScope = reviewedRetrievalScope(candidate, evidence.learningProposals ?? []);
           if (retrievalScope) retrievalScopesById.set(candidate.knowledgeId, retrievalScope);
           const sourceUse = learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords);
@@ -215,7 +239,8 @@ export class CanonicalKnowledgeRetriever {
       ) {
         throw new Error("Knowledge retrieval timed out.");
       }
-      for (const hit of hits) {
+      for (const hit of uniqueHits) {
+        if (returnedIds.has(hit.knowledgeId)) continue;
         const candidate = byId.get(hit.knowledgeId);
         const projection = projectionsById.get(hit.knowledgeId);
         if (
@@ -228,12 +253,15 @@ export class CanonicalKnowledgeRetriever {
           (hit.retrievalMetadata !== undefined && sha256(hit.retrievalMetadata) !== sha256(projection?.retrievalMetadata)) ||
           sha256(hit.searchAliases ?? []) !== sha256(projection?.searchAliases ?? []) ||
           sha256(hit.searchExclusions ?? []) !== sha256(projection?.searchExclusions ?? [])
+          || (hit.discoveryProfile !== undefined && sha256(hit.discoveryProfile) !== sha256(projection?.discoveryProfile))
         ) {
           continue;
         }
         const sourceUse = sourceUseById.get(candidate.knowledgeId);
         const retrievalScope = retrievalScopesById.get(candidate.knowledgeId);
         const item: RetrievedKnowledge = {
+          ...(projection?.discoveryProfile ? { discoveryProfile: projection.discoveryProfile } : {}),
+          routeRanks: routeRanks.get(hit.knowledgeId) ?? {},
           ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
           ...(sourceUse?.researchSummary ? { researchSummary: sourceUse.researchSummary } : {}),
           ...(sourceUse?.distilledLesson ? { distilledLesson: sourceUse.distilledLesson } : {}),
@@ -242,8 +270,8 @@ export class CanonicalKnowledgeRetriever {
             revisionStatus: sourceUse.commitSha === query.headSha ? "unchanged" as const : "changed" as const,
             requiresRevalidation: true as const,
           } } : {}),
-          candidate: learningApplicabilityById.has(candidate.knowledgeId)
-            ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
+          candidate,
+          ...(learningApplicabilityById.has(candidate.knowledgeId) ? { displayApplicability: learningApplicabilityById.get(candidate.knowledgeId) ?? [] } : {}),
           ...(projection?.searchAliases ? { searchAliases: projection.searchAliases } : {}),
           ...(projection?.searchExclusions ? { searchExclusions: projection.searchExclusions } : {}),
           ...(retrievalScope ? { retrievalScope } : {}),
@@ -251,22 +279,41 @@ export class CanonicalKnowledgeRetriever {
         };
         if (options.accept !== undefined && !options.accept(item)) continue;
         retrieved.push(item);
+        returnedIds.add(item.candidate.knowledgeId);
         if (retrieved.length === query.limit) {
           break;
         }
       }
-      offset += hits.length;
-      if (hits.length < backendQuery.limit) {
-        break;
-      }
+      if (routes.every((route) => route.done)) break;
       if (retrieved.length < query.limit && examined >= maxCandidates) {
         if (retrieved.length > 0) {
           options.onCandidateBudgetExhausted?.();
-          return retrieved;
+          return this.#revalidate(retrieved, query, now);
         }
         throw new Error("Knowledge retrieval candidate budget exhausted.");
       }
     }
-    return retrieved;
+    return this.#revalidate(retrieved, query, now);
+  }
+
+  #revalidate(items: readonly RetrievedKnowledge[], query: KnowledgeRetrievalQuery, now: Date): readonly RetrievedKnowledge[] {
+    if (!items.length) return items;
+    const candidates = this.#store.knowledgeCandidates(items.map((item) => item.candidate.knowledgeId));
+    const evidence = this.#store.knowledgeAdmissionEvidence(candidates);
+    const admissions = new Map(this.#admissionPolicy.evaluateAll({ candidates, ...evidence }).map((entry) => [entry.knowledgeId, entry.admitted]));
+    const unavailable = this.#store.knowledgeCandidatesWithUnavailableSources(candidates);
+    const current = new Map(candidates.map((candidate) => [candidate.knowledgeId, candidate]));
+    const enrichment = this.#store.discoveryProfiles?.(candidates);
+    return items.filter((item) => {
+      const candidate = current.get(item.candidate.knowledgeId);
+      if (!candidate || sha256(candidate) !== sha256(item.candidate) || unavailable.has(candidate.knowledgeId) || !admissions.get(candidate.knowledgeId)) return false;
+      const profile = knowledgeProjectionFromCandidate(candidate, evidence.learningProposals, enrichment?.get(candidate.knowledgeId)).discoveryProfile;
+      if (sha256(profile ?? null) !== sha256(item.discoveryProfile ?? null)) return false;
+      const sourceUse = learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords);
+      if (!eligible(candidate, query, now, sourceUse)) return false;
+      if (sourceUse && (!query.worktree || !sameWorktree(sourceUse.worktree, query.worktree))) return false;
+      if (!sourceUse && !learningApplicable(candidate, evidence.learningProposals ?? [], query, evidence.learningReceipts ?? [])) return false;
+      return true;
+    });
   }
 }

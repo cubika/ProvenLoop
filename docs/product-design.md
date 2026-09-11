@@ -7,7 +7,7 @@
 **Updated:** 2026-09-11
 
 **Implementation boundary:** This document includes product goals and phased designs.
-The [0.15 release notes](releases/0.1.0-alpha.0.15.md) describe the published Windows
+The [0.16 release notes](releases/0.1.0-alpha.0.16.md) describe the Windows
 Design Partner Preview; dated development updates may describe newer source changes.
 Delayed outcome linking, cross-task retrospectives, evaluated Playbooks, and additional
 Agent adapters remain future work. Source checks and synthetic regressions do not
@@ -19,7 +19,7 @@ high-value lessons from ordinary work. Retained learning should approach the qua
 of guidance a developer would deliberately include in Copilot instructions. Raw
 quotations preserve evidence but do not, by themselves, satisfy that standard.
 [FB-008](feedback.md#fb-008-distillation-quality-noise-and-missed-learning) records the
-reported noise and missed-learning concerns. Its unreleased implementation adds bounded
+reported noise and missed-learning concerns. The 0.16 implementation adds bounded
 model review and concise delivery; the broader quality bar remains unvalidated.
 
 **First-product requirement update (2026-09-07):** Automatic rule extraction, evidence

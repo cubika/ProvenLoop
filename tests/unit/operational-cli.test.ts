@@ -586,6 +586,9 @@ describe("local MCP registration target", () => {
             name: "provenloop_context",
           },
           {
+            name: "provenloop_search",
+          },
+          {
             name: "provenloop_explain",
           },
           {

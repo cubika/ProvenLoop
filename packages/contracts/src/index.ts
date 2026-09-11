@@ -196,3 +196,5 @@ export {
 } from "./work-episode.js";
 
 export * from "./learning.js";
+export * from "./discovery.js";
+export * from "./discovery-enrichment.js";

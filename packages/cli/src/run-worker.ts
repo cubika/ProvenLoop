@@ -290,7 +290,7 @@ export const runCaptureWorkerOnce = async (
     }
     let knowledgeProjectionError: string | undefined;
     if (
-      projectionRequired &&
+      result.status === "completed" &&
       adapterState?.capabilities.retrieval.enabled === true
     ) {
       try {
@@ -306,10 +306,12 @@ export const runCaptureWorkerOnce = async (
           ),
         );
         try {
-          await new KnowledgeProjectionManager({
-            backend: knowledgeBackend,
-            store,
-          }).synchronize();
+          if (projectionRequired || knowledgeBackend.needsDiscoveryRefresh()) {
+            await new KnowledgeProjectionManager({
+              backend: knowledgeBackend,
+              store,
+            }).synchronize();
+          }
         } finally {
           try {
             await knowledgeBackend.closeAsync();

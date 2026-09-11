@@ -4,7 +4,7 @@ import { sha256 } from "./digest.js";
 import { validAgentLearningSource } from "./agent-learning-source.js";
 import { isInternalWorkSource } from "./work-source.js";
 import { containsPotentialSecret } from "./redaction.js";
-import { hasAcceptedLearningDistillation } from "./learning-distillation.js";
+import { hasAcceptedLearningDistillation, validLearningDiscoveryMetadata } from "./learning-distillation.js";
 
 export interface LearningSourceUse {
   readonly mode: "convention" | "reference";
@@ -55,6 +55,8 @@ export const learningSourceUse = (
           id === candidate.knowledgeId || id === `knowledge:${candidate.knowledgeId}`))) continue;
     const mode = proposal.retention?.kind;
     const distilled = hasAcceptedLearningDistillation(proposal, proposal.sourceDigests);
+    if (candidate.discovery && (!distilled || sha256(candidate.discovery) !== sha256(proposal.discovery) ||
+        !validLearningDiscoveryMetadata(proposal, events))) continue;
     if (mode === "convention" && proposal.userSource) {
       const original = anchor.content?.message;
       // Keep exceptions outside the extractor's selected span. Long messages need deliberate review.

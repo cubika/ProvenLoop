@@ -9,6 +9,8 @@ export {
   ContextRetrievalService,
   DEFAULT_CONTEXT_TIMEOUT_MS,
   MAX_CONTEXT_TOKENS,
+  MAX_SEARCH_TOKENS,
+  DEFAULT_SEARCH_TIMEOUT_MS,
   estimateRenderedTokens,
   type ContextRetrievalServiceOptions,
 } from "./context-service.js";
@@ -30,6 +32,7 @@ export {
   type ContextItem,
   type ContextItemKind,
   type ContextRequest,
+  type ContextSearchRequest,
   type ContextResponse,
   type KnowledgeBackend,
   type KnowledgeBackendHealth,

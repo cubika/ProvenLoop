@@ -41,7 +41,9 @@ import {
 import {
   ContextRetrievalService,
   DEFAULT_CONTEXT_TIMEOUT_MS,
+  DEFAULT_SEARCH_TIMEOUT_MS,
   MAX_CONTEXT_TOKENS,
+  MAX_SEARCH_TOKENS,
   SqliteFtsKnowledgeBackend,
   knowledgeProjectionFromCandidate,
   type ContextExplanation,
@@ -49,6 +51,7 @@ import {
   type ContextFeedbackRequest,
   type ContextFeedbackResponse,
   type ContextRequest,
+  type ContextSearchRequest,
   type ContextResponse,
 } from "@provenloop/retrieval";
 import {
@@ -79,16 +82,19 @@ export interface McpServerIo {
   readonly output: Writable;
 }
 
+type McpExplainRequest = {
+  readonly explanationRef: string;
+  readonly sessionId: string;
+} & Partial<Pick<ContextRequest, "cwd" | "repoId" | "branch" | "headSha" | "trustedWorkspace" | "workflowScopeId">>;
+
 export interface McpToolHandlers {
   context(request: ContextRequest): Promise<ContextResponse>;
+  search?(request: ContextSearchRequest): Promise<ContextResponse>;
   unavailableContext?(
     request: ContextRequest,
     detail: string,
   ): Promise<ContextResponse>;
-  explain(request: {
-    readonly explanationRef: string;
-    readonly sessionId: string;
-  }): Promise<ContextExplanation>;
+  explain(request: McpExplainRequest): Promise<ContextExplanation>;
   feedback(
     request: ContextFeedbackRequest,
   ): Promise<ContextFeedbackResponse>;
@@ -120,6 +126,11 @@ const trustedWorkspace = (
 });
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
+const SEARCH_DEFAULT_LIMIT = 8;
+const SEARCH_MAX_LIMIT = 12;
+const SEARCH_PURPOSES = [
+  "fact", "constraint", "lesson", "procedure", "rationale",
+] as const;
 
 const send = (
   output: Writable,
@@ -300,15 +311,71 @@ const parseContextRequest = (
   };
 };
 
+const boundedStringList = (
+  input: unknown,
+  maxItems: number,
+  maxLength: number,
+): readonly string[] | undefined => {
+  if (!Array.isArray(input) || input.length > maxItems || input.some(
+    (value) => typeof value !== "string" || value.length > maxLength,
+  )) return undefined;
+  return stringList(input);
+};
+
+const parseSearchRequest = (
+  input: unknown,
+  trusted: TrustedMcpContext,
+): ContextSearchRequest | undefined => {
+  if (
+    !isRecord(input) || input.protocolVersion !== 1 ||
+    !hasOnlyKeys(input, [
+      "protocolVersion", "prompt", "fileHints", "alternateQueries",
+      "conceptHints", "entityHints", "purposes", "topics", "limit", "tokenBudget",
+    ])
+  ) return undefined;
+  const prompt = nonEmptyString(input.prompt);
+  const fileHints = boundedStringList(input.fileHints, 16, 512);
+  const alternateQueries = boundedStringList(input.alternateQueries, 3, 2_000);
+  const conceptHints = boundedStringList(input.conceptHints, 8, 128);
+  const entityHints = boundedStringList(input.entityHints, 16, 256);
+  const purposes = boundedStringList(input.purposes, SEARCH_PURPOSES.length, 32);
+  const topics = boundedStringList(input.topics, 8, 128);
+  const limit = input.limit === undefined ? SEARCH_DEFAULT_LIMIT : input.limit;
+  const tokenBudget = input.tokenBudget === undefined ? MAX_SEARCH_TOKENS : input.tokenBudget;
+  if (
+    prompt === undefined || (input.prompt as string).length > 12_000 ||
+    typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > SEARCH_MAX_LIMIT ||
+    typeof tokenBudget !== "number" || !Number.isInteger(tokenBudget) || tokenBudget < 1 || tokenBudget > MAX_SEARCH_TOKENS ||
+    (input.fileHints !== undefined && fileHints === undefined) ||
+    (input.alternateQueries !== undefined && alternateQueries === undefined) ||
+    (input.conceptHints !== undefined && conceptHints === undefined) ||
+    (input.entityHints !== undefined && entityHints === undefined) ||
+    (input.purposes !== undefined && purposes === undefined) ||
+    (input.topics !== undefined && topics === undefined) ||
+    purposes?.some((purpose) => !SEARCH_PURPOSES.some((allowed) => allowed === purpose))
+  ) return undefined;
+  return {
+    protocolVersion: 1,
+    cwd: trusted.cwd,
+    prompt,
+    sessionId: trusted.sessionId,
+    limit,
+    tokenBudget,
+    trustedWorkspace: trustedWorkspace(trusted),
+    ...(trusted.workflowScopeId === undefined ? {} : { workflowScopeId: trusted.workflowScopeId }),
+    ...(fileHints === undefined ? {} : { fileHints }),
+    ...(alternateQueries === undefined ? {} : { alternateQueries }),
+    ...(conceptHints === undefined ? {} : { conceptHints }),
+    ...(entityHints === undefined ? {} : { entityHints }),
+    ...(purposes === undefined ? {} : { purposes: purposes as NonNullable<ContextSearchRequest["purposes"]> }),
+    ...(topics === undefined ? {} : { topics }),
+  };
+};
+
 const parseExplainRequest = (
   input: unknown,
   trusted: TrustedMcpContext,
-):
-  | {
-      readonly explanationRef: string;
-      readonly sessionId: string;
-    }
-  | undefined => {
+): McpExplainRequest | undefined => {
   if (
     !isRecord(input) ||
     !hasOnlyKeys(input, [
@@ -320,9 +387,12 @@ const parseExplainRequest = (
   const explanationRef = nonEmptyString(input.explanationRef);
   return explanationRef === undefined
     ? undefined
-    : {
+      : {
+        cwd: trusted.cwd,
         explanationRef,
         sessionId: trusted.sessionId,
+        trustedWorkspace: trustedWorkspace(trusted),
+        ...(trusted.workflowScopeId === undefined ? {} : { workflowScopeId: trusted.workflowScopeId }),
       };
 };
 
@@ -475,6 +545,55 @@ const tools = [
       type: "object",
     },
     name: "provenloop_context",
+  },
+  {
+    description:
+      "Search past experience when the current task needs more depth than automatic context. Returns ranked summaries, applicability conditions, and recorded source references. May return previously shown items. Search hints never change the host-provided workspace or scope.",
+    inputSchema: {
+      additionalProperties: false,
+      properties: {
+        protocolVersion: { const: 1, type: "integer" },
+        prompt: { type: "string", minLength: 1, maxLength: 12_000 },
+        alternateQueries: {
+          description: "Alternate phrasings of the same task. Preserve its negation and conditions.",
+          type: "array", maxItems: 3,
+          items: { type: "string", minLength: 1, maxLength: 2_000 },
+        },
+        conceptHints: {
+          description: "Relevant concept names or IDs used as search hints.",
+          type: "array", maxItems: 8,
+          items: { type: "string", minLength: 1, maxLength: 128 },
+        },
+        entityHints: {
+          description: "Exact identifiers, system names, commands, or errors. Keep significant spelling and case.",
+          type: "array", maxItems: 16,
+          items: { type: "string", minLength: 1, maxLength: 256 },
+        },
+        fileHints: {
+          type: "array", maxItems: 16,
+          items: { type: "string", minLength: 1, maxLength: 512 },
+        },
+        purposes: {
+          description: "Optional explicit browse filter; omit to include unclassified experience.",
+          type: "array", maxItems: SEARCH_PURPOSES.length,
+          items: { type: "string", enum: SEARCH_PURPOSES },
+        },
+        topics: {
+          description: "Optional explicit topic-ID browse filter; omit for relevance search.",
+          type: "array", maxItems: 8,
+          items: { type: "string", minLength: 1, maxLength: 128 },
+        },
+        limit: {
+          type: "integer", minimum: 1, maximum: SEARCH_MAX_LIMIT, default: SEARCH_DEFAULT_LIMIT,
+        },
+        tokenBudget: {
+          type: "integer", minimum: 1, maximum: MAX_SEARCH_TOKENS, default: MAX_SEARCH_TOKENS,
+        },
+      },
+      required: ["protocolVersion", "prompt"],
+      type: "object",
+    },
+    name: "provenloop_search",
   },
   {
     description:
@@ -651,15 +770,29 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
   public async context(
     request: ContextRequest,
   ): Promise<ContextResponse> {
+    return this.#retrieve(request, "context");
+  }
+
+  public async search(
+    request: ContextSearchRequest,
+  ): Promise<ContextResponse> {
+    return this.#retrieve(request, "search");
+  }
+
+  async #retrieve(
+    request: ContextRequest | ContextSearchRequest,
+    mode: "context" | "search",
+  ): Promise<ContextResponse> {
     const startedAt = Date.now();
     const deadline =
-      startedAt + DEFAULT_CONTEXT_TIMEOUT_MS;
+      startedAt + (mode === "search" ? DEFAULT_SEARCH_TIMEOUT_MS : DEFAULT_CONTEXT_TIMEOUT_MS);
     try {
       await this.#assertNotUpgrading();
       const state = await this.#state();
       if (await this.#isInternalSession(request.sessionId)) {
         return {
           items: [],
+          retrievalMode: mode,
           latencyMs: Date.now() - startedAt,
           renderedTokens: 0,
           requestId: `context-${randomUUID()}`,
@@ -688,6 +821,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
             latencyMs: Date.now() - startedAt,
             renderedTokens: 0,
             requestId,
+            retrievalMode: mode,
             retrievalStatus: "disabled",
             returnedKnowledgeIds: [],
             sessionId: request.sessionId,
@@ -707,6 +841,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         }
         return {
           items: [],
+          retrievalMode: mode,
           latencyMs: Date.now() - startedAt,
           renderedTokens: 0,
           requestId,
@@ -727,6 +862,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       if (identity.internalSession) {
         return {
           items: [],
+          retrievalMode: mode,
           latencyMs: Date.now() - startedAt,
           renderedTokens: 0,
           requestId: `context-${randomUUID()}`,
@@ -746,8 +882,8 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         void suppliedRepositoryId;
         void suppliedBranch;
         void suppliedHead;
-        return await this.#withService((service) =>
-          service.context({
+        return await this.#withService((service) => {
+          const scopedRequest = {
             ...unscopedRequest,
             now: this.#now(),
             ...(identity.branch === undefined
@@ -765,14 +901,18 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
               : {
                   repoId: identity.repositoryId,
                 }),
-          }),
-        deadline);
+          };
+          return mode === "search"
+            ? service.search({ ...scopedRequest, protocolVersion: 1 })
+            : service.context(scopedRequest);
+        }, deadline, true);
       } finally {
         await contextLease.release();
       }
     } catch (error) {
       return {
         items: [],
+        retrievalMode: mode,
         latencyMs: Date.now() - startedAt,
         renderedTokens: 0,
         requestId: `context-${randomUUID()}`,
@@ -788,6 +928,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
   ): Promise<ContextResponse> {
     const startedAt = Date.now();
     const requestId = `context-${randomUUID()}`;
+    const retrievalMode = "protocolVersion" in request && request.protocolVersion === 1 ? "search" : "context";
     let store: CanonicalSqliteStore | undefined;
     let observationLease: Awaited<ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>>;
     let statusDetail = detail;
@@ -798,6 +939,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
       if (await this.#isInternalSession(request.sessionId)) {
         return {
           items: [],
+          retrievalMode,
           latencyMs: Date.now() - startedAt,
           renderedTokens: 0,
           requestId,
@@ -817,6 +959,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
         latencyMs: Date.now() - startedAt,
         renderedTokens: 0,
         requestId,
+        retrievalMode,
         retrievalStatus: "degraded",
         returnedKnowledgeIds: [],
         sessionId: request.sessionId,
@@ -829,6 +972,7 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     }
     return {
       items: [],
+      retrievalMode,
       latencyMs: Date.now() - startedAt,
       renderedTokens: 0,
       requestId,
@@ -837,19 +981,34 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
     };
   }
 
-  public async explain(request: {
-    readonly explanationRef: string;
-    readonly sessionId: string;
-  }): Promise<ContextExplanation> {
+  public async explain(request: McpExplainRequest): Promise<ContextExplanation> {
     await this.#assertNotUpgrading();
     await this.#assertRetrievalEnabled();
     if (await this.#isInternalSession(request.sessionId)) {
       throw new Error("Internal sessions cannot inspect user context.");
     }
+    let scopedRequest = request;
+    if (request.trustedWorkspace !== undefined) {
+      const identity = await this.#resolveSessionIdentity({
+        cwd: request.cwd ?? this.#cwd,
+        sessionId: request.sessionId,
+        trustedWorkspace: request.trustedWorkspace,
+      }, "unknown");
+      const { repoId: suppliedRepositoryId, branch: suppliedBranch, headSha: suppliedHead, ...unscopedRequest } = request;
+      void suppliedRepositoryId;
+      void suppliedBranch;
+      void suppliedHead;
+      scopedRequest = {
+        ...unscopedRequest,
+        ...(identity.repositoryId === undefined ? {} : { repoId: identity.repositoryId }),
+        ...(identity.branch === undefined ? {} : { branch: identity.branch }),
+        ...(identity.commitSha === undefined ? {} : { headSha: identity.commitSha }),
+      };
+    }
     return this.#withKnowledgeLease(() =>
       this.#withService(
         (service) =>
-          Promise.resolve(service.explain(request)),
+          Promise.resolve(service.explain(scopedRequest)),
         undefined,
         true,
       ),
@@ -1085,7 +1244,8 @@ export class LocalMcpToolHandlers implements McpToolHandlers {
               );
             }
             await activeBackend.index([
-              knowledgeProjectionFromCandidate(current, store.learningProposals([current.knowledgeId])),
+              knowledgeProjectionFromCandidate(current, store.learningProposals([current.knowledgeId]),
+                store.discoveryProfiles([current]).get(current.knowledgeId)),
             ]);
           };
           if (knowledgeLeaseHeld) {
@@ -1135,6 +1295,16 @@ const callTool = async (
         );
       }
       return handlers.context(request);
+    }
+    case "provenloop_search": {
+      const request = parseSearchRequest(call.arguments, trusted);
+      if (request === undefined) {
+        throw new TypeError("Invalid provenloop_search arguments.");
+      }
+      if (handlers.search === undefined) {
+        throw new Error("Deeper search is unavailable in this host.");
+      }
+      return handlers.search(request);
     }
     case "provenloop_explain": {
       const request = parseExplainRequest(
@@ -1321,7 +1491,7 @@ export const runMcpServer = async (
                   tools: {},
                 },
                 instructions:
-                  "For a new coding task or resumed task, call provenloop_context once before substantive work with relevant fileHints and tokenBudget 600. Do not repeatedly inject unchanged guidance. Treat unavailable identity or empty results honestly. Persistent feedback requires the real user's exact approval of the server's confirmation code; never approve on the user's behalf. User-confirmed rules are not externally verified knowledge, and displayed or helpful context is not automatically applied or a verified outcome.",
+                  "For a new coding task or resumed task, call provenloop_context once before substantive work with relevant fileHints and tokenBudget 600. Do not repeatedly inject unchanged guidance. Call provenloop_search with protocolVersion 1 when the current task needs deeper past experience; use a focused prompt and preserve conditions in alternate queries. It supports engineering tasks generally. Use provenloop_explain on a returned explanationRef to inspect captured evidence, and open selected recorded sources with normal file or browser tools. Treat unavailable identity or empty results honestly. Persistent feedback requires the real user's exact approval of the server's confirmation code; never approve on the user's behalf. User-confirmed rules are not externally verified knowledge, and displayed or helpful context is not automatically applied or a verified outcome.",
                 protocolVersion: MCP_PROTOCOL_VERSION,
                 serverInfo: {
                   name: "provenloop",
@@ -1389,16 +1559,19 @@ export const runMcpServer = async (
                   await logFailure(requestId);
                   throw new Error(`${detail} Request ID: ${requestId}. See logs/mcp.jsonl.`);
                 }
-                if (call.name === "provenloop_context") {
+                if (call.name === "provenloop_context" || call.name === "provenloop_search") {
                   let requestId = `context-${randomUUID()}`;
                   try {
                     const contextRequest = trusted === undefined
                       ? undefined
-                      : parseContextRequest(call.arguments, trusted);
+                      : call.name === "provenloop_search"
+                        ? parseSearchRequest(call.arguments, trusted)
+                        : parseContextRequest(call.arguments, trusted);
                     const result: ContextResponse = contextRequest !== undefined && handlers.unavailableContext !== undefined
                       ? await handlers.unavailableContext(contextRequest, detail)
                       : {
                         items: [],
+                        retrievalMode: call.name === "provenloop_search" ? "search" : "context",
                         latencyMs: Date.now() - startedAt,
                         renderedTokens: 0,
                         requestId,

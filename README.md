@@ -18,18 +18,26 @@ The core output is concise, reusable engineering guidance distilled from actual 
 The intended benefit is less repeated investigation and rework as the agent gains
 relevant project experience. See the [distillation standard](docs/product-design.md#45-distillation-is-the-product).
 
-Unreleased development uses schema 21 and adds a separate model quality review,
+Preview 0.16 uses schema 23 and adds a separate model quality review,
 concise scoped delivery, bilingual search aliases, and repository-readiness diagnostics.
 New lessons use English, with source quotations preserved in their original language.
 Reviewed policy changes replace earlier guidance, independent evidence can renew
 automatically expired lessons, and learning/use notices show the relevant content.
-These changes have not been published as a new version. Model review does not confer
+Model review does not confer
 external verification or establish sustained productivity improvement; see the
 [development record](docs/feedback.md#development-update-reviewed-distillation-and-usable-delivery).
 
 The first [scalability repairs](docs/scalability-review.md#9-first-implementation-pass)
 reduce retrieval and projection work and add growth regressions. Persistent
 incremental history processing and sustained-capacity acceptance remain open.
+
+[Experience discovery](docs/experience-retrieval-design.md#13-implementation-record)
+adds automatic purpose/topic classification, concept-assisted retrieval, general
+`provenloop_search`, optional source pointers, and task-specific relevance feedback.
+Existing lessons keep lexical retrieval while idle background enrichment adds
+independently reviewed search metadata. User-controlled metadata is preserved.
+The implementation has local regression coverage; real-corpus quality and
+installed-host performance still need validation.
 
 Learning also covers [agent investigation and self-directed recovery](docs/agent-experience-learning.md): captured findings can become source-backed candidates without a user correction; supported recovery evidence is required for automatic qualification.
 
@@ -78,13 +86,13 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-11):** `0.1.0-alpha.0.15` is the Windows
-Design Partner Preview with source-qualified learning, clearer work episodes,
-and local knowledge management. Run `provenloop ui` to review rules and their
+**Version boundary (2026-09-11):** `0.1.0-alpha.0.16` is the Windows
+Design Partner Preview with experience classification, concept-assisted search,
+and reviewed background enrichment. Run `provenloop ui` to review rules and their
 evidence, change scope, archive items, or clear records while keeping settings.
-The release uses schema 16 and enables background learning when its prerequisites
+The release uses schema 23 and enables background learning when its prerequisites
 are met, while preserving explicit opt-outs. See the
-[release notes](docs/releases/0.1.0-alpha.0.15.md) and
+[release notes](docs/releases/0.1.0-alpha.0.16.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -175,7 +183,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.16/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -188,8 +196,8 @@ Upgrading does not require closing every foreground Copilot session. ProvenLoop
 drains participating processes and targets only verified remaining plugin helpers.
 Old tools may disconnect: start a new session or use a host-supported reload to
 load the updated integration; hot reconnection is not guaranteed. Keep the prior
-runtime and recovery snapshots. This release migrates to schema 16; 0.12 through
-0.14 used schema 14, and 0.11 used schema 10. Older readers cannot open the new
+runtime and recovery snapshots. This release migrates to schema 23; 0.15 used
+schema 16, 0.12 through 0.14 used schema 14, and 0.11 used schema 10. Older readers cannot open the new
 schema. See [plugin process recovery](docs/plugin-process-recovery.md) for ownership,
 locked-directory recovery and the historical 0.12 repair record.
 
@@ -440,7 +448,7 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.15`, schema 16; M0/MVP remain No-Go |
+| Preview candidate | `0.1.0-alpha.0.16`, schema 23; M0/MVP remain No-Go |
 | Local viewer | `provenloop ui`: evidence review, knowledge management, capture metrics, and explicit record cleanup |
 | Learning quality | Source qualification and isolation are regression-tested; actual model quality remains unvalidated because a working model host was unavailable |
 | 0.14 release validation | Windows Node.js 22/24 CI and release workflow passed 928 unit and 270 integration tests, installed-tarball UI checks, and installer dry run; downloaded assets verified |

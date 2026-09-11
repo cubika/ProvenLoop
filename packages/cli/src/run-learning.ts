@@ -2,7 +2,7 @@ import { CopilotLearningProvider, getCopilotAutomaticLearningHostCapability, has
   readCopilotAdapterState, resolveAutomaticLearning, SpawnCommandRunner,
   type CommandRunner, type PersistedCopilotAdapterState } from "@provenloop/copilot-adapter";
 import type { LearningToolContract } from "@provenloop/contracts";
-import { LearningCoordinator } from "@provenloop/host";
+import { DiscoveryEnrichmentCoordinator, LearningCoordinator } from "@provenloop/host";
 import { isUpgradeMaintenanceActive, isExtensionShutdownRequested, resolveWindowsProvenLoopPaths, resolveWindowsProvenLoopLeaseName, WindowsNamedPipeLeaseProvider } from "@provenloop/platform-windows";
 import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { join, resolve } from "node:path";
@@ -76,13 +76,16 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
   try {
     if (!await enabled()) return { status: "disabled" as const };
     store = new CanonicalSqliteStore(paths.database);
+    const provider = new CopilotLearningProvider({ temporaryRoot: join(paths.root, "temp"), enabled });
     const result = await new LearningCoordinator({ store, enabled,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-      provider: new CopilotLearningProvider({ temporaryRoot: join(paths.root, "temp"), enabled }),
+      provider,
       lease: { tryAcquire: async () => ({ release: async () => undefined }) },
       contracts: () => options.contracts,
     }).run();
-    if (result.status === "evaluated" && (result.proposals ?? 0) > 0) {
+    const enrichment = result.status === "idle" ? await new DiscoveryEnrichmentCoordinator({ store, provider, enabled,
+      ...(options.signal === undefined ? {} : { signal: options.signal }) }).run() : undefined;
+    if (result.status === "evaluated" && (result.proposals ?? 0) > 0 || enrichment?.status === "accepted") {
       await writeFile(paths.projectionDirty, JSON.stringify({ schemaVersion: 1, markedAt: new Date().toISOString() }) + "\n", "utf8");
       const projectionLease = await new WindowsNamedPipeLeaseProvider(
         await resolveWindowsProvenLoopLeaseName(paths.root, "knowledge-projection"),
@@ -101,7 +104,7 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
       }
     }
     const learned = store.pendingLearningActivationIds();
-    return { ...result, learned };
+    return { ...result, learned, ...(enrichment ? { enrichment } : {}) };
   } finally {
     try { store?.close(); } finally { await lease.release(); }
   }
