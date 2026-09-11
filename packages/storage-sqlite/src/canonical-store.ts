@@ -72,6 +72,9 @@ import {
   KnowledgeAdmissionPolicy,
   validateLearningResponse,
   conflictingShellLearning,
+  selectAgentResearchEvents,
+  closedAgentResearchTurn,
+  type ResearchTurnEvent,
 } from "@provenloop/domain";
 import {
   resolveWindowsProvenLoopLeaseName,
@@ -2303,6 +2306,7 @@ export class CanonicalSqliteStore {
       }
       const prompts = this.#database.prepare(`SELECT raw_events.*, learning_prompt_work.generation FROM learning_prompt_work
         JOIN raw_events USING(deduplication_key) WHERE not_before <= ? ORDER BY not_before, learning_prompt_work.rowid LIMIT ?`).all(now.getTime(), limit);
+      const agentTasks = new Map<string, { eventId: string; events: CaptureEnvelope[] }>();
       const work = prompts.map((prompt): LearningPromptWork => {
         const values = [String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree), String(prompt.event_timestamp), String(prompt.event_id)];
         if (prompt.trust === "model" && prompt.event_type === "agent.message") {
@@ -2310,24 +2314,15 @@ export class CanonicalSqliteStore {
             WHERE parse_status='supported' AND trust='user' AND event_type='prompt.submitted'
               AND session_id=? AND repo_id=? AND worktree=? AND (event_timestamp,event_id)<=(?,?)
             ORDER BY event_timestamp DESC,event_id DESC LIMIT 1`).get(...values);
-          const rows = boundary ? this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
-            WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
-              AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
-              AND (event_timestamp,event_id)>=(?,?) ORDER BY event_timestamp,event_id LIMIT 64`).all(
-            String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree), String(boundary.event_timestamp), String(boundary.event_id)) : [];
-          const events = rows.map((row) => this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json)))));
-          const nextBoundary = events.findIndex((entry, index) => index > 0 && entry.event.trust === "user");
-          const taskEvents = nextBoundary < 0 ? events : events.slice(0, nextBoundary);
-          let summary: CaptureEnvelope | undefined;
-          let selected: CaptureEnvelope | undefined;
-          for (const entry of taskEvents) {
-            if (entry.event.trust === "model" && entry.event.eventType === "agent.message") summary = entry;
-            const closesSummary = summary && ((entry.event.eventType === "session.idle" && entry.event.trust === "system") ||
-              (entry.event.eventType === "agent.turn_completed" && entry.event.trust === "model" &&
-                (summary.event.actorId === undefined || entry.event.actorId === undefined || entry.event.actorId === summary.event.actorId)));
-            if (closesSummary) { selected = summary; break; }
+          const key = boundary ? String(boundary.event_id) : String(prompt.event_id);
+          let selected = agentTasks.get(key);
+          if (!selected) {
+            selected = this.#agentResearchTask(String(prompt.session_id), String(prompt.repo_id), String(prompt.worktree),
+              boundary ? { timestamp: String(boundary.event_timestamp), eventId: String(boundary.event_id) } : undefined,
+              String(prompt.event_id));
+            agentTasks.set(key, selected);
           }
-          return { deduplicationKey: String(prompt.deduplication_key), eventId: selected?.event.eventId ?? String(prompt.event_id), generation: Number(prompt.generation), origin: "agent", events };
+          return { deduplicationKey: String(prompt.deduplication_key), eventId: selected.eventId, generation: Number(prompt.generation), origin: "agent", events: selected.events };
         }
         const adjacent = (direction: "before" | "after") => this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
           WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
@@ -2350,6 +2345,61 @@ export class CanonicalSqliteStore {
       this.#database.exec("COMMIT;");
       return work;
     } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
+  }
+
+  #agentResearchTask(
+    sessionId: string, repoId: string, worktree: string,
+    boundary: { timestamp: string; eventId: string } | undefined, fallbackEventId: string,
+  ): { eventId: string; events: CaptureEnvelope[] } {
+    if (!boundary) return { eventId: fallbackEventId, events: [] };
+    const nextUser = this.#database.prepare(`SELECT event_timestamp,event_id FROM raw_events
+      WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=? AND trust='user'
+        AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+        AND (event_timestamp,event_id)>(?,?) ORDER BY event_timestamp,event_id LIMIT 1`)
+      .get(sessionId, repoId, worktree, boundary.timestamp, boundary.eventId);
+    const closingEvents = this.#database.prepare(`SELECT event_id,event_timestamp,event_type,trust,
+      json_extract(safe_envelope_json,'$.event.actorId') AS actor_id,
+      json_extract(safe_envelope_json,'$.event.participantId') AS participant_id,
+      json_extract(safe_envelope_json,'$.event.completionStatus') AS completion_status,
+      length(trim(coalesce(json_extract(safe_envelope_json,'$.content.message'),'')))>0 AS has_message FROM raw_events
+      WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
+        AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+        AND event_type IN ('agent.message','agent.turn_started','agent.turn_completed','session.idle','tool.started','tool.completed','tool.failed')
+        AND (event_timestamp,event_id)>(?,?) ${nextUser ? "AND (event_timestamp,event_id)<(?,?)" : ""}
+      ORDER BY event_timestamp,event_id`).iterate(sessionId, repoId, worktree, boundary.timestamp, boundary.eventId,
+      ...(nextUser ? [String(nextUser.event_timestamp), String(nextUser.event_id)] : []));
+    const read = (eventId: string): CaptureEnvelope => this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(
+      this.#database.prepare("SELECT safe_envelope_json FROM raw_events WHERE event_id=?").get(eventId)?.safe_envelope_json,
+    ))));
+    const task = read(boundary.eventId);
+    const turn = closedAgentResearchTurn((function* (): Generator<ResearchTurnEvent> {
+      for (const row of closingEvents) {
+        if (row.event_type === "agent.message") {
+          // Reconciliation may fill a message body after its original metadata was captured.
+          const message = read(String(row.event_id));
+          yield { ...message.event, hasMessage: Boolean(message.content?.message?.trim()) };
+          continue;
+        }
+        yield {
+        eventId: String(row.event_id), timestamp: String(row.event_timestamp), eventType: String(row.event_type),
+        trust: row.trust as ResearchTurnEvent["trust"], hasMessage: Number(row.has_message) === 1,
+        ...(typeof row.completion_status === "string" ? { completionStatus: row.completion_status as NonNullable<ResearchTurnEvent["completionStatus"]> } : {}),
+        ...(typeof row.actor_id === "string" ? { actorId: row.actor_id } : {}),
+        ...(typeof row.participant_id === "string" ? { participantId: row.participant_id } : {}),
+        };
+      }
+    })(), task.event.participantId);
+    if (!turn) return { eventId: fallbackEventId, events: [] };
+    const summary = read(turn.summary.eventId); const closed = read(turn.closure.eventId);
+    const rows = this.#database.prepare(`SELECT safe_envelope_json FROM raw_events
+      WHERE parse_status='supported' AND session_id=? AND repo_id=? AND worktree=?
+        AND coalesce(json_extract(safe_envelope_json, '$.event.actorId'),'') != 'provenloop-internal'
+        AND (event_timestamp,event_id)>=(?,?) AND (event_timestamp,event_id)<=(?,?)
+      ORDER BY event_timestamp,event_id`).iterate(sessionId, repoId, worktree, boundary.timestamp, boundary.eventId, turn.closure.timestamp, turn.closure.eventId);
+    const events = selectAgentResearchEvents((function* (store: CanonicalSqliteStore) {
+      for (const row of rows) yield store.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))));
+    })(this), task, summary, closed);
+    return { eventId: summary.event.eventId, events };
   }
 
   public completeLearningPromptWork(work: LearningPromptWork, notBefore?: number): void {

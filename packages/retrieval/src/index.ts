@@ -40,4 +40,5 @@ export {
   type KnowledgeRecord,
   type KnowledgeRetrievalQuery,
   type RetrievedKnowledge,
+  type ReferenceContextMetadata,
 } from "./types.js";

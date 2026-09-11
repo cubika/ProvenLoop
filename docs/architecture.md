@@ -690,7 +690,11 @@ Development update (schema 15): proposals may carry retention kind, lifetime,
 target scope assessment, supporting quotations, and a concept key. Existing
 records remain readable. Source references and user conventions retain inferred
 evidence, and admission rechecks their sources before retrieval. References use
-captured tool excerpts at a matching worktree/revision. Job completion is separate
+captured tool excerpts and an unverified research finding at a matching worktree.
+The captured and current revisions are compared; changed revisions require
+revalidation and receive a lower rank. Long research tasks stream their captured
+events and select at most 32 original sources before bounded model input is
+prepared. Job completion is separate
 from rule verification. Episode and Branch Context records distinguish last
 activity, explicit closure, source session, and the current task's goal anchor.
 

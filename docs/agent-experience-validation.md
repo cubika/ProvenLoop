@@ -45,6 +45,37 @@ After those final guards, the 71 relevant storage, Context, reconciliation and d
 
 ## Limits
 
-Research findings remain unverified candidates; external source text does not establish project applicability. The current window keeps one task's last summary before its first closure and at most 32 captured events. Long investigations, missing user-task boundaries and cross-task retrospective analysis require later work. Recall suppression matches known rule IDs; it cannot prove semantic equivalence of arbitrary paraphrases.
+In the September 8 implementation, research findings remained unverified
+candidates, and windows kept at most 32 captured events before the first turn
+closure. Long investigations were excluded. The September 11 implementation
+selects relevant sources across long tasks and returns eligible findings as
+unverified references; see the contract's research-memory section. Missing
+user-task boundaries and cross-task retrospective analysis still require later
+work. Recall suppression matches known rule IDs; it cannot prove semantic
+equivalence of arbitrary paraphrases.
 
 The provider still reports malformed/schema-invalid stdout as a provider failure before the evaluator receives it. Such failures cannot pass acceptance, but their diagnostic category is less precise than failures detected by the source validator. No live installed-host trial, automatic deployment or controlled benefit measurement was performed.
+
+## Research memory regression, 2026-09-11
+
+The new regression uses a 604-event task to verify that an early code read
+survives source selection with its original digest. A separate 184-event task
+runs through the production provider's input preparation and source validation
+with a controlled model response, persists a research finding, reopens SQLite,
+rebuilds the search index, and retrieves the finding in a new session at a
+different commit within a 600-token Context budget. Explain retains the full
+summary and exact supporting quote.
+
+Native event mapping also covers interim tool-request messages, several model
+iterations, trailing empty message chunks, subagent closures, and final-message
+enrichment. Tool-request messages are marked running; an iteration end cannot
+freeze the first interim research summary. Sampled windows omit operation
+starts, so an incomplete recovery trace cannot acquire a verification receipt.
+
+The full unit/source-runtime/native-process run passed 1,102 tests with five
+existing skips. The integration run passed 273 tests. After the final closure
+changes, 129 affected integration tests passed; after the enrichment adjustment,
+59 affected unit tests passed. Type checks, lint and the release build passed.
+These checks establish the persistence and retrieval path. The controlled model
+response does not measure extraction quality on arbitrary real investigations,
+and the installed user runtime was not upgraded during this validation.

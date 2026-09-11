@@ -147,6 +147,18 @@ export interface RetrievedKnowledge {
   readonly score: number;
   readonly deliveryMode?: "convention" | "reference";
   readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
+  readonly researchSummary?: string;
+  readonly reference?: ReferenceContextMetadata;
+}
+
+export interface ReferenceContextMetadata {
+  readonly capturedCommitSha: string;
+  readonly currentCommitSha: string;
+  readonly revisionStatus: "unchanged" | "changed";
+  readonly requiresRevalidation: true;
+  readonly summaryTruncated?: true;
+  readonly omittedSourceCount?: number;
+  readonly applicabilityOmitted?: true;
 }
 
 export interface ContextRequest {
@@ -193,7 +205,8 @@ export type ContextItemKind = "branch_context" | "knowledge";
 
 export interface ContextItem {
   readonly deliveryMode?: "convention" | "reference";
-  readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
+  readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool"; truncated?: true }[];
+  readonly reference?: ReferenceContextMetadata;
   readonly applicabilitySummary: string;
   readonly evidenceTier?: EvidenceTier;
   readonly explanationRef: string;

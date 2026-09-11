@@ -295,8 +295,11 @@ status` to inspect job state and `provenloop learning disable` to stop extractio
 
 The learner filters temporary instructions and completed setup edits
 before retention. New source-supported conventions and references have separate
-delivery modes; references return captured excerpts at the matching revision.
-These excerpts preserve source findings without establishing a broader lesson.
+delivery modes. Research references include an unverified finding and captured
+excerpts, with a revalidation notice when the repository revision changes.
+Long investigations select relevant evidence across the closed task, so a large
+number of code reads does not by itself prevent learning. No request to save a
+document is needed. See [research memory](docs/agent-experience-learning.md).
 Task-local constraints stay within their originating session. Untyped analysis
 completes without an indefinite evidence wait. See the
 [feedback implementation record](docs/feedback.md) for scope and validation.

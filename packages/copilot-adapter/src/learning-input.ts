@@ -1,5 +1,5 @@
 import type { CaptureEnvelope, LearningWindow, RuleProposalInput } from "@provenloop/contracts";
-import { sha256 } from "@provenloop/domain";
+import { researchEvidenceScore, researchTerms, sha256 } from "@provenloop/domain";
 
 export const LEARNING_REQUEST_MAX_BYTES = 32 * 1024;
 export const LEARNING_REQUEST_MAX_CHARACTERS = 24_000;
@@ -135,10 +135,13 @@ export const prepareLearningInput = (window: LearningWindow, instructions: strin
   const anchor = anchorFor(window);
   if (!anchor?.content?.message) throw new LearningInputBudgetError();
   const keywords = terms(anchor.content.message);
+  const findingTerms = researchTerms(anchor.content.message);
   const sourceCache = new Map(window.events.map((entry) => [entry, textSources(entry, keywords)]));
   const agentEvidence = window.origin === "agent" ? window.events.filter((entry) => entry.event.trust === "tool" &&
     ["tool.completed", "tool.failed"].includes(entry.event.eventType) && (sourceCache.get(entry)?.length ?? 0) > 0 &&
-    Date.parse(entry.event.timestamp) < Date.parse(anchor.event.timestamp)).at(-1) : undefined;
+    Date.parse(entry.event.timestamp) < Date.parse(anchor.event.timestamp))
+    .sort((left, right) => researchEvidenceScore(right, findingTerms) - researchEvidenceScore(left, findingTerms) ||
+      Date.parse(right.event.timestamp) - Date.parse(left.event.timestamp))[0] : undefined;
   const agentClosure = window.origin === "agent" ? window.events.find((entry) =>
     ["agent.turn_completed", "session.idle"].includes(entry.event.eventType) && Date.parse(entry.event.timestamp) >= Date.parse(anchor.event.timestamp)) : undefined;
   if (window.origin === "agent" && (!agentEvidence || !agentClosure)) throw new LearningInputBudgetError();
@@ -163,7 +166,7 @@ export const prepareLearningInput = (window: LearningWindow, instructions: strin
       : criticalIds.has(entry.event.eventId) ? 920
     : entry.event.trust === "user" ? 900
       : entry.event.eventType === "tool.failed" || entry.event.completionStatus === "failed" ? 850
-        : entry.event.eventType === "tool.completed" ? 800
+        : entry.event.eventType === "tool.completed" ? 800 + Math.min(49, researchEvidenceScore(entry, findingTerms))
           : ["tool.started", "test.completed", "agent.turn_completed", "session.idle"].includes(entry.event.eventType) ? 750
             : entry.event.eventType === "agent.message" ? 500 : 100 }));
   const textBudget = (entry: CaptureEnvelope, scale: number) => Math.max(96, Math.floor((entry === anchor ? 3072

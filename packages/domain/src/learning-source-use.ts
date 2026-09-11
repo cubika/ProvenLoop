@@ -3,6 +3,7 @@ import { assessLearningRetention } from "./learning-retention.js";
 import { sha256 } from "./digest.js";
 import { validAgentLearningSource } from "./agent-learning-source.js";
 import { isInternalWorkSource } from "./work-source.js";
+import { containsPotentialSecret } from "./redaction.js";
 
 export interface LearningSourceUse {
   readonly mode: "convention" | "reference";
@@ -10,6 +11,7 @@ export interface LearningSourceUse {
   readonly sources: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
   readonly worktree: string;
   readonly commitSha?: string;
+  readonly researchSummary?: string;
 }
 
 /** Eligibility for quoted conventions and references; never an execution-verification receipt. */
@@ -59,12 +61,15 @@ export const learningSourceUse = (
     if (mode === "reference") {
       const quotes = (proposal.supportingSources ?? proposal.agentSource?.evidenceSources ?? [])
         .filter((quote) => byId.get(quote.eventId)?.event.trust === "tool");
-      if (quotes.length === 0) continue;
+      if (quotes.length === 0 || quotes.some((quote) => containsPotentialSecret(quote.quote))) continue;
       const versions = new Set(quotes.map((quote) => byId.get(quote.eventId)?.event.commitSha));
-      // Code observations are scoped to the captured revision. Unknown revision needs human review.
+      // Preserve the observed revision so retrieval can distinguish current and changed code.
       if (versions.size !== 1 || versions.has(undefined)) continue;
       const commitSha = [...versions][0];
+      if (!commitSha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(commitSha)) continue;
+      if (proposal.agentSource?.kind === "research" && containsPotentialSecret(proposal.rule)) continue;
       return { mode, proposal, worktree: anchor.event.worktree, ...(commitSha ? { commitSha } : {}),
+        ...(proposal.agentSource?.kind === "research" ? { researchSummary: proposal.rule } : {}),
         sources: quotes.map((quote) => ({ ...quote, role: "tool" })) };
     }
   }

@@ -44,6 +44,9 @@ const operationPaths = (entry: CaptureEnvelope): string[] => {
     .map((path) => effectiveCwd && !api.isAbsolute(path) ? api.resolve(effectiveCwd, path) : path);
 };
 
+export const learningEventTargetsWorkspace = (entry: CaptureEnvelope, worktree: string): boolean =>
+  operationPaths(entry).every((path) => inside(path, worktree));
+
 const taskOnly = /\b(?:this|current) (?:task|session|change|edit|deployment|run|branch)\b|\b(?:for now|just this once|one[- ]time)\b|(?:这次|本次|当前任务|当前会话|当前分支|这个分支|暂时|先别)/iu;
 const commitRestriction = /\b(?:do not commit|don't commit|without committing)\b|(?:不要|别|不|无需)\s*(?:提交|commit\b)/iu;
 const shortApproval = /^(?:yes|yeah|ok(?:ay)?|sure|correct|do it|delete it|remove it|嗯|恩|好|好的|可以|对|删掉|删除|删了|删吧)[\s,，.!！。]*(?:(?:delete|remove)(?: it)?|(?:就|那就)?(?:删掉|删除|删了|删吧))?(?:一下)?[\s,，.!！。]*$/iu;
@@ -100,7 +103,11 @@ export const assessLearningRetention = (
   } else if (retention.kind === "reference") {
     if (typed || !sources.some((source) => {
       const event = events.find((entry) => entry.event.eventId === source.eventId);
-      return event?.event.trust === "tool" && explanatorySource.test(source.quote);
+      // Research may derive an explanation from code rather than a prose sentence
+      // containing words such as "requires". Exact captured provenance and the
+      // retention assessment still apply; this grants reference use only.
+      return event?.event.trust === "tool" &&
+        (proposal.agentSource?.kind === "research" || explanatorySource.test(source.quote));
     })) return reject("missing_reusable_finding");
   } else if (!typed) return reject("unsupported_recovery");
   return { retain: true, reusable: !typed, reason: "source_supported", kind: retention.kind };

@@ -41,6 +41,7 @@ export const validAgentLearningSource = (proposal: RuleProposalInput, events: re
   const sameScope = (entry: CaptureEnvelope): boolean => entry.event.sessionId === agent.event.sessionId &&
     entry.event.repoId === agent.event.repoId && entry.event.worktree === agent.event.worktree && entry.event.repositoryState === "known_repo" &&
     entry.event.adapter === agent.event.adapter && entry.event.adapterVersion === agent.event.adapterVersion &&
+    entry.event.participantId === agent.event.participantId &&
     entry.event.branch === agent.event.branch && entry.event.commitSha === agent.event.commitSha;
   const summaryTime = Date.parse(agent.event.timestamp);
   const task = events.filter((entry) => sameScope(entry) && entry.event.eventType === "prompt.submitted" && entry.event.trust === "user" &&

@@ -88,6 +88,7 @@ export {
 export * from "./automatic-learning.js";
 export * from "./learning-retention.js";
 export * from "./agent-learning-source.js";
+export * from "./agent-research-window.js";
 
 export * from "./shell-learning.js";
 export * from "./learning-source-use.js";

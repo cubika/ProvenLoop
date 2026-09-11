@@ -187,12 +187,17 @@ describe("agent experience sources and native qualification", () => {
     expect(buildLearningWindows(f.events, new Date(at(7))).filter((entry) => entry.origin === "agent")).toEqual([]);
   });
 
-  it("EXP-11: preserves the 32-event bound instead of borrowing or trimming the previous user task", () => {
+  it("EXP-11: samples long research within 32 events without qualifying incomplete recovery or borrowing another task", () => {
     const f = fixture();
     const added = (count: number) => Array.from({ length: count }, (_, index) => f.event("extra-" + index, 2.1 + index / 100,
       { eventType: "agent.turn_started", trust: "model" }));
     expect(agentWindow([...f.events, ...added(25)]).events).toHaveLength(32);
-    expect(buildLearningWindows([...f.events, ...added(26)], now).filter((entry) => entry.origin === "agent")).toEqual([]);
+    const sampled = agentWindow([...f.events, ...added(26)]);
+    expect(sampled.events.length).toBeLessThanOrEqual(32);
+    expect(sampled.events[0]?.event.eventId).toBe(f.user.event.eventId);
+    expect(sampled.events).toContainEqual(f.result);
+    expect(sampled.events.some((entry) => entry.event.eventType === "tool.started")).toBe(false);
+    expect(verifyMcpRecovery(f.proposal, sampled.events, [f.contract], now)).toBeUndefined();
     const interruption = f.event("next-user", 4.5, { eventType: "prompt.submitted", trust: "user", content: { message: "Explain another topic." } });
     expect(buildLearningWindows([...f.events, interruption], now).filter((entry) => entry.origin === "agent")).toEqual([]);
   });

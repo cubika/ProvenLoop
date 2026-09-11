@@ -993,6 +993,8 @@ export class CopilotEventMapper {
           {
             ...common,
             eventType: "agent.message",
+            ...(Array.isArray(data.toolRequests) && data.toolRequests.length > 0
+              ? { completionStatus: "running" as const } : {}),
             ...(messageId === undefined
               ? {}
               : {

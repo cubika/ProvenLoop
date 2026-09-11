@@ -73,9 +73,12 @@ Background learning sends bounded, redacted conversation and tool excerpts to
 Copilot with the existing sign-in and service quota. Background requests have no tools or plugins.
 Automatic hooks are verified on Copilot CLI `1.0.84-1`; approve each repository
 root and restart its session. Qualified lasting conventions and tool-source
-references may be returned with their `inferred` label. References require the
-captured worktree and revision; task-local constraints remain in their source
-session. Automatic activation requires supported recovery proof. Source excerpts
+references may be returned with their `inferred` label. Research references include
+an unverified finding and original source excerpts in the captured worktree.
+Changed revisions require revalidation. Long investigations select relevant
+source events automatically; no request to save notes is required. Task-local
+constraints remain in their source session. Automatic activation requires
+supported recovery proof. Source excerpts
 do not establish that broader lessons have been learned. Actual model quality
 remains unvalidated because a working model host was unavailable for this check.
 

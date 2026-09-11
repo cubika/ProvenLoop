@@ -149,7 +149,7 @@ describe("agent learning incremental lifecycle", () => {
     } finally { store.close(); }
   });
 
-  it("keeps the observed user boundary and rejects oversized task context instead of dropping proof", async () => {
+  it("learns from an early source in a long task while preserving the task boundary and bounded input", async () => {
     const store = new CanonicalSqliteStore(":memory:"); const f = fixture();
     try {
       add(store, f.prompt); add(store, f.tool);
@@ -157,12 +157,16 @@ describe("agent learning incremental lifecycle", () => {
       const summary = event("long-summary", "agent.message", 90, f.tool, { message: f.summary.content?.message ?? "" }); add(store, summary); add(store, event("long-close", "agent.turn_completed", 91, summary));
       const time = new Date(base + 100_000);
       const work = needed(store.learningPromptWork(time, 128).find((entry) => entry.origin === "agent"));
-      expect(work.events.length).toBeLessThanOrEqual(64);
+      expect(work.events.length).toBeLessThanOrEqual(32);
       expect(work.events[0]?.event.eventId).toBe(f.prompt.event.eventId);
-      const infer = vi.fn(async () => ({ schemaVersion: 1, proposals: [] }));
+      expect(work.events.some((entry) => entry.event.eventId === f.tool.event.eventId)).toBe(true);
+      expect(work.events.some((entry) => entry.event.eventId === summary.event.eventId)).toBe(true);
+      const infer = vi.fn(async (window: LearningWindow) => research(window));
       const coordinator = new LearningCoordinator({ ...options(store, infer), now: () => time });
       for (let pass = 0; pass < 3; pass += 1) await coordinator.run();
-      expect(store.learningJobs().every((job) => !job.windowId.startsWith("learning-agent-window-"))).toBe(true);
+      expect(infer.mock.calls.filter(([window]) => window.origin === "agent")).toHaveLength(1);
+      expect(store.learningProposals()[0]?.agentSource).toMatchObject({ kind: "research", eventId: summary.event.eventId });
+      expect(store.knowledgeCandidates()).toHaveLength(1);
     } finally { store.close(); }
   });
 

@@ -11,6 +11,7 @@ import { containsPotentialSecret } from "./redaction.js";
 import { validAgentLearningSource } from "./agent-learning-source.js";
 import { assessLearningRetention } from "./learning-retention.js";
 import { isInternalWorkSource } from "./work-source.js";
+import { closedAgentResearchTurn, selectAgentResearchEvents } from "./agent-research-window.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -117,26 +118,20 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
       });
       windows.push({ user, window });
     }
-    // Select one closed agent turn per captured user task. The provider decides whether
-    // the summary contains a reusable finding; capture selection does not inspect keywords.
-    let boundary = -1;
-    let closedTask = false;
-    let summary: CaptureEnvelope | undefined;
-    for (let index = 0; index < group.length; index += 1) {
-      const entry = group[index];
-      if (!entry) continue;
-      if (entry.event.trust === "user") {
-        boundary = index; closedTask = false; summary = undefined;
-      } else if (boundary >= 0 && !closedTask && entry.event.eventType === "agent.message" && entry.event.trust === "model" && entry.content?.message) {
-        summary = entry;
-      } else if (!closedTask && summary &&
-          ((entry.event.eventType === "agent.turn_completed" && entry.event.trust === "model" &&
-            (summary.event.actorId === undefined || entry.event.actorId === undefined || entry.event.actorId === summary.event.actorId)) ||
-            (entry.event.eventType === "session.idle" && entry.event.trust === "system"))) {
-        closedTask = true;
-        if (now.getTime() - Date.parse(entry.event.timestamp) < 2_000 || index - boundary + 1 > 32 ||
+    // Select the final settled model iteration, not the first tool loop's turn_end.
+    for (let boundary = 0; boundary < group.length; boundary += 1) {
+      const task = group[boundary];
+      if (!task || task.event.trust !== "user" || task.event.eventType !== "prompt.submitted") continue;
+      let end = boundary + 1;
+      while (end < group.length && group[end]?.event.trust !== "user") end += 1;
+      const taskEvents = group.slice(boundary + 1, end);
+      const turn = closedAgentResearchTurn(taskEvents.map((entry) => ({ ...entry.event, hasMessage: Boolean(entry.content?.message?.trim()) })), task.event.participantId);
+      if (turn) {
+        const summary = taskEvents.find((entry) => entry.event.eventId === turn.summary.eventId);
+        const closure = taskEvents.find((entry) => entry.event.eventId === turn.closure.eventId);
+        if (!summary || !closure || now.getTime() - Date.parse(closure.event.timestamp) < 2_000 ||
             !summary.event.sessionId || !summary.event.repoId || !summary.event.worktree || summary.event.repositoryState !== "known_repo") continue;
-        const selected = group.slice(boundary, index + 1);
+        const selected = selectAgentResearchEvents([task, ...taskEvents], task, summary, closure);
         const summaryTime = Date.parse(summary.event.timestamp);
         const result = selected.find((item) => item.event.trust === "tool" &&
           ["tool.completed", "tool.failed"].includes(item.event.eventType) && Date.parse(item.event.timestamp) < summaryTime &&
@@ -149,6 +144,7 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
           createdAt: summary.event.timestamp, sources: sourceDigests, events: selected });
         windows.push({ user: summary, window });
       }
+      boundary = end - 1;
     }
   }
   return windows.sort((a, b) => compare(a.user, b.user)).map(({ window }) => window);

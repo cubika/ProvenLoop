@@ -654,7 +654,8 @@ Temporary task instructions, completed setup edits, and unsupported scope are
 filtered before persistent knowledge is formed. New proposals carry exact
 supporting sources and a lasting-value rationale. A stated convention can be
 returned using the user's original words, and a research reference can return
-captured tool excerpts at the matching worktree and revision. Both keep their
+an unverified finding and captured tool excerpts in the matching worktree, with
+required revalidation when the revision changes. Both keep their
 `inferred` label and explicit delivery mode. They do not become verified recovery
 guidance. Existing candidates without this source assessment remain review-only.
 This refines the initial candidate exclusion described below.

@@ -158,7 +158,8 @@ export class CanonicalKnowledgeRetriever {
               const existing = normalize(instruction);
               return existing.includes(normalize(candidate.content)) || sourceUse.sources.some((source) => existing.includes(normalize(source.quote)));
             }) &&
-            (sourceUse.mode !== "reference" || (query.headSha !== undefined && query.headSha === sourceUse.commitSha));
+            (sourceUse.mode !== "reference" || (query.headSha !== undefined &&
+              /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(query.headSha)));
           applicableById.set(candidate.knowledgeId, sourceUse ? sourceApplicable : learningApplicable(
             candidate, evidence.learningProposals ?? [], query, evidence.learningReceipts ?? [],
           ));
@@ -198,6 +199,12 @@ export class CanonicalKnowledgeRetriever {
         const sourceUse = sourceUseById.get(candidate.knowledgeId);
         retrieved.push({
           ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
+          ...(sourceUse?.researchSummary ? { researchSummary: sourceUse.researchSummary } : {}),
+          ...(sourceUse?.mode === "reference" && sourceUse.commitSha && query.headSha ? { reference: {
+            capturedCommitSha: sourceUse.commitSha, currentCommitSha: query.headSha,
+            revisionStatus: sourceUse.commitSha === query.headSha ? "unchanged" as const : "changed" as const,
+            requiresRevalidation: true as const,
+          } } : {}),
           candidate: learningApplicabilityById.has(candidate.knowledgeId)
             ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
           score: hit.score,
