@@ -699,6 +699,11 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
     version: 16,
     sql: `CREATE TABLE record_reset (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cutoff TEXT NOT NULL) STRICT;`,
   },
+  {
+    version: 17,
+    // Preflight failures and bounded legacy input-budget recovery require the current reader.
+    sql: "CREATE INDEX learning_jobs_input_failure ON learning_jobs(json_extract(body_json, '$.failureKind'), json_extract(body_json, '$.extractorVersion'));",
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 // Dependent rows precede their source tables; reset retains only schema and replay protection.
@@ -2156,7 +2161,7 @@ export class CanonicalSqliteStore {
         ...this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE state NOT IN ('archived','cancelled') AND ${expiry} <= ? LIMIT ?`).all(timestamp, limit),
         ...this.#database.prepare("SELECT body_json FROM learning_jobs WHERE state='running' AND json_extract(body_json, '$.deadline') <= ? LIMIT ?").all(timestamp, limit),
       ].slice(0, limit)
-      : this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE ${kind === "evidence" ? "state='waiting_evidence'" : "state IN ('pending','paused','failed') AND json_extract(body_json, '$.attempts') < 3"}
+      : this.#database.prepare(`SELECT body_json FROM learning_jobs WHERE ${kind === "evidence" ? "state='waiting_evidence'" : "state IN ('pending','paused','failed') AND coalesce(json_extract(body_json, '$.failureKind'), '') != 'input_too_large' AND (json_extract(body_json, '$.attempts') < 3 OR (json_extract(body_json, '$.inputBudgetRecovery.retryDispatched')=0 AND state IN ('pending','paused')))"}
          AND ${expiry} > ? ${kind === "inference" ? "AND coalesce(json_extract(body_json, '$.retryAfter'), '') <= ?" : ""}
          ORDER BY updated_at, job_id LIMIT ?`).all(...(kind === "inference" ? [timestamp, timestamp, limit] : [timestamp, limit]));
     return rows.map((row) => learningJobSchema.parse(JSON.parse(String(row.body_json))));
@@ -2166,6 +2171,46 @@ export class CanonicalSqliteStore {
     this.#assertNoRestoreBarrier();
     return this.#database.prepare("SELECT body_json FROM learning_proposals WHERE job_id=?").all(jobId)
       .map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))));
+  }
+
+  /** Retry only deterministic input preparation failures after an extractor change. */
+  public recoverLearningInputFailures(extractorVersion: string, now: Date, limit = 32): number {
+    this.#assertNoRestoreBarrier();
+    if (!extractorVersion.trim() || !Number.isFinite(now.getTime()) || !Number.isInteger(limit) || limit < 1 || limit > 128) {
+      throw new Error("Invalid learning input recovery request.");
+    }
+    if (this.hasActiveDeletion()) return 0;
+    const rows = this.#database.prepare("SELECT target.body_json FROM learning_jobs target WHERE target.state='failed' AND json_extract(target.body_json,'$.extractorVersion') != ? AND json_extract(target.body_json,'$.expiresAt') > ? AND (json_extract(target.body_json,'$.failureKind')='input_too_large' OR json_extract(target.body_json,'$.error') IN ('Learning window exceeds the inference budget.','Error: Learning window exceeds the inference budget.')) AND NOT EXISTS (SELECT 1 FROM learning_jobs sibling WHERE sibling.window_id=target.window_id AND sibling.state IN ('archived','cancelled')) AND NOT EXISTS (SELECT 1 FROM learning_proposals proposal JOIN learning_jobs origin ON origin.job_id=proposal.job_id WHERE origin.window_id=target.window_id) ORDER BY target.updated_at,target.job_id LIMIT ?")
+      .all(extractorVersion, now.toISOString(), limit);
+    let recovered = 0;
+    for (const row of rows) {
+      const job = learningJobSchema.parse(JSON.parse(String(row.body_json)));
+      const window = this.learningWindow(job.jobId);
+      if (!window || !this.learningSourcesCurrent(window)) {
+        this.transitionLearningJob({ ...job, state: window && this.learningSourcesExist(window) ? "superseded" : "cancelled", updatedAt: now.toISOString() }, "failed");
+        continue;
+      }
+      if (this.#database.prepare("SELECT 1 FROM learning_jobs WHERE window_id=? AND state IN ('cancelled','archived') LIMIT 1").get(job.windowId)) continue;
+      if (this.#database.prepare("SELECT 1 FROM learning_proposals proposal JOIN learning_jobs job ON job.job_id=proposal.job_id WHERE job.window_id=? LIMIT 1").get(job.windowId)) continue;
+      const historicalRepair = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? AND json_extract(body_json,'$.inputBudgetRecovery') IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(job.windowId);
+      const repair = historicalRepair ? learningJobSchema.parse(JSON.parse(String(historicalRepair.body_json))).inputBudgetRecovery : undefined;
+      const legacy = job.failureKind === undefined;
+      if ((legacy && repair !== undefined) || (job.attempts >= 3 && !legacy && repair?.retryDispatched !== false)) {
+        this.transitionLearningJob({ ...job, extractorVersion, updatedAt: now.toISOString() }, "failed");
+        continue;
+      }
+      const next = learningJobSchema.parse({
+        ...job, state: "pending", extractorVersion, updatedAt: now.toISOString(),
+        ...(legacy ? { inputBudgetRecovery: {
+          fromExtractorVersion: job.extractorVersion, previousAttempts: job.attempts,
+          grantedAt: now.toISOString(), retryDispatched: false,
+        } } : {}),
+      });
+      delete next.failureKind; delete next.error; delete next.result;
+      delete next.deadline; delete next.retryAfter; delete next.pauseReason;
+      if (this.transitionLearningJob(next, "failed")) recovered += 1;
+    }
+    return recovered;
   }
 
   public pendingLearningActivationIds(): readonly string[] {
@@ -2402,6 +2447,8 @@ export class CanonicalSqliteStore {
     if (this.#database.prepare("SELECT 1 FROM learning_jobs WHERE window_id=? AND state IN ('cancelled','archived') LIMIT 1").get(window.windowId)) return undefined;
     const latest = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? ORDER BY rowid DESC LIMIT 1").get(window.windowId);
     const previous = latest ? learningJobSchema.parse(JSON.parse(String(latest.body_json))) : undefined;
+    const previousRepairRow = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE window_id=? AND json_extract(body_json,'$.inputBudgetRecovery') IS NOT NULL ORDER BY rowid DESC LIMIT 1").get(window.windowId);
+    const previousRepair = previousRepairRow ? learningJobSchema.parse(JSON.parse(String(previousRepairRow.body_json))).inputBudgetRecovery : undefined;
     const task = window.origin === "agent" ? window.events.find((entry) => entry.event.trust === "user" && entry.event.eventType === "prompt.submitted") : undefined;
     const taskBudget = task ? this.#database.prepare(`SELECT max(json_extract(job.body_json, '$.attempts')) AS attempts,
       min(json_extract(job.body_json, '$.expiresAt')) AS expires_at FROM learning_sources source JOIN learning_jobs job ON job.job_id=source.job_id
@@ -2425,6 +2472,7 @@ export class CanonicalSqliteStore {
       updatedAt: now.toISOString(), expiresAt: prior?.expiresAt ?? (typeof taskBudget?.expires_at === "string" ? taskBudget.expires_at : expiresAt), extractorVersion: "correction-extractor-1",
       ...(saved.length ? { state: retained.length ? "waiting_evidence" : "evaluated", result: previous?.result } : {}),
       ...(previous?.state === "paused" ? { state: "paused", retryAfter: previous.retryAfter, pauseReason: previous.pauseReason } : {}),
+      ...(previousRepair === undefined ? {} : { inputBudgetRecovery: previousRepair }),
     });
     this.#database.exec("BEGIN IMMEDIATE;");
     try {

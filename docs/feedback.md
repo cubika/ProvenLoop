@@ -14,6 +14,7 @@ keep their behavior until upgraded.
 | FB-004 | 2026-09-10 | Empty episodes and session-summary prompts shown as work goals | Implemented with limits | Substantive-work and source-role checks; unknown template producer unresolved |
 | FB-005 | 2026-09-10 | Duplicate knowledge, incorrect repository scope, and task context stored as repository rules | Implemented with limits | Identity stability, duplicate suggestions, scope correction, and task isolation |
 | FB-006 | 2026-09-10 | Captured-event growth, count explanations, and retention controls | Implemented with limits | Growth/storage metrics and reviewed retention cleanup; reported database unavailable |
+| FB-007 | 2026-09-11 | Oversized learning input repeated three times | Implemented, unreleased | Select source excerpts, preflight request size, and recover eligible old failures once |
 
 FB-002 adds concrete examples and changes the implementation order: establish
 useful retention before widening reference delivery. Source accuracy and lasting
@@ -826,3 +827,46 @@ records were changed.
 
 The actual source of the reported 30,000 events remains to be audited against
 the matching database during the consolidated fix.
+
+## FB-007: Oversized learning input repeated three times
+
+The user reported a 0.15 job with three attempts and the error
+`Learning window exceeds the inference budget.` The provider serialized whole
+event bodies and added extraction instructions before checking a 32 KiB UTF-8
+and 24,000 UTF-16-unit request limit. The coordinator retried this deterministic
+failure as if another provider call could resolve it.
+
+The new extractor creates a separate inference view. It retains the anchor,
+user boundaries, and the relevant failed/retried operation chain, and selects
+continuous source excerpts from long messages and tool results. Duplicate log
+lines and binary-like fields do not consume most of the input. Source offsets,
+event IDs, and explicit omission flags make each displayed excerpt traceable.
+Selection includes all extraction instructions and JSON escaping in the final
+byte and character budget. It does not modify captured events or their digests.
+
+Returned quotations must fit one actually displayed source span. Recovery
+proposals cannot reference omitted operations or omitted start arguments.
+Existing qualification and retention checks still use the full original window,
+including exceptions or contrary evidence outside the selected excerpts.
+
+Preparation runs before attempt and daily-request accounting. Inputs whose
+necessary metadata cannot fit become `input_too_large` failures without model
+dispatch. The same extractor does not repeat them. A source revision or extractor
+change can trigger reassessment. Jobs with the exact 0.15 input-size error may
+receive one recovery call when sources remain current, no proposal was created,
+and the original expiry and deletion controls permit it. Historical attempt
+counts remain intact; the allowance is recorded separately and cannot be renewed
+by replaying a window. Schema 17 provides the persisted-format boundary.
+
+Tests cover thousand-line output, Chinese/emoji/escaped JSON, 32-event budgets,
+continuous citations, source immutability, MCP and shell proof preservation,
+omitted-argument rejection, zero-charge preparation failures, and one-time
+legacy recovery. These are deterministic/injected-provider tests, not a new
+measurement of model extraction quality.
+
+Validation for this fix passed 90 focused unit tests, all 273 integration tests,
+type checking, lint, and packed-runtime installation/upgrade verification. The
+full unit run also exercised concurrently changing MCP diagnostics; its two
+temporary mock failures passed on the final 18-test rerun. A Windows plugin
+fixture rename failure passed on a separate 52-test rerun. This change remains
+unreleased and does not modify the existing 0.15 installation.

@@ -4,6 +4,12 @@ All notable changes to ProvenLoop are documented here.
 
 ## Unreleased
 
+- Select source excerpts before learning inference, including instructions in the
+  byte and character limits. Preserve raw evidence and recovery chains.
+- Stop repeating deterministic input-size failures without charging model
+  attempts. Give eligible 0.15 size failures one bounded recovery request with
+  the new extractor. Schema 17 records preparation and recovery separately.
+
 ## [0.1.0-alpha.0.15] - 2026-09-11
 
 - Add `records clear` and an Overview action to clear all records while preserving

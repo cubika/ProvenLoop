@@ -68,7 +68,7 @@ describe("canonical record reset", () => {
 
   it("requires schema 16 and upgrades an older valid store explicitly", async () => {
     const path = await file();
-    const previous = new CanonicalSqliteStore(path, { migrations: DEFAULT_SQLITE_MIGRATIONS.slice(0, -1) });
+    const previous = new CanonicalSqliteStore(path, { migrations: DEFAULT_SQLITE_MIGRATIONS.filter((migration) => migration.version < 16) });
     expect(previous.getRecordsResetCutoff()).toBeUndefined();
     expect(() => previous.clearAllRecords(cutoff)).toThrow("current database schema");
     previous.close();

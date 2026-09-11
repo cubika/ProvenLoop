@@ -76,6 +76,14 @@ export const learningJobSchema = z.object({
   provider: text.optional(), model: text.optional(), extractorVersion: text,
   result: z.enum(["no_rule", "candidate", "qualified", "error"]).optional(),
   error: z.string().max(512).optional(),
+  failureKind: z.literal("input_too_large").optional(),
+  preflightFailures: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  inputBudgetRecovery: z.object({
+    fromExtractorVersion: text,
+    previousAttempts: z.number().int().min(0).max(3),
+    grantedAt: isoTimestampSchema,
+    retryDispatched: z.boolean(),
+  }).strict().optional(),
 }).strict();
 export const ruleProposalSchema = ruleProposalInputSchema.safeExtend({
   schemaVersion: z.literal(1), proposalId: identifierSchema, jobId: identifierSchema,

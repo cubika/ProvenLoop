@@ -61,6 +61,24 @@ const serve = async (root: string): Promise<UiServer> => { const server = await 
 const getText = async (url: string) => { const response = await fetch(url); return { status: response.status, body: await response.text(), headers: response.headers }; };
 
 describe("local read-only learning explorer", () => {
+  it("explains preparation failures and the separate legacy recovery allowance", async () => {
+    const data = await fixture();
+    const database = new DatabaseSync(data.paths.database);
+    try {
+      const stored = database.prepare("SELECT body_json FROM learning_jobs WHERE job_id='job-ui'").get(); assert(stored);
+      const job: LearningJob = { ...JSON.parse(String(stored.body_json)), state: "failed", attempts: 3, failureKind: "input_too_large", preflightFailures: 1,
+        inputBudgetRecovery: { previousAttempts: 3, fromExtractorVersion: "old-extractor", grantedAt: timestamp, retryDispatched: false } };
+      database.prepare("UPDATE learning_jobs SET state=?,body_json=? WHERE job_id='job-ui'").run(job.state, JSON.stringify(job));
+    } finally { database.close(); }
+    const server = await serve(data.root);
+    const page = await getText(server.url + "jobs/job-ui");
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("No model request was sent for this preparation failure");
+    expect(page.body).toContain("3 historical attempt(s)");
+    expect(page.body).toContain("One recovery request is available");
+    expect(page.body).toContain("Not paused");
+    expect(page.body).toContain("Not scheduled");
+  });
   it("reads records without creating a missing database or rewriting canonical data", async () => {
     const data = await fixture();
     const before = await readFile(data.paths.database);

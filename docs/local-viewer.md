@@ -5,6 +5,12 @@ It requires canonical schema 16. Use `provenloop upgrade` before opening an olde
 database. See the [release notes](releases/0.1.0-alpha.0.15.md) for this preview
 and its validation limits.
 
+The unreleased input-budget fix uses schema 17. It selects exact source excerpts
+before model dispatch and checks the complete prompt against both size limits.
+Learning details distinguish preparation failures from model attempts and show
+the one-time recovery request for eligible old input-size failures. An input
+that still cannot fit is not resubmitted with the same extractor and revision.
+
 Run the viewer from the existing CLI:
 
 ```powershell

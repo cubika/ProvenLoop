@@ -69,19 +69,45 @@ describe("Copilot provider error boundaries (injected runner, not native accepta
     await expect(provider.infer(window(), { signal: controller.signal })).rejects.toThrow("stopped");
     expect(await readdir(temporaryRoot)).toEqual([]);
   });
-  it("rejects oversized input before dispatch and more than three proposals", async () => {
+  it("selects bounded excerpts from oversized input and rejects more than three proposals", async () => {
     const temporaryRoot = await root();
     const run = vi.fn(async () => success);
     const large = window();
-    large.events = Array.from({ length: 32 }, () => large.events[0]).filter((item) => item !== undefined);
-    large.events = large.events.map((event) => ({ ...event, content: { message: "x".repeat(2048) } }));
+    const original = large.events[0];
+    if (!original) throw new Error("Missing fixture anchor.");
+    large.events = [original, ...Array.from({ length: 31 }, (_, index) => ({ ...original,
+      event: { ...original.event, eventId: `tool-${index}`, trust: "tool" as const, eventType: "tool.completed" },
+      content: { toolResult: "Routine diagnostic line\n".repeat(1000) + "Error: The path argument is required." },
+    }))];
     const provider = new CopilotLearningProvider({ temporaryRoot, runner: { run }, enabled: async () => true });
-    await expect(provider.infer(large, { signal: new AbortController().signal })).rejects.toThrow("budget");
-    expect(run).not.toHaveBeenCalled();
+    await expect(provider.infer(large, { signal: new AbortController().signal })).resolves.toEqual({ schemaVersion: 1, proposals: [] });
+    expect(run).toHaveBeenCalledOnce();
     const invalid = new CopilotLearningProvider({ temporaryRoot, runner: { run: async () => ({ ...success,
       stdout: JSON.stringify({ schemaVersion: 1, proposals: [{}, {}, {}, {}] }) }) }, enabled: async () => true });
     await expect(invalid.infer(window(), { signal: new AbortController().signal })).rejects.toThrow("bounded JSON");
     expect(await readdir(temporaryRoot)).toEqual([]);
+  });
+  it("keeps the complete final request within budget including the extraction instructions", async () => {
+    const temporaryRoot = await root();
+    const input = window();
+    const anchor = input.events[0]; if (!anchor) throw new Error("Missing fixture anchor.");
+    input.events.push({ ...anchor, event: { ...anchor.event, eventId: "log-result", trust: "tool", eventType: "tool.completed" },
+      content: { toolResult: "普通日志😀\n".repeat(6000) + "Error: Supply path before retrying." } });
+    const original = JSON.stringify(input);
+    const run = vi.fn(async (_file: string, args: readonly string[]) => {
+      const prompt = args[args.indexOf("--prompt") + 1] ?? "";
+      expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(32 * 1024);
+      expect(prompt.length).toBeLessThanOrEqual(24_000);
+      expect(prompt).toContain("Supply path before retrying.");
+      expect(prompt).toContain("Error: Supply path before retrying.");
+      expect(prompt).not.toContain("普通日志😀\n".repeat(100));
+      return success;
+    });
+    const provider = new CopilotLearningProvider({ temporaryRoot, enabled: async () => true, runner: { run } });
+    provider.prepare(input);
+    await provider.infer(input, { signal: new AbortController().signal });
+    expect(run).toHaveBeenCalledOnce();
+    expect(JSON.stringify(input)).toBe(original);
   });
   it("requires retention metadata from the production extractor and filters task-only output", async () => {
     const temporaryRoot = await root();

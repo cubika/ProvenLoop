@@ -1322,6 +1322,7 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
             jobId: job.jobId, state: job.state, attempts: job.attempts, result: job.result,
             createdAt: job.createdAt, updatedAt: job.updatedAt, expiresAt: job.expiresAt,
             pauseReason: job.pauseReason, retryAfter: job.retryAfter,
+            failureKind: job.failureKind, preflightFailures: job.preflightFailures, inputBudgetRecovery: job.inputBudgetRecovery,
           }));
         } finally { store.close(); }
         io.log(JSON.stringify({

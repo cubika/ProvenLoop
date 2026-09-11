@@ -167,7 +167,9 @@ export const renderUiPage = (reader: InspectionReader, context: UiPageContext, i
     if (section === "jobs") {
       const detail = reader.job(id); if (!detail) return missing();
       return finish("Learning job", `${back}<h1>Learning job</h1><div class="chips">${badge(detail.job.state)}${badge(detail.job.result)}</div>
-        ${panel("Processing status", fields([["Created", detail.job.createdAt], ["Updated", detail.job.updatedAt], ["Attempts", detail.job.attempts], ["Pause reason", detail.job.pauseReason], ["Retry after", detail.job.retryAfter], ["Expires", detail.job.expiresAt], ["Error", detail.job.error]]))}${proposalsView(context, detail.proposals)}${raw(detail.job)}`);
+        ${panel("Processing status", fields([["Created", detail.job.createdAt], ["Updated", detail.job.updatedAt], ["Attempts", detail.job.attempts], ["Preparation failures", detail.job.preflightFailures ?? 0], ["Pause reason", detail.job.pauseReason ?? "Not paused"], ["Retry after", detail.job.retryAfter ?? "Not scheduled"], ["Expires", detail.job.expiresAt], ["Error", detail.job.error ?? "None"]]) +
+          (detail.job.failureKind === "input_too_large" ? "<p>Source excerpts could not fit the input limit. No model request was sent for this preparation failure. The same input will not be retried until the source or extractor changes.</p>" : "") +
+          (detail.job.inputBudgetRecovery ? `<p>Previous extractor input-size failure: ${detail.job.inputBudgetRecovery.previousAttempts} historical attempt(s). One recovery request ${detail.job.inputBudgetRecovery.retryDispatched ? "was dispatched" : "is available"}; the original expiry is unchanged.</p>` : ""))}${proposalsView(context, detail.proposals)}${raw(detail.job)}`);
     }
     if (section === "episodes") {
       const episode = reader.episode(id); if (!episode) return missing();

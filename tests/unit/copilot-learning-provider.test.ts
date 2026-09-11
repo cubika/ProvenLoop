@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CopilotLearningProvider, CopilotLearningToolRegistry } from "@provenloop/copilot-adapter";
 import { createCaptureEnvelope, sha256 } from "@provenloop/domain";
+import { createAgentExperienceCorpus } from "@provenloop/evaluation";
 import type { LearningWindow } from "@provenloop/contracts";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -33,8 +34,8 @@ describe("isolated Copilot learning provider", () => {
   });
   it("EXP-01/07 requests agent provenance without granting search or execution tools", async () => {
     const root = await mkdtemp(join(tmpdir(), "provenloop-agent-provider-")); roots.push(root);
-    const input = window();
-    input.origin = "agent"; input.anchorEventId = input.events[0]?.event.eventId ?? "anchor";
+    const input = createAgentExperienceCorpus().cases[0]?.window;
+    if (!input || input.origin !== "agent") throw new Error("Expected a captured agent window.");
     const provider = new CopilotLearningProvider({ temporaryRoot: root, enabled: async () => true, runner: { run: async (_exe, args) => {
       const prompt = args[args.indexOf("--prompt") + 1] ?? "";
       expect(prompt).toContain("agentSource");

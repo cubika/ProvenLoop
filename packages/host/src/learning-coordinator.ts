@@ -5,6 +5,7 @@ import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
 
 export interface LearningInferenceProvider {
   readonly identity: { readonly provider: string; readonly model: string; readonly version: string };
+  prepare?(window: LearningWindow): void;
   infer(window: LearningWindow, options: { readonly signal: AbortSignal }): Promise<unknown>;
 }
 export interface LearningCoordinatorOptions {
@@ -35,6 +36,7 @@ export class LearningCoordinator {
     try {
       if (this.options.signal?.aborted || !await this.options.enabled() || store.hasActiveDeletion()) return { status: "disabled" };
       const time = now();
+      const extractorVersion = "correction-extractor-1/" + provider.identity.version;
       let evidenceResult: LearningRunResult | undefined;
       for (const job of store.learningJobsDue(time, "maintenance")) {
         if (Date.parse(job.expiresAt) <= time.getTime() && !["archived", "cancelled"].includes(job.state)) {
@@ -99,6 +101,7 @@ export class LearningCoordinator {
         const unsettled = !window && work.events.some((entry) => Date.parse(entry.event.timestamp) > time.getTime() - 2_000);
         store.completeLearningPromptWork(work, unsettled ? time.getTime() + 2_000 : undefined);
       }
+      if (provider.prepare !== undefined) store.recoverLearningInputFailures(extractorVersion, time);
       const pending = store.learningJobsDue(time, "inference", 1)[0];
       if (!pending) return evidenceResult ?? { status: "idle" };
       if (this.options.signal?.aborted) return { status: "disabled" };
@@ -108,8 +111,24 @@ export class LearningCoordinator {
         return { status: "cancelled", jobId: pending.jobId };
       }
       if (!await this.options.enabled()) return { status: "disabled" };
+      try {
+        provider.prepare?.(window);
+      } catch (error) {
+        const permanentInputFailure = error !== null && typeof error === "object" &&
+          "code" in error && error.code === "input_too_large" && "permanent" in error && error.permanent === true;
+        if (!permanentInputFailure) throw error;
+        const rejected: LearningJob = {
+          ...pending, state: "failed", extractorVersion, failureKind: "input_too_large",
+          preflightFailures: (pending.preflightFailures ?? 0) + 1,
+          updatedAt: now().toISOString(), result: "error", error: sanitizeDiagnostic(error).slice(0, 512),
+        };
+        delete rejected.deadline; delete rejected.pauseReason; delete rejected.retryAfter;
+        store.transitionLearningJob(rejected, pending.state);
+        return evidenceResult ?? { status: "failed", jobId: pending.jobId, reason: "input_too_large" };
+      }
       const attempts = store.learningAttemptCount(window, pending.attempts);
-      if (attempts >= 3) {
+      const recoveryAvailable = pending.inputBudgetRecovery?.retryDispatched === false;
+      if (attempts >= 3 && !recoveryAvailable) {
         store.transitionLearningJob({ ...pending, state: "failed", attempts, updatedAt: time.toISOString() }, pending.state);
         return evidenceResult ?? { status: "idle", jobId: pending.jobId, reason: "attempt_budget" };
       }
@@ -119,15 +138,17 @@ export class LearningCoordinator {
         return evidenceResult ?? { status: "paused", jobId: pending.jobId, reason: "daily_budget" };
       }
       const deadlineMs = this.options.deadlineMs ?? 60_000;
-      const running: LearningJob = { ...pending, state: "running", attempts: attempts + 1, updatedAt: time.toISOString(),
+      const running: LearningJob = { ...pending, state: "running", attempts: Math.min(3, attempts + 1), updatedAt: time.toISOString(),
+        ...(recoveryAvailable && pending.inputBudgetRecovery !== undefined ? { inputBudgetRecovery: { ...pending.inputBudgetRecovery, retryDispatched: true } } : {}),
         deadline: new Date(time.getTime() + deadlineMs).toISOString(), provider: provider.identity.provider, model: provider.identity.model, extractorVersion: `correction-extractor-1/${provider.identity.version}` };
-      delete running.pauseReason; delete running.retryAfter; delete running.error; delete running.result;
+      delete running.pauseReason; delete running.retryAfter; delete running.error; delete running.result; delete running.failureKind;
       if (!store.transitionLearningJob(running, pending.state)) return { status: "busy" };
       const controller = new AbortController();
       const providerSignal = this.options.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, this.options.signal]);
       let timer: NodeJS.Timeout | undefined;
       let abortListener: (() => void) | undefined;
       let inference: Promise<unknown> | undefined;
+      let providerCalled = false;
       try {
         // Only the separate inference lease is held here; SQLite/projection/ingestion leases are free.
         const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Learning inference deadline exceeded.")); }, deadlineMs); });
@@ -137,7 +158,11 @@ export class LearningCoordinator {
           if (providerSignal.aborted) abortListener();
           else providerSignal.addEventListener("abort", abortListener, { once: true });
         });
-        inference = provider.infer(window, { signal: providerSignal });
+        inference = Promise.resolve().then(() => {
+          if (providerSignal.aborted) throw new Error("Learning inference cancelled.");
+          providerCalled = true;
+          return provider.infer(window, { signal: providerSignal });
+        });
         const output = await Promise.race([inference, timeout, aborted]);
         clearTimeout(timer);
         if (providerSignal.aborted || !await this.options.enabled()) throw new Error("Learning inference stopped before submission.");
@@ -176,7 +201,8 @@ export class LearningCoordinator {
         const finished = now();
         const state = !store.learningSourcesCurrent(window) ? (store.learningSourcesExist(window) ? "superseded" : "cancelled")
           : Date.parse(running.expiresAt) <= finished.getTime() ? "archived" : pauseReason ? "paused" : "failed";
-        store.transitionLearningJob({ ...running, state, attempts: pauseReason ? attempts : running.attempts,
+        store.transitionLearningJob({ ...running, state, attempts: !providerCalled || pauseReason ? attempts : running.attempts,
+          ...(!providerCalled && pending.inputBudgetRecovery !== undefined ? { inputBudgetRecovery: pending.inputBudgetRecovery } : {}),
           updatedAt: finished.toISOString(), result: "error", error: sanitizeDiagnostic(error).slice(0, 512),
           ...(pauseReason ? { pauseReason, retryAfter: new Date(finished.getTime() + (unavailable === "signed_out" ? 300_000 : unavailable ? 60_000 : 0)).toISOString() } : {}),
         }, "running");

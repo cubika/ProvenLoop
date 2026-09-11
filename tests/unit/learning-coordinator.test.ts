@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { captureQueueItemSchema } from "@provenloop/contracts";
 import { createCaptureEnvelope, redactCaptureEnvelopeForPersistence, sha256, buildLearningWindows, type CaptureEventInput } from "@provenloop/domain";
 import { LearningCoordinator } from "@provenloop/host";
@@ -37,6 +37,175 @@ const fixture = () => {
 };
 
 describe("automatic learning coordinator", () => {
+  it("does not charge deterministic preparation failures or retry the same extractor", async () => {
+    const f = fixture();
+    const reserve = vi.spyOn(f.store, "reserveLearningAttempt");
+    const prepare = vi.fn(() => { throw Object.assign(new Error("The bounded input cannot fit."), { code: "input_too_large", permanent: true }); });
+    const provider = { ...f.options.provider, prepare };
+    try {
+      const coordinator = new LearningCoordinator({ ...f.options, provider });
+      expect(await coordinator.run()).toMatchObject({ status: "failed", reason: "input_too_large" });
+      expect(f.store.learningJobs()[0]).toMatchObject({ state: "failed", failureKind: "input_too_large", attempts: 0, preflightFailures: 1 });
+      expect(await coordinator.run()).toMatchObject({ status: "idle" });
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(reserve).not.toHaveBeenCalled(); expect(f.calls()).toBe(0);
+      expect(await new LearningCoordinator({ ...f.options, provider: {
+        ...f.options.provider, identity: { ...provider.identity, version: "2" }, prepare: () => undefined,
+      } }).run()).toMatchObject({ status: "evaluated" });
+      expect(f.store.learningJobs()[0]).toMatchObject({ attempts: 1, preflightFailures: 1 });
+      expect(reserve).toHaveBeenCalledTimes(1); expect(f.calls()).toBe(1);
+    } finally { f.store.close(); }
+  });
+
+  it.each(["Learning window exceeds the inference budget.", "Error: Learning window exceeds the inference budget."])("grants one audited recovery dispatch for exhausted legacy failure: %s", async (error) => {
+    const f = fixture();
+    const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "correction-extractor-1/legacy", error }, "pending");
+    let calls = 0;
+    const provider = { ...f.options.provider, identity: { ...f.options.provider.identity, version: "2" }, prepare: () => undefined, infer: async () => {
+      calls += 1; throw new Error("Malformed provider output.");
+    } };
+    try {
+      expect(await new LearningCoordinator({ ...f.options, provider }).run()).toMatchObject({ status: "failed" });
+      expect(f.store.learningJobs()[0]).toMatchObject({ attempts: 3, inputBudgetRecovery: {
+        fromExtractorVersion: "correction-extractor-1/legacy", previousAttempts: 3, retryDispatched: true,
+      } });
+      expect(f.store.learningJobs()[0]?.expiresAt).toBe(job.expiresAt);
+      expect(await new LearningCoordinator({ ...f.options, provider }).run()).toMatchObject({ status: "idle" });
+      expect(await new LearningCoordinator({ ...f.options, provider: { ...provider, identity: { ...provider.identity, version: "3" } } }).run()).toMatchObject({ status: "idle" });
+      expect(calls).toBe(1);
+    } finally { f.store.close(); }
+  });
+
+  it("keeps legacy recovery available when preparation fails and when the daily budget is full", async () => {
+    const f = fixture(); const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, "pending");
+    let time = now();
+    try {
+      const failure = { ...f.options.provider, prepare: () => { throw Object.assign(new Error("Still oversized."), { code: "input_too_large", permanent: true }); } };
+      expect(await new LearningCoordinator({ ...f.options, provider: failure }).run()).toMatchObject({ reason: "input_too_large" });
+      expect(f.store.learningJobs()[0]?.inputBudgetRecovery?.retryDispatched).toBe(false);
+      f.store.reserveLearningAttempt(time, 1);
+      const provider = { ...f.options.provider, prepare: () => undefined, identity: { ...f.options.provider.identity, version: "2" } };
+      const coordinator = new LearningCoordinator({ ...f.options, provider, dailyLimit: 1, now: () => time });
+      expect(await coordinator.run()).toMatchObject({ reason: "daily_budget" });
+      expect(f.store.learningJobs()[0]?.inputBudgetRecovery?.retryDispatched).toBe(false);
+      time = new Date(base + 86_400_000);
+      expect(await coordinator.run()).toMatchObject({ status: "evaluated" });
+      expect(f.store.learningJobs()[0]).toMatchObject({ attempts: 3, preflightFailures: 1, inputBudgetRecovery: { retryDispatched: true } });
+      expect(f.calls()).toBe(1);
+    } finally { f.store.close(); }
+  });
+
+  it("does not spend the recovery allowance when cancellation arrives before calling the provider", async () => {
+    const f = fixture(); const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, "pending");
+    const stopped = new AbortController();
+    try {
+      const cancelled = new LearningCoordinator({ ...f.options, signal: stopped.signal,
+        provider: { ...f.options.provider, prepare: () => { stopped.abort(); } },
+      });
+      expect(await cancelled.run()).toMatchObject({ status: "cancelled" });
+      expect(f.calls()).toBe(0);
+      expect(f.store.learningJobs()[0]).toMatchObject({ state: "paused", attempts: 3, pauseReason: "host_stopped", inputBudgetRecovery: { retryDispatched: false } });
+      expect(await new LearningCoordinator({ ...f.options, provider: { ...f.options.provider, prepare: () => undefined } }).run()).toMatchObject({ status: "evaluated" });
+      expect(f.calls()).toBe(1);
+      expect(f.store.learningJobs()[0]?.inputBudgetRecovery?.retryDispatched).toBe(true);
+    } finally { f.store.close(); }
+  });
+
+  it("counts a synchronous provider throw as a called recovery attempt", async () => {
+    const f = fixture(); const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, "pending");
+    let calls = 0;
+    try {
+      const coordinator = new LearningCoordinator({ ...f.options, provider: {
+        ...f.options.provider, prepare: () => undefined,
+        infer: () => { calls += 1; throw new Error("Synchronous provider failure."); },
+      } });
+      expect(await coordinator.run()).toMatchObject({ status: "failed" });
+      expect(f.store.learningJobs()[0]?.inputBudgetRecovery?.retryDispatched).toBe(true);
+      expect(await coordinator.run()).toMatchObject({ status: "idle" });
+      expect(calls).toBe(1);
+    } finally { f.store.close(); }
+  });
+
+  it.each(["archived", "cancelled", "superseded", "other_error", "same_extractor", "expired"])("does not recover ineligible legacy failure: %s", async (scenario) => {
+    const f = fixture(); const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    const state = scenario === "archived" || scenario === "cancelled" || scenario === "superseded" ? scenario : "failed";
+    f.store.transitionLearningJob({ ...job, state, attempts: 3, extractorVersion: scenario === "same_extractor" ? "correction-extractor-1/2" : "legacy",
+      error: scenario === "other_error" ? "Provider output invalid." : "Learning window exceeds the inference budget.",
+      ...(scenario === "expired" ? { expiresAt: new Date(base).toISOString() } : {}),
+    }, "pending");
+    try {
+      expect(f.store.recoverLearningInputFailures("correction-extractor-1/2", now())).toBe(0);
+      expect(f.store.learningJobs()[0]?.inputBudgetRecovery).toBeUndefined();
+    } finally { f.store.close(); }
+  });
+
+  it("does not recover changed sources or a failed job with existing extracted records", async () => {
+    const f = fixture();
+    try {
+      await new LearningCoordinator(f.options).run();
+      const job = f.store.learningJobs()[0];
+      if (!job) throw new Error("Expected a completed learning job.");
+      f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, job.state);
+      expect(f.store.recoverLearningInputFailures("correction-extractor-1/2", now())).toBe(0);
+      expect(f.store.learningProposals()).toHaveLength(1);
+    } finally { f.store.close(); }
+
+    const changed = fixture();
+    try {
+      const window = buildLearningWindows(changed.captured, now())[0];
+      if (!window) throw new Error("Expected a learning window.");
+      const job = changed.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+      if (!job) throw new Error("Expected a learning job.");
+      changed.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, "pending");
+      const source = changed.captured[4];
+      if (!source) throw new Error("Expected a result source.");
+      expect(changed.store.enrichRawEvent({ envelope: { ...source, content: { message: "Newly captured result details." } }, sourceDigest: "e".repeat(64) })).toMatchObject({ status: "enriched" });
+      expect(changed.store.recoverLearningInputFailures("correction-extractor-1/2", now())).toBe(0);
+      expect(changed.store.learningJobs()[0]?.inputBudgetRecovery).toBeUndefined();
+    } finally { changed.store.close(); }
+  });
+
+  it("carries the consumed legacy allowance into a new revision without resetting its attempts", async () => {
+    const f = fixture(); const window = buildLearningWindows(f.captured, now())[0];
+    if (!window) throw new Error("Expected a learning window.");
+    const job = f.store.scheduleLearningWindow(window, new Date(base + 30 * 86_400_000).toISOString(), now());
+    if (!job) throw new Error("Expected a learning job.");
+    f.store.transitionLearningJob({ ...job, state: "failed", attempts: 3, extractorVersion: "legacy", error: "Learning window exceeds the inference budget." }, "pending");
+    let calls = 0;
+    try {
+      const provider = { ...f.options.provider, prepare: () => undefined, infer: async () => { calls += 1; throw new Error("Malformed output."); } };
+      await new LearningCoordinator({ ...f.options, provider }).run();
+      const source = f.captured[4];
+      if (!source) throw new Error("Expected a result source.");
+      f.store.enrichRawEvent({ envelope: { ...source, content: { message: "Enriched result details." } }, sourceDigest: "f".repeat(64) });
+      const revised = buildLearningWindows(f.store.episodeSourceEnvelopes(), now()).find((entry) => entry.windowId === window.windowId);
+      if (!revised) throw new Error("Expected an enriched window.");
+      const next = f.store.scheduleLearningWindow(revised, new Date(base + 60 * 86_400_000).toISOString(), now());
+      expect(next).toMatchObject({ attempts: 3, expiresAt: job.expiresAt, inputBudgetRecovery: { retryDispatched: true } });
+      expect((await new LearningCoordinator({ ...f.options, provider }).run()).status).toBe("idle");
+      expect(calls).toBe(1);
+    } finally { f.store.close(); }
+  });
+
   it("retains the inference lease until cancelled provider cleanup settles", async () => {
     const f=fixture();const stopped=new AbortController();let release=false;let finish:()=>void=()=>undefined;let started:()=>void=()=>undefined;
     const entered=new Promise<void>((resolve)=>{started=resolve;});
