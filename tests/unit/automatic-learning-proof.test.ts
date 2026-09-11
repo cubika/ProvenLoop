@@ -92,6 +92,20 @@ describe("typed MCP correction proof", () => {
       parentEventId: input.retry.event.eventId, mcp: { ...input.retry.event.mcp, serverName: "files", toolName: "read", resultType: "failure" } });
     expect(verify(input, [...input.events, typedFailure], false)).toBeUndefined();
   });
+  it.each([
+    { timestamp: "2026-08-31T23:59:59.000Z" },
+    { sessionId: "other-session" },
+    { repoId: "other-repository" },
+    { worktree: "C:/other" },
+  ])("does not count a peer with invalid causal time or workspace as a recovery retry: %j", (patch) => {
+    const input = fixture();
+    const invalidPeer = input.event("invalid-peer", 3, { operationId: "other-call", parentEventId: input.user.event.eventId,
+      content: { toolArguments: { path: "other.md" } }, ...patch });
+    expect(verify(input, [...input.events, invalidPeer], false)).toBeDefined();
+    const causalPeer = input.event("causal-peer", 3, { operationId: "other-call", parentEventId: input.user.event.eventId,
+      content: { toolArguments: { path: "other.md" } } });
+    expect(verify(input, [...input.events, causalPeer], false)).toBeUndefined();
+  });
   it("renders admitted legacy digest applicability without treating the contract as a secret", async () => {
     const input = fixture();
     const receipt = verify(input);

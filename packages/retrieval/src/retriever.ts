@@ -11,6 +11,7 @@ import { posix, win32 } from "node:path";
 
 import {
   AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS,
+  branchScopeIdFor,
   scopeMatches,
   type CanonicalKnowledgeAdmissionStore,
   type KnowledgeBackend,
@@ -69,6 +70,9 @@ export class CanonicalKnowledgeRetriever {
     query: KnowledgeRetrievalQuery,
     options: {
       readonly timeoutMs?: number;
+      readonly accept?: (item: RetrievedKnowledge) => boolean;
+      readonly maxCandidates?: number;
+      readonly onCandidateBudgetExhausted?: () => void;
     } = {},
   ): Promise<readonly RetrievedKnowledge[]> {
     if (!Number.isInteger(query.limit) || query.limit <= 0) {
@@ -86,7 +90,12 @@ export class CanonicalKnowledgeRetriever {
       );
     }
     const now = query.now ?? new Date();
+    const maxCandidates = options.maxCandidates ?? 500;
+    if (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 10_000) {
+      throw new RangeError("Knowledge retrieval candidate budget must be between 1 and 10000.");
+    }
     const pageSize = Math.max(query.limit * 5, 20);
+    let examined = 0;
     const retrieved: RetrievedKnowledge[] = [];
     const admissionById = new Map<
       string,
@@ -110,7 +119,18 @@ export class CanonicalKnowledgeRetriever {
         throw new Error("Knowledge retrieval timed out.");
       }
       const backendQuery = {
-        limit: pageSize,
+        limit: Math.min(pageSize, maxCandidates - examined),
+        filter: {
+          now: now.toISOString(),
+          scopes: [
+            { scope: "personal" as const },
+            ...(query.repositoryScopeId === undefined ? [] : [{ scope: "repository" as const, scopeId: query.repositoryScopeId }]),
+            ...(query.workflowScopeId === undefined ? [] : [{ scope: "workflow" as const, scopeId: query.workflowScopeId }]),
+            ...(query.repositoryScopeId === undefined || query.branchScopeId === undefined ? [] : [{
+              scope: "branch" as const, scopeId: branchScopeIdFor(query.repositoryScopeId, query.branchScopeId),
+            }]),
+          ],
+        },
         ...(query.match === undefined ? {} : { match: query.match }),
         offset,
         text: query.text,
@@ -133,9 +153,14 @@ export class CanonicalKnowledgeRetriever {
       if (hits.length === 0) {
         break;
       }
+      examined += hits.length;
       const candidates = this.#store.knowledgeCandidates(
         hits.map((hit) => hit.knowledgeId),
-      );
+      ).filter((candidate) =>
+        scopeMatches(candidate.scope, candidate.scopeId, query) &&
+        (candidate.expiresAt === undefined || Date.parse(candidate.expiresAt) > now.getTime()) &&
+        (candidate.state === "candidate" || (candidate.state === "active" &&
+          AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS.has(candidate.evidenceTier))));
       const byId = new Map(
         candidates.map((candidate) => [
           candidate.knowledgeId,
@@ -200,6 +225,7 @@ export class CanonicalKnowledgeRetriever {
           applicableById.get(candidate.knowledgeId) !== true ||
           admissionById.get(candidate.knowledgeId)?.admitted !== true ||
           hit.sourceDigest !== projection?.sourceDigest ||
+          (hit.retrievalMetadata !== undefined && sha256(hit.retrievalMetadata) !== sha256(projection?.retrievalMetadata)) ||
           sha256(hit.searchAliases ?? []) !== sha256(projection?.searchAliases ?? []) ||
           sha256(hit.searchExclusions ?? []) !== sha256(projection?.searchExclusions ?? [])
         ) {
@@ -207,7 +233,7 @@ export class CanonicalKnowledgeRetriever {
         }
         const sourceUse = sourceUseById.get(candidate.knowledgeId);
         const retrievalScope = retrievalScopesById.get(candidate.knowledgeId);
-        retrieved.push({
+        const item: RetrievedKnowledge = {
           ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
           ...(sourceUse?.researchSummary ? { researchSummary: sourceUse.researchSummary } : {}),
           ...(sourceUse?.distilledLesson ? { distilledLesson: sourceUse.distilledLesson } : {}),
@@ -222,14 +248,23 @@ export class CanonicalKnowledgeRetriever {
           ...(projection?.searchExclusions ? { searchExclusions: projection.searchExclusions } : {}),
           ...(retrievalScope ? { retrievalScope } : {}),
           score: hit.score,
-        });
+        };
+        if (options.accept !== undefined && !options.accept(item)) continue;
+        retrieved.push(item);
         if (retrieved.length === query.limit) {
           break;
         }
       }
       offset += hits.length;
-      if (hits.length < pageSize) {
+      if (hits.length < backendQuery.limit) {
         break;
+      }
+      if (retrieved.length < query.limit && examined >= maxCandidates) {
+        if (retrieved.length > 0) {
+          options.onCandidateBudgetExhausted?.();
+          return retrieved;
+        }
+        throw new Error("Knowledge retrieval candidate budget exhausted.");
       }
     }
     return retrieved;

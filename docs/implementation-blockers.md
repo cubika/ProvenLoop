@@ -1,6 +1,6 @@
 # ProvenLoop implementation blockers
 
-**Updated:** 2026-09-08
+**Updated:** 2026-09-11
 
 This list tracks missing **acceptance evidence**, not a claim that the associated
 code is absent. `0.1.0-alpha.0.12` is a Windows Design Partner Preview evidence
@@ -8,6 +8,25 @@ candidate. Its capture/storage/feedback repairs require their own retained
 version-bound validation and native-host observations; historical probe results
 do not approve the new path. `0.1.0-alpha.1` remains an unapproved quality-release
 target.
+
+## SCALE-001: Sustained history and retrieval capacity
+
+State: initial repairs in the working tree with remaining findings; sustained-capacity claims are
+blocked. See the [scalability review](scalability-review.md) for SC-01 through
+SC-14, retained diagnostic evidence, work-package dependencies and acceptance
+criteria. This entry covers processing cost, query availability, relevance,
+duplicate/conflicting guidance, feedback, retention and evaluation.
+
+Exit conditions:
+
+- remove full-history reconstruction and exhaustive session pairing from
+  ordinary processing, including long-session event growth;
+- preserve evidence, delivery-accounting and deletion guarantees through
+  incremental publication and concurrent retrieval;
+- pass growing-corpus quality and mixed-load resource checks on a declared
+  capacity profile, including representative event sizes and arrival rates;
+- retain installed-host and sustained-run evidence before making a capacity
+  claim; the current diagnostic medians and functional tests do not close it.
 
 ## F0-001: Copilot event capture latency
 

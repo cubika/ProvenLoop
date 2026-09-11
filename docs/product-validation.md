@@ -1115,6 +1115,11 @@ product must satisfy both useful retention and low maintenance burden.
 
 ### 9.8 Improvement as experience accumulates
 
+The [scalability review and acceptance matrix](scalability-review.md#6-acceptance-plan)
+records diagnostic failures and defines proposed workload, quality and resource
+checks for the engineering repair. Its synthetic measurements do not replace
+the controlled outcome comparison below.
+
 Status: proposed outcome validation for the FB-008 follow-up. The
 [product promise](product-design.md#46-the-agent-should-improve-with-experience) is that
 developers experience an agent becoming more capable in their project through use.

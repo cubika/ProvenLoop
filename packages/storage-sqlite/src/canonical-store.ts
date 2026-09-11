@@ -732,6 +732,15 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
     ) STRICT;
     CREATE INDEX learning_proposal_relations ON learning_proposals(json_type(body_json, '$.relations'));`,
   },
+  {
+    version: 21,
+    sql: "CREATE INDEX raw_events_session_type ON raw_events(session_id,event_type,event_timestamp) WHERE parse_status='supported';" +
+      "CREATE INDEX raw_events_operation ON raw_events(session_id,json_extract(safe_envelope_json,'$.event.operationId')) WHERE parse_status='supported';" +
+      "CREATE INDEX raw_events_counterevidence ON raw_events(session_id,event_timestamp) WHERE parse_status='supported' AND (" +
+      "event_type IN ('change.reverted','tool.failed') OR json_extract(safe_envelope_json,'$.event.completionStatus')='failed' " +
+      "OR (json_extract(safe_envelope_json,'$.event.exitCode') IS NOT NULL AND json_extract(safe_envelope_json,'$.event.exitCode')!=0) " +
+      "OR json_extract(safe_envelope_json,'$.event.mcp.isError')=1 OR json_extract(safe_envelope_json,'$.event.mcp.resultType')='failure');",
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 // Dependent rows precede their source tables; reset retains only schema and replay protection.
@@ -1989,6 +1998,9 @@ const RUNTIME_SCHEMA_INDEXES = {
     },
   ],
   raw_events: [
+    { columns: ["session_id", "event_type", "event_timestamp"], name: "raw_events_session_type", origin: "c", unique: false, partial: true },
+    { columns: ["session_id", "null"], name: "raw_events_operation", origin: "c", unique: false, partial: true },
+    { columns: ["session_id", "event_timestamp"], name: "raw_events_counterevidence", origin: "c", unique: false, partial: true },
     { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_context", origin: "c", unique: false, partial: true },
     { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_agents", origin: "c", unique: false, partial: true },
     { columns: ["session_id", "repo_id", "worktree", "event_timestamp", "event_id"], name: "raw_events_learning_prompts", origin: "c", unique: false, partial: true },
@@ -5479,11 +5491,29 @@ export class CanonicalSqliteStore {
           ORDER BY event_timestamp, deduplication_key`,
       )
       .all() as readonly Readonly<Record<string, unknown>>[];
-    return rows.map((row) =>
-      this.#effectiveEnvelope(captureEnvelopeSchema.parse(
-        JSON.parse(String(row.safe_envelope_json)) as unknown,
-      )),
-    );
+    return this.#effectiveEnvelopes(rows);
+  }
+
+  #effectiveEnvelopes(rows: readonly Readonly<Record<string, unknown>>[]): CaptureEnvelope[] {
+    const originals = rows.map((row) => captureEnvelopeSchema.parse(
+      JSON.parse(String(row.safe_envelope_json)) as unknown,
+    ));
+    if (originals.length === 0 || !this.#hasEnrichments()) return originals;
+    const latest = new Map<string, Readonly<Record<string, unknown>>>();
+    for (const chunk of sqliteChunks([...new Set(originals.map((item) => item.deduplicationKey))])) {
+      for (const row of this.#database.prepare(
+        "SELECT deduplication_key, original_digest, safe_envelope_json FROM raw_event_enrichments " +
+        "WHERE deduplication_key IN (" + placeholders(chunk.length) + ") ORDER BY rowid",
+      ).all(...chunk)) latest.set(String(row.deduplication_key), row);
+    }
+    return originals.map((original) => {
+      const enrichment = latest.get(original.deduplicationKey);
+      if (enrichment === undefined) return original;
+      if (String(enrichment.original_digest) !== sha256(original)) {
+        throw new InvalidCanonicalSchemaError("Event enrichment no longer matches its original evidence.");
+      }
+      return captureEnvelopeSchema.parse(JSON.parse(String(enrichment.safe_envelope_json)) as unknown);
+    });
   }
 
   public effectiveRawEvent(
@@ -6763,6 +6793,49 @@ export class CanonicalSqliteStore {
         feedbackRows.set(String(row.feedback_id), row);
       }
     }
+    const learningEvidence = candidates.some((entry) => entry.knowledgeId.startsWith("learning-knowledge-"));
+    const counterSessions = new Set<string>();
+    const counterRowsFor = (sessionId: string): readonly Readonly<Record<string, unknown>>[] => {
+      if (counterSessions.has(sessionId)) return [];
+      counterSessions.add(sessionId);
+      return this.#database.prepare("SELECT deduplication_key,safe_envelope_json FROM raw_events WHERE parse_status='supported' AND session_id=? AND (" +
+        "event_type IN ('change.reverted','tool.failed') OR json_extract(safe_envelope_json,'$.event.completionStatus')='failed' " +
+        "OR (json_extract(safe_envelope_json,'$.event.exitCode') IS NOT NULL AND json_extract(safe_envelope_json,'$.event.exitCode')!=0) " +
+        "OR json_extract(safe_envelope_json,'$.event.mcp.isError')=1 OR json_extract(safe_envelope_json,'$.event.mcp.resultType')='failure')").all(sessionId);
+    };
+    if (learningEvidence) {
+      const sessions = new Map<string, { since: string; until: string; operations: Set<string> }>();
+      for (const envelope of this.#effectiveEnvelopes([...envelopeRows.values()])) {
+        const { sessionId, timestamp, operationId } = envelope.event;
+        if (sessionId === undefined) continue;
+        // The persisted ordering column is normalized UTC even when the exact
+        // source timestamp retains an offset or different fractional precision.
+        const orderedAt = new Date(timestamp).toISOString();
+        const range = sessions.get(sessionId) ?? { since: orderedAt, until: orderedAt, operations: new Set<string>() };
+        if (orderedAt < range.since) range.since = orderedAt;
+        if (orderedAt > range.until) range.until = orderedAt;
+        if (operationId !== undefined) range.operations.add(operationId);
+        sessions.set(sessionId, range);
+      }
+      // Preserve negative evidence and competing operations without materializing
+      // every ordinary tool result in the source session. The ancestor closure
+      // below still loads every parent needed to validate these selected events.
+      const select = "SELECT deduplication_key,safe_envelope_json FROM raw_events WHERE parse_status='supported' AND session_id=? AND ";
+      const include = (rows: readonly Readonly<Record<string, unknown>>[]): void => {
+        for (const row of rows) envelopeRows.set(String(row.deduplication_key), row);
+      };
+      for (const [sessionId, range] of sessions) {
+        include(this.#database.prepare(select +
+          "event_type='tool.started' AND event_timestamp>=? AND event_timestamp<=?").all(sessionId, range.since, range.until));
+        include(this.#database.prepare(select +
+          "trust='user' AND event_timestamp>=? AND event_timestamp<=?").all(sessionId, range.since, range.until));
+        include(counterRowsFor(sessionId));
+        for (const chunk of sqliteChunks([...range.operations])) {
+          include(this.#database.prepare(select + "json_extract(safe_envelope_json,'$.event.operationId') IN (" +
+            placeholders(chunk.length) + ")").all(sessionId, ...chunk));
+        }
+      }
+    }
     const queriedProofIds = new Set(sourceEvidenceIds);
     const pendingProofIds = new Set<string>();
     const addProofReferences = (row: Readonly<Record<string, unknown>>): void => {
@@ -6773,6 +6846,12 @@ export class CanonicalSqliteStore {
         pendingProofIds.add(reference);
       }
       if (envelope.event.sessionId !== undefined) {
+        if (learningEvidence) {
+          for (const counter of counterRowsFor(envelope.event.sessionId)) {
+            const event = captureEnvelopeSchema.parse(JSON.parse(String(counter.safe_envelope_json)));
+            pendingProofIds.add(event.event.eventId);
+          }
+        }
         for (const source of captureSdkSources(envelope)) {
           for (const referenced of this.#database.prepare(
             `SELECT event_id FROM raw_events WHERE adapter = ? AND adapter_version = ?
@@ -6855,18 +6934,7 @@ export class CanonicalSqliteStore {
         episodeRows.set(String(row.episode_id), row);
       }
     }
-    if (candidates.some((entry) => entry.knowledgeId.startsWith("learning-knowledge-"))) {
-      const sessions = new Set([...envelopeRows.values()].map((row) => captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))).event.sessionId).filter((id): id is string => id !== undefined));
-      for (const id of sessions) {
-        for (const row of this.#database.prepare("SELECT deduplication_key,safe_envelope_json FROM raw_events WHERE session_id=? AND parse_status='supported'").all(id)) envelopeRows.set(String(row.deduplication_key), row);
-      }
-    }
-    const envelopes = [...envelopeRows.values()]
-      .map((row) =>
-        this.#effectiveEnvelope(captureEnvelopeSchema.parse(
-          JSON.parse(String(row.safe_envelope_json)) as unknown,
-        )),
-      )
+    const envelopes = this.#effectiveEnvelopes([...envelopeRows.values()])
       .sort(
         (left, right) =>
           Date.parse(left.event.timestamp) -
@@ -8026,6 +8094,28 @@ export class CanonicalSqliteStore {
   ): void {
     const latestVersion =
       migrations.at(-1)?.version ?? 0;
+    // Validate current stores under a read snapshot. Only real migrations need
+    // the writer lock; they recheck the version after acquiring it below.
+    this.#database.exec("BEGIN;");
+    try {
+      this.#assertNoRestoreBarrier();
+      const currentVersion = asNumber(this.#database.prepare("PRAGMA user_version;").get()?.user_version);
+      if (currentVersion > latestVersion) {
+        throw new UnsupportedDatabaseVersionError(currentVersion, latestVersion);
+      }
+      if (currentVersion === latestVersion) {
+        CanonicalSqliteStore.#assertCanonicalSchema(this.#database, latestVersion, migrations);
+        this.#database.exec("COMMIT;");
+        return;
+      }
+      if (currentVersion > 0 && !this.#allowSchemaMigration) {
+        throw new CanonicalMigrationRequiredError(currentVersion, latestVersion);
+      }
+      this.#database.exec("COMMIT;");
+    } catch (error) {
+      this.#database.exec("ROLLBACK;");
+      throw error;
+    }
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
@@ -8332,6 +8422,7 @@ export class CanonicalSqliteStore {
                         index.name === "raw_events_learning_prompts"
                       )) ||
                       (expectedVersion < 14 && index.name === "raw_events_learning_agents") ||
+                      (expectedVersion < 21 && ["raw_events_session_type", "raw_events_operation", "raw_events_counterevidence"].includes(index.name)) ||
                       (expectedVersion < 10 && (
                         index.name === "raw_events_observed" ||
                         index.name === "context_use_observed"

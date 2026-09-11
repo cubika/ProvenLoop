@@ -249,9 +249,10 @@ export const runCaptureWorkerOnce = async (
     let correctionProjectionError: string | undefined;
     let knowledgeLifecycleProjectionError: string | undefined;
     if (projectionRequired) {
+      const envelopes = store.episodeSourceEnvelopes();
       new WorkEpisodeProjector({
         store,
-      }).rebuild();
+      }).rebuild(undefined, { envelopes, associationMode: "connected" });
       if (
         adapterState?.capabilities.correction_learning.enabled === true
       ) {
@@ -259,7 +260,7 @@ export const runCaptureWorkerOnce = async (
           const correctionProjection =
             new CorrectionCaptureProjector({
               store,
-            }).rebuild();
+            }).rebuild({ envelopes });
           correctionCaptureIssueCount =
             correctionProjection.issues.length;
           correctionCaptureIssues = correctionProjection.issues
@@ -276,7 +277,7 @@ export const runCaptureWorkerOnce = async (
           try {
             new KnowledgeLifecycleProjector({
               store,
-            }).rebuild();
+            }).rebuild({ envelopes });
           } catch (error) {
             knowledgeLifecycleProjectionError =
               sanitizeDiagnostic(error);
@@ -285,7 +286,7 @@ export const runCaptureWorkerOnce = async (
       }
       new BranchContextProjector({
         store,
-      }).rebuild();
+      }).rebuild({ envelopes });
     }
     let knowledgeProjectionError: string | undefined;
     if (
@@ -308,7 +309,7 @@ export const runCaptureWorkerOnce = async (
           await new KnowledgeProjectionManager({
             backend: knowledgeBackend,
             store,
-          }).rebuild();
+          }).synchronize();
         } finally {
           try {
             await knowledgeBackend.closeAsync();

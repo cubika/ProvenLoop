@@ -29,6 +29,7 @@ export interface BranchContextProjectionResult {
 
 export interface BranchContextRebuildOptions {
   readonly allowDuringDeletion?: boolean;
+  readonly envelopes?: readonly CaptureEnvelope[];
 }
 
 export class BranchContextProjector {
@@ -52,7 +53,7 @@ export class BranchContextProjector {
       );
     }
     const contexts = this.#builder.build(
-      this.#store.episodeSourceEnvelopes(),
+      options.envelopes ?? this.#store.episodeSourceEnvelopes(),
       this.#store.workEpisodes(),
     );
     return {

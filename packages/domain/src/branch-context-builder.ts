@@ -111,16 +111,15 @@ const eventState = (envelope: CaptureEnvelope): string | undefined => {
 
 const latestTimestamp = (
   envelopes: readonly CaptureEnvelope[],
-): string =>
-  [...envelopes]
-    .sort(
-      (left, right) =>
-        Date.parse(left.event.timestamp) -
-          Date.parse(right.event.timestamp) ||
-        left.event.eventId.localeCompare(right.event.eventId),
-    )
-    .at(-1)?.event.timestamp ??
-  new Date(0).toISOString();
+): string => {
+  let latest: CaptureEnvelope | undefined;
+  for (const envelope of envelopes) {
+    if (latest === undefined || Date.parse(envelope.event.timestamp) > Date.parse(latest.event.timestamp) ||
+      (Date.parse(envelope.event.timestamp) === Date.parse(latest.event.timestamp) &&
+        envelope.event.eventId.localeCompare(latest.event.eventId) > 0)) latest = envelope;
+  }
+  return latest?.event.timestamp ?? new Date(0).toISOString();
+};
 
 const hasExplicitContinuationMarker = (
   envelope: CaptureEnvelope,
@@ -162,9 +161,14 @@ export class BranchContextBuilder {
     inputEnvelopes: readonly CaptureEnvelope[],
     inputEpisodes: readonly WorkEpisode[],
   ): readonly BranchContext[] {
-    const envelopes = inputEnvelopes.map((envelope) =>
-      captureEnvelopeSchema.parse(envelope),
-    );
+    const envelopesBySession = new Map<string, CaptureEnvelope[]>();
+    for (const input of inputEnvelopes) {
+      const envelope = captureEnvelopeSchema.parse(input);
+      if (envelope.event.sessionId === undefined || isInternalWorkSource(envelope.event)) continue;
+      const events = envelopesBySession.get(envelope.event.sessionId) ?? [];
+      events.push(envelope);
+      envelopesBySession.set(envelope.event.sessionId, events);
+    }
     const episodes = inputEpisodes.map((episode) =>
       workEpisodeSchema.parse(episode),
     );
@@ -197,14 +201,11 @@ export class BranchContextBuilder {
       const candidateSessionIds = new Set(
         group.episodes.flatMap((episode) => episode.sessionIds),
       );
-      const candidateEnvelopes = envelopes
+      const candidateEnvelopes = [...candidateSessionIds]
+        .flatMap((sessionId) => envelopesBySession.get(sessionId) ?? [])
         .filter(
           (envelope) =>
-            candidateSessionIds.has(
-              envelope.event.sessionId ?? "",
-            ) &&
             envelope.event.repoId === group.repoId &&
-            !isInternalWorkSource(envelope.event) &&
             (
               envelope.event.branch === undefined ||
               envelope.event.branch === group.branch
@@ -223,9 +224,8 @@ export class BranchContextBuilder {
       )?.event.sessionId;
       if (sourceSessionId === undefined) continue;
       const relevant = candidateEnvelopes.filter((envelope) => envelope.event.sessionId === sourceSessionId);
-      const headSha = [...relevant]
-        .reverse()
-        .find((envelope) => envelope.event.commitSha !== undefined)
+      const headSha = relevant
+        .findLast((envelope) => envelope.event.commitSha !== undefined)
         ?.event.commitSha;
       if (headSha === undefined) {
         continue;
@@ -303,7 +303,15 @@ export class BranchContextBuilder {
         string,
         CaptureEnvelope
       >();
+      let userIndex = 0;
+      let preceding: CaptureEnvelope | undefined;
       for (const materialEvent of materialEvents) {
+        while (userIndex < userMessages.length) {
+          const message = userMessages[userIndex];
+          if (message === undefined || Date.parse(message.event.timestamp) > Date.parse(materialEvent.event.timestamp)) break;
+          preceding = message;
+          userIndex += 1;
+        }
         if (hasExplicitContinuationMarker(materialEvent)) {
           associatedGoalMessages.set(
             materialEvent.event.eventId,
@@ -311,15 +319,6 @@ export class BranchContextBuilder {
           );
           continue;
         }
-        const sessionId = materialEvent.event.sessionId;
-        const preceding = [...userMessages]
-          .reverse()
-          .find(
-            (envelope) =>
-              envelope.event.sessionId === sessionId &&
-              Date.parse(envelope.event.timestamp) <=
-                Date.parse(materialEvent.event.timestamp),
-          );
         if (preceding !== undefined) {
           associatedGoalMessages.set(
             preceding.event.eventId,

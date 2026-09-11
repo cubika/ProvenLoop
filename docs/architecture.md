@@ -9,6 +9,10 @@ long-term logical architecture. They use the same event, evidence, domain, and
 evaluation contracts. Later milestones enable additional consumers and state
 transitions; they do not introduce a second architecture.
 
+The [2026-09-11 scalability review](scalability-review.md) records measured
+growth failures and proposes incremental processing, indexed evidence checks,
+and scoped retrieval. The first implementation pass is recorded there; sustained acceptance remains open.
+
 Current implementation descriptions apply to the `0.1.0-alpha.0.12` Windows
 Design Partner Preview evidence candidate. M3-M6 consumers remain targets.
 Synthetic regression coverage is not native-host acceptance, controlled benefit

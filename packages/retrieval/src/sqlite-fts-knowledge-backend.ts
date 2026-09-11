@@ -20,6 +20,30 @@ const normalizedIds = (ids: readonly string[]): string[] =>
       .filter((id) => id.length > 0),
   )].sort();
 
+const SEARCH_SQL = `SELECT records.projection_json,
+  bm25(knowledge_fts, 0.0, 4.0, 2.0, 1.0, 0.25) AS rank
+  FROM knowledge_fts JOIN knowledge_records AS records ON records.record_id = knowledge_fts.rowid
+  WHERE knowledge_fts MATCH ? AND (? = 0 OR records.retrieval_eligible IS NULL OR (
+    records.retrieval_eligible = 1 AND
+    (records.retrieval_expires_at IS NULL OR records.retrieval_expires_at > ?) AND
+    records.retrieval_scope IN (SELECT value FROM json_each(?))))
+  ORDER BY rank, knowledge_fts.knowledge_id LIMIT ? OFFSET ?`;
+
+const scopeKey = (scope: string, scopeId?: string): string =>
+  JSON.stringify([scope, scope === "personal" ? null : scopeId ?? null]);
+const validScope = (scope: string): boolean => ["personal", "workflow", "repository", "branch"].includes(scope);
+const searchFilter = (query: KnowledgeQuery): readonly [number, number, string] => {
+  if (query.filter === undefined) return [0, 0, "[]"];
+  const { now, scopes } = query.filter;
+  if (!Number.isFinite(Date.parse(now)) || !Array.isArray(scopes) || scopes.length > 64 ||
+      scopes.some((entry) => !validScope(entry.scope) ||
+        (entry.scopeId !== undefined && (typeof entry.scopeId !== "string" || entry.scopeId.trim().length === 0)) ||
+        (entry.scope !== "personal" && (typeof entry.scopeId !== "string" || entry.scopeId.trim().length === 0)))) {
+    throw new Error("Knowledge search filter is invalid.");
+  }
+  return [1, Date.parse(now), JSON.stringify([...new Set(scopes.map((entry) => scopeKey(entry.scope, entry.scopeId)))])];
+};
+
 const READ_WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
 const { DatabaseSync } = (${loadNodeSqlite.toString()})(require);
@@ -55,29 +79,9 @@ try {
           recordCount: Number(count.count),
         };
       } else if (request.operation === "search") {
-        const quickCheck = database.prepare("PRAGMA quick_check;").get();
-        const fts5 = database.prepare(
-          "SELECT COUNT(*) AS count " +
-          "FROM sqlite_master " +
-          "WHERE type = 'table' AND name = 'knowledge_fts'",
-        ).get();
-        if (
-          String(Object.values(quickCheck)[0]) !== "ok" ||
-          Number(fts5.count) !== 1
-        ) {
-          throw new Error("Knowledge backend is unhealthy.");
-        }
-        const rows = database.prepare(
-          "SELECT records.projection_json, " +
-          "bm25(knowledge_fts, 0.0, 4.0, 2.0, 1.0, 0.25) AS rank " +
-          "FROM knowledge_fts " +
-          "JOIN knowledge_records AS records " +
-          "ON records.knowledge_id = knowledge_fts.knowledge_id " +
-          "WHERE knowledge_fts MATCH ? " +
-          "ORDER BY rank, knowledge_fts.knowledge_id " +
-          "LIMIT ? OFFSET ?",
-        ).all(
+        const rows = database.prepare(${JSON.stringify(SEARCH_SQL)}).all(
           request.match,
+          ...request.filter,
           request.limit,
           request.offset,
         );
@@ -136,7 +140,12 @@ const validateProjection = (
     (record.searchAliases !== undefined && (!Array.isArray(record.searchAliases) ||
       record.searchAliases.some((alias) => typeof alias !== "string" || alias.trim().length === 0 || alias.length > 256))) ||
     (record.searchExclusions !== undefined && (!Array.isArray(record.searchExclusions) ||
-      record.searchExclusions.some((term) => typeof term !== "string" || term.trim().length < 2 || term.length > 64)))
+      record.searchExclusions.some((term) => typeof term !== "string" || term.trim().length < 2 || term.length > 64))) ||
+    (record.retrievalMetadata !== undefined && (
+      !validScope(record.retrievalMetadata.scope) || typeof record.retrievalMetadata.eligible !== "boolean" ||
+      (record.retrievalMetadata.scopeId !== undefined && (typeof record.retrievalMetadata.scopeId !== "string" || record.retrievalMetadata.scopeId.trim().length === 0)) ||
+      (record.retrievalMetadata.eligible && record.retrievalMetadata.scope !== "personal" && (typeof record.retrievalMetadata.scopeId !== "string" || record.retrievalMetadata.scopeId.trim().length === 0)) ||
+      (record.retrievalMetadata.expiresAt !== undefined && (typeof record.retrievalMetadata.expiresAt !== "string" || !Number.isFinite(Date.parse(record.retrievalMetadata.expiresAt))))))
   ) {
     throw new Error("Knowledge projection is invalid.");
   }
@@ -149,6 +158,7 @@ const validateProjection = (
     sourceDigest: record.sourceDigest,
     ...(record.searchAliases === undefined ? {} : { searchAliases: [...record.searchAliases] }),
     ...(record.searchExclusions === undefined ? {} : { searchExclusions: [...record.searchExclusions] }),
+    ...(record.retrievalMetadata === undefined ? {} : { retrievalMetadata: { ...record.retrievalMetadata } }),
     topicKey: record.topicKey.trim(),
   };
 };
@@ -168,12 +178,14 @@ const ftsQuery = (query: KnowledgeQuery): string | undefined => {
 
 export interface SqliteFtsKnowledgeBackendOptions {
   readonly busyTimeoutMs?: number;
+  readonly maxPendingReads?: number;
 }
 
 export class SqliteFtsKnowledgeBackend
 implements KnowledgeBackend {
   readonly #database: DatabaseSync;
   readonly #path: string;
+  readonly #maxPendingReads: number;
   readonly #pendingReadRequests =
     new Map<number, PendingReadRequest>();
   #closed = false;
@@ -181,12 +193,17 @@ implements KnowledgeBackend {
   #nextReadRequestId = 0;
   #readWorker: Worker | undefined;
   #readWorkerError: Error | undefined;
+  #readWorkerRecovery: Promise<void> | undefined;
 
   public constructor(
     path: string,
     options: SqliteFtsKnowledgeBackendOptions = {},
   ) {
     const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
+    this.#maxPendingReads = options.maxPendingReads ?? 8;
+    if (!Number.isInteger(this.#maxPendingReads) || this.#maxPendingReads <= 0 || this.#maxPendingReads > 64) {
+      throw new RangeError("Knowledge backend pending read limit must be between 1 and 64.");
+    }
     if (
       !Number.isInteger(busyTimeoutMs) ||
       busyTimeoutMs <= 0
@@ -207,9 +224,13 @@ implements KnowledgeBackend {
       PRAGMA busy_timeout = ${busyTimeoutMs};
 
       CREATE TABLE IF NOT EXISTS knowledge_records (
-        knowledge_id TEXT PRIMARY KEY,
+        record_id INTEGER PRIMARY KEY,
+        knowledge_id TEXT NOT NULL UNIQUE,
         projection_json TEXT NOT NULL,
-        source_digest TEXT NOT NULL
+        source_digest TEXT NOT NULL,
+        retrieval_scope TEXT,
+        retrieval_eligible INTEGER,
+        retrieval_expires_at INTEGER
       ) STRICT;
 
       CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -228,12 +249,37 @@ implements KnowledgeBackend {
     const searchVersion = this.#database.prepare(
       "SELECT value FROM knowledge_search_metadata WHERE name = 'format'",
     ).get();
-    if (searchVersion?.value !== "2") {
+    if (searchVersion?.value !== "3") {
+      if (searchVersion !== undefined && !["1", "2"].includes(String(searchVersion.value))) {
+        this.#database.close();
+        throw new Error("Knowledge search format is unsupported.");
+      }
       this.#database.exec("BEGIN IMMEDIATE;");
       try {
+        const columns = this.#database.prepare("PRAGMA table_info(knowledge_records)").all();
+        if (!columns.some((column) => column.name === "record_id")) {
+          this.#database.exec(`
+            CREATE TABLE knowledge_records_v3 (
+              record_id INTEGER PRIMARY KEY, knowledge_id TEXT NOT NULL UNIQUE,
+              projection_json TEXT NOT NULL, source_digest TEXT NOT NULL,
+              retrieval_scope TEXT, retrieval_eligible INTEGER, retrieval_expires_at INTEGER
+            ) STRICT;
+            INSERT INTO knowledge_records_v3(record_id, knowledge_id, projection_json, source_digest)
+              SELECT rowid, knowledge_id, projection_json, source_digest FROM knowledge_records;
+            DROP TABLE knowledge_records;
+            ALTER TABLE knowledge_records_v3 RENAME TO knowledge_records;
+          `);
+        }
+        this.#database.exec(`
+          DROP TABLE knowledge_fts;
+          CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+            knowledge_id UNINDEXED, topic_key, content, applies_when, non_applicability UNINDEXED,
+            tokenize = 'unicode61 remove_diacritics 2'
+          );
+        `);
         this.#rebuildFts();
         this.#database.prepare(
-          "INSERT OR REPLACE INTO knowledge_search_metadata (name, value) VALUES ('format', '2')",
+          "INSERT OR REPLACE INTO knowledge_search_metadata (name, value) VALUES ('format', '3')",
         ).run();
         this.#database.exec("COMMIT;");
       } catch (error) {
@@ -257,9 +303,7 @@ implements KnowledgeBackend {
     );
     this.#database.close();
     this.#closePromise =
-      worker === undefined
-        ? Promise.resolve()
-        : worker.terminate().then(() => undefined);
+      Promise.all([worker?.terminate(), this.#readWorkerRecovery]).then(() => undefined);
   }
 
   public closeAsync(): Promise<void> {
@@ -276,6 +320,7 @@ implements KnowledgeBackend {
       if (worker !== undefined) {
         await worker.terminate();
       }
+      await this.#readWorkerRecovery;
       this.#database.close();
     })();
     return this.#closePromise;
@@ -285,6 +330,7 @@ implements KnowledgeBackend {
     if (
       this.#closed ||
       this.#path === ":memory:" ||
+      this.#readWorkerRecovery !== undefined ||
       this.#readWorker !== undefined
     ) {
       return;
@@ -357,6 +403,7 @@ implements KnowledgeBackend {
   }
 
   async #stopReadWorker(): Promise<void> {
+    await this.#readWorkerRecovery;
     const worker = this.#readWorker;
     if (worker === undefined) {
       return;
@@ -369,6 +416,21 @@ implements KnowledgeBackend {
     this.#readWorker = undefined;
     await worker.terminate();
     this.#readWorkerError = undefined;
+  }
+
+  #cancelReadWorker(error: Error): void {
+    const worker = this.#readWorker;
+    this.#readWorker = undefined;
+    this.#failPendingReads(error);
+    if (worker === undefined) return;
+    // Do not leave timed-out work ahead of later requests or accumulate replacement workers.
+    this.#readWorkerRecovery = worker.terminate().then(() => {
+      this.#readWorkerRecovery = undefined;
+      this.#startReadWorker();
+    }, (failure: unknown) => {
+      this.#readWorkerRecovery = undefined;
+      this.#readWorkerError = failure instanceof Error ? failure : new Error(String(failure));
+    });
   }
 
   public get(id: string): Promise<KnowledgeRecord | undefined> {
@@ -469,7 +531,6 @@ implements KnowledgeBackend {
       this.#database.exec("BEGIN IMMEDIATE;");
       try {
         this.#upsertRecords(parsed);
-        this.#rebuildFts();
         this.#database.exec("COMMIT;");
       } catch (error) {
         this.#database.exec("ROLLBACK;");
@@ -489,10 +550,10 @@ implements KnowledgeBackend {
       this.#database.exec("BEGIN IMMEDIATE;");
       try {
         this.#database.exec(`
+          DELETE FROM knowledge_fts;
           DELETE FROM knowledge_records;
         `);
         this.#upsertRecords(parsed);
-        this.#rebuildFts();
         this.#database.exec("COMMIT;");
       } catch (error) {
         this.#database.exec("ROLLBACK;");
@@ -512,10 +573,40 @@ implements KnowledgeBackend {
         const removeRecord = this.#database.prepare(
           "DELETE FROM knowledge_records WHERE knowledge_id = ?",
         );
+        const removeFts = this.#database.prepare(
+          "DELETE FROM knowledge_fts WHERE rowid = (SELECT record_id FROM knowledge_records WHERE knowledge_id = ?)",
+        );
         for (const id of selected) {
+          removeFts.run(id);
           removeRecord.run(id);
         }
-        this.#rebuildFts();
+        this.#database.exec("COMMIT;");
+      } catch (error) {
+        this.#database.exec("ROLLBACK;");
+        throw error;
+      }
+    } finally {
+      this.#startReadWorker();
+    }
+  }
+
+  public async synchronize(snapshot: KnowledgeProjectionSnapshot): Promise<void> {
+    const parsed = snapshot.records.map(validateProjection);
+    const retained = new Set(parsed.map((record) => record.knowledgeId));
+    await this.#stopReadWorker();
+    try {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      try {
+        const staleIds: string[] = [];
+        for (const row of this.#database.prepare("SELECT knowledge_id FROM knowledge_records").iterate()) {
+          if (!retained.has(String(row.knowledge_id))) staleIds.push(String(row.knowledge_id));
+        }
+        const removeFts = this.#database.prepare(
+          "DELETE FROM knowledge_fts WHERE rowid = (SELECT record_id FROM knowledge_records WHERE knowledge_id = ?)",
+        );
+        const removeRecord = this.#database.prepare("DELETE FROM knowledge_records WHERE knowledge_id = ?");
+        for (const id of staleIds) { removeFts.run(id); removeRecord.run(id); }
+        this.#upsertRecords(parsed);
         this.#database.exec("COMMIT;");
       } catch (error) {
         this.#database.exec("ROLLBACK;");
@@ -545,19 +636,8 @@ implements KnowledgeBackend {
       );
     }
     const rows = this.#database
-      .prepare(
-        `SELECT records.projection_json,
-                bm25(knowledge_fts, 0.0, 4.0, 2.0, 1.0, 0.25)
-                  AS rank
-           FROM knowledge_fts
-           JOIN knowledge_records AS records
-             ON records.knowledge_id = knowledge_fts.knowledge_id
-          WHERE knowledge_fts MATCH ?
-          ORDER BY rank, knowledge_fts.knowledge_id
-          LIMIT ?
-         OFFSET ?`,
-      )
-      .all(match, query.limit, offset) as readonly Readonly<
+      .prepare(SEARCH_SQL)
+      .all(match, ...searchFilter(query), query.limit, offset) as readonly Readonly<
       Record<string, unknown>
     >[];
     return Promise.resolve(
@@ -603,6 +683,7 @@ implements KnowledgeBackend {
     }[]>({
       limit: query.limit,
       match,
+      filter: searchFilter(query),
       offset,
       operation: "search",
       path: this.#path,
@@ -628,6 +709,9 @@ implements KnowledgeBackend {
     input: Readonly<Record<string, unknown>>,
     timeoutMs: number,
   ): Promise<T> {
+    if (this.#pendingReadRequests.size >= this.#maxPendingReads) {
+      return Promise.reject(new Error("Knowledge backend read queue is full."));
+    }
     if (this.#readWorker === undefined) {
       return Promise.reject(
         new Error(
@@ -641,8 +725,7 @@ implements KnowledgeBackend {
     const requestId = this.#nextReadRequestId += 1;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.#pendingReadRequests.delete(requestId);
-        reject(new Error("Knowledge backend read timed out."));
+        this.#cancelReadWorker(new Error("Knowledge backend read timed out."));
       }, timeoutMs);
       this.#pendingReadRequests.set(requestId, {
         reject,
@@ -658,21 +741,47 @@ implements KnowledgeBackend {
   }
 
   #upsertRecords(records: readonly KnowledgeProjection[]): void {
+    const existing = this.#database.prepare(
+      "SELECT record_id, projection_json FROM knowledge_records WHERE knowledge_id = ?",
+    );
     const upsert = this.#database.prepare(
       `INSERT INTO knowledge_records (
          knowledge_id,
          projection_json,
-         source_digest
-       ) VALUES (?, ?, ?)
+         source_digest, retrieval_scope, retrieval_eligible, retrieval_expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(knowledge_id) DO UPDATE SET
          projection_json = excluded.projection_json,
-         source_digest = excluded.source_digest`,
+         source_digest = excluded.source_digest,
+         retrieval_scope = excluded.retrieval_scope,
+         retrieval_eligible = excluded.retrieval_eligible,
+         retrieval_expires_at = excluded.retrieval_expires_at
+       RETURNING record_id`,
+    );
+    const remove = this.#database.prepare("DELETE FROM knowledge_fts WHERE rowid = ?");
+    const insert = this.#database.prepare(
+      `INSERT INTO knowledge_fts (rowid, knowledge_id, topic_key, content, applies_when, non_applicability)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
     for (const record of records) {
-      upsert.run(
-        record.knowledgeId,
-        JSON.stringify(record),
-        record.sourceDigest,
+      const serialized = JSON.stringify(record);
+      const current = existing.get(record.knowledgeId);
+      if (current?.projection_json === serialized) continue;
+      const metadata = record.retrievalMetadata;
+      const row = upsert.get(
+        record.knowledgeId, serialized, record.sourceDigest,
+        metadata === undefined ? null : scopeKey(metadata.scope, metadata.scopeId),
+        metadata === undefined ? null : Number(metadata.eligible),
+        metadata?.expiresAt === undefined ? null : Date.parse(metadata.expiresAt),
+      );
+      if (row === undefined) throw new Error("Knowledge projection update returned no row.");
+      if (current !== undefined) remove.run(row.record_id as number);
+      if (metadata?.eligible === false) continue;
+      insert.run(
+        row.record_id as number, record.knowledgeId,
+        searchableText([record.topicKey, ...(record.searchAliases ?? [])].join("\n")),
+        searchableText(record.content), searchableText(record.appliesWhen.join("\n")),
+        record.nonApplicability.join("\n"),
       );
     }
   }
@@ -680,31 +789,29 @@ implements KnowledgeBackend {
   #rebuildFts(): void {
     const insert = this.#database.prepare(
       `INSERT INTO knowledge_fts (
+         rowid,
          knowledge_id,
          topic_key,
          content,
          applies_when,
          non_applicability
-       ) VALUES (?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const records = (
-      this.#database
-        .prepare(
-          `SELECT projection_json
-             FROM knowledge_records
-            ORDER BY knowledge_id`,
-        )
-        .all() as readonly Readonly<Record<string, unknown>>[]
-    ).map((row) =>
-      validateProjection(
-        JSON.parse(
-          String(row.projection_json),
-        ) as KnowledgeProjection,
-      ),
+    const metadataUpdate = this.#database.prepare(
+      "UPDATE knowledge_records SET retrieval_scope = ?, retrieval_eligible = ?, retrieval_expires_at = ? WHERE record_id = ?",
     );
     this.#database.exec("DELETE FROM knowledge_fts;");
-    for (const record of records) {
+    for (const row of this.#database.prepare("SELECT record_id, projection_json FROM knowledge_records ORDER BY record_id").iterate()) {
+      const record = validateProjection(JSON.parse(String(row.projection_json)) as KnowledgeProjection);
+      const metadata = record.retrievalMetadata;
+      metadataUpdate.run(
+        metadata === undefined ? null : scopeKey(metadata.scope, metadata.scopeId),
+        metadata === undefined ? null : Number(metadata.eligible),
+        metadata?.expiresAt === undefined ? null : Date.parse(metadata.expiresAt), row.record_id as number,
+      );
+      if (metadata?.eligible === false) continue;
       insert.run(
+        row.record_id as number,
         record.knowledgeId,
         searchableText([record.topicKey, ...(record.searchAliases ?? [])].join("\n")),
         searchableText(record.content),

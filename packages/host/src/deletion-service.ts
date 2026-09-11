@@ -366,6 +366,7 @@ export class DeletionService {
         barrierStarted = true;
         await this.#transientCleanup?.();
         this.#projector.rebuild(undefined, {
+          associationMode: "connected",
           allowDuringDeletion: true,
         });
         const mutation = this.#store.deleteCanonicalTarget(
@@ -416,6 +417,7 @@ export class DeletionService {
         deletedQueue.queueItemIds,
       );
       this.#projector.rebuild(undefined, {
+        associationMode: "connected",
         allowDuringDeletion: true,
       });
       this.#branchContextProjector.rebuild({

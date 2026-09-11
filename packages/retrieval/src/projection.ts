@@ -10,6 +10,7 @@ import type {
   KnowledgeBackend,
   KnowledgeProjection,
 } from "./types.js";
+import { AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS } from "./types.js";
 
 const reviewedProposals = (candidate: KnowledgeCandidate, proposals: readonly RuleProposal[]): readonly RuleProposal[] =>
   proposals.filter((proposal) =>
@@ -51,12 +52,23 @@ export const knowledgeProjectionFromCandidate = (
     ...queryTerms.flatMap((terms) => terms.include),
   ])].sort();
   const searchExclusions = [...new Set(queryTerms.flatMap((terms) => terms.exclude))].sort();
+  // This is a cheap discovery filter, not an evidence-admission certificate.
+  // Candidate conventions/references still require the canonical source review.
+  const retrievalMetadata = {
+    scope: candidate.scope,
+    ...(candidate.scopeId === undefined ? {} : { scopeId: candidate.scopeId }),
+    eligible: (candidate.scope === "personal" || candidate.scopeId !== undefined) &&
+      (candidate.state === "candidate" || (candidate.state === "active" &&
+        AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS.has(candidate.evidenceTier))),
+    ...(candidate.expiresAt === undefined ? {} : { expiresAt: candidate.expiresAt }),
+  };
   return {
     appliesWhen: candidate.appliesWhen,
     content: candidate.content,
     knowledgeId: candidate.knowledgeId,
     nonApplicability: candidate.nonApplicability,
     projectionVersion: 1,
+    retrievalMetadata,
     // Search hints affect discovery and filtering; bind both to the reviewed canonical state.
     sourceDigest: searchAliases.length || searchExclusions.length || retrievalScope ? sha256({ candidate,
       ...(searchAliases.length ? { searchAliases } : {}), ...(searchExclusions.length ? { searchExclusions } : {}),
@@ -81,6 +93,14 @@ export class KnowledgeProjectionManager {
   }
 
   public async rebuild(): Promise<number> {
+    return this.#publish(false);
+  }
+
+  public async synchronize(): Promise<number> {
+    return this.#publish(true);
+  }
+
+  async #publish(incremental: boolean): Promise<number> {
     const candidates = this.#store.knowledgeCandidates();
     const deleted = this.#store
       .knowledgeCandidatesWithUnavailableSources(candidates);
@@ -91,9 +111,11 @@ export class KnowledgeProjectionManager {
       entries.push(proposal); proposalsById.set(proposal.knowledgeId, entries);
     }
     const records = available.map((candidate) => knowledgeProjectionFromCandidate(candidate, proposalsById.get(candidate.knowledgeId)));
-    await this.#backend.rebuild({
-      records,
-    });
+    if (incremental && this.#backend.synchronize !== undefined) {
+      await this.#backend.synchronize({ records });
+    } else {
+      await this.#backend.rebuild({ records });
+    }
     return records.length;
   }
 }

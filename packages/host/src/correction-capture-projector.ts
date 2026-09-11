@@ -40,6 +40,7 @@ extends CorrectionCaptureBuildResult {
 
 export interface CorrectionCaptureRebuildOptions {
   readonly allowDuringDeletion?: boolean;
+  readonly envelopes?: readonly CaptureEnvelope[];
 }
 
 export class CorrectionCaptureProjector {
@@ -64,7 +65,7 @@ export class CorrectionCaptureProjector {
     }
     const result = this.#builder.build({
       contextUseRecords: this.#store.contextUseRecords(),
-      envelopes: this.#store.episodeSourceEnvelopes(),
+      envelopes: options.envelopes ?? this.#store.episodeSourceEnvelopes(),
       knowledgeCandidates: this.#store.knowledgeCandidates(),
       workEpisodes: this.#store.workEpisodes(),
     });

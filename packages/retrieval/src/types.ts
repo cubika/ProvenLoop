@@ -22,6 +22,12 @@ export interface KnowledgeProjection {
   readonly sourceDigest: string;
   readonly searchAliases?: readonly string[];
   readonly searchExclusions?: readonly string[];
+  readonly retrievalMetadata?: {
+    readonly scope: Scope;
+    readonly scopeId?: string;
+    readonly eligible: boolean;
+    readonly expiresAt?: string;
+  };
   readonly topicKey: string;
 }
 
@@ -33,6 +39,10 @@ export interface KnowledgeQuery {
   readonly limit: number;
   readonly match?: "all" | "any";
   readonly offset?: number;
+  readonly filter?: {
+    readonly now: string;
+    readonly scopes: readonly { readonly scope: Scope; readonly scopeId?: string }[];
+  };
   readonly text: string;
 }
 
@@ -55,6 +65,7 @@ export interface KnowledgeBackend {
   ): Promise<KnowledgeBackendHealth>;
   index(records: readonly KnowledgeProjection[]): Promise<void>;
   rebuild(snapshot: KnowledgeProjectionSnapshot): Promise<void>;
+  synchronize?(snapshot: KnowledgeProjectionSnapshot): Promise<void>;
   remove(ids: readonly string[]): Promise<void>;
   search(query: KnowledgeQuery): Promise<readonly KnowledgeRecord[]>;
   searchWithTimeout?(

@@ -41,6 +41,8 @@ extends WorkEpisodeBuildResult {
 
 export interface WorkEpisodeRebuildOptions {
   readonly allowDuringDeletion?: boolean;
+  readonly envelopes?: readonly CaptureEnvelope[];
+  readonly associationMode?: "all" | "sparse" | "connected";
 }
 
 export class WorkEpisodeProjector {
@@ -85,10 +87,11 @@ export class WorkEpisodeProjector {
                 Date.parse(right.timestamp) ||
               left.correctionId.localeCompare(right.correctionId),
           );
-    const envelopes = this.#store.episodeSourceEnvelopes();
+    const envelopes = options.envelopes ?? this.#store.episodeSourceEnvelopes();
     const builder =
       this.#builder ??
       new WorkEpisodeBuilder({
+        ...(options.associationMode === undefined ? {} : { associationMode: options.associationMode }),
         commitAncestry: new CommitAncestryIndex(
           commitAncestryEdgesFromEnvelopes(envelopes),
         ),

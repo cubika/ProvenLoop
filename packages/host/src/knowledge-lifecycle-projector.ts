@@ -43,6 +43,7 @@ export interface KnowledgeLifecycleProjectionResult {
 
 export interface KnowledgeLifecycleRebuildOptions {
   readonly allowDuringDeletion?: boolean;
+  readonly envelopes?: readonly CaptureEnvelope[];
 }
 
 export class KnowledgeLifecycleProjector {
@@ -86,7 +87,7 @@ export class KnowledgeLifecycleProjector {
       correctionKeys,
       correctionOpportunities:
         this.#store.correctionOpportunities(),
-      envelopes: this.#store.episodeSourceEnvelopes(),
+      envelopes: options.envelopes ?? this.#store.episodeSourceEnvelopes(),
       feedbackEvents: this.#store.feedbackEvents(),
       workEpisodes,
     });

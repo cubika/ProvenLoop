@@ -26,6 +26,8 @@ import type {
 } from "./commit-ancestry.js";
 
 export interface WorkEpisodeBuilderOptions {
+  /** Sparse omits automatic rejections; connected also omits weak suggestions. Both retain all grouping decisions. */
+  readonly associationMode?: "all" | "sparse" | "connected";
   readonly associatedThreshold?: number;
   readonly candidateThreshold?: number;
   readonly commitAncestry?: CommitAncestryResolver;
@@ -50,7 +52,8 @@ interface SessionSummary {
   readonly events: readonly CaptureEnvelope[];
   readonly files: ReadonlySet<string>;
   readonly issues: ReadonlySet<string>;
-  readonly prompts: readonly string[];
+  readonly featureSources: Readonly<Record<SessionFeature, ReadonlyMap<string, string>>>;
+  readonly repositorySourceEventId: string;
   readonly pullRequests: ReadonlySet<string>;
   readonly repoKey: string;
   readonly repoId?: string;
@@ -59,6 +62,11 @@ interface SessionSummary {
   readonly testOrErrors: ReadonlySet<string>;
   readonly tokens: ReadonlySet<string>;
 }
+
+const SESSION_FEATURES = [
+  "branches", "commits", "files", "issues", "pullRequests", "testOrErrors", "tokens",
+] as const;
+type SessionFeature = typeof SESSION_FEATURES[number];
 
 interface PairCorrection {
   readonly action: "merge" | "split";
@@ -118,10 +126,7 @@ const overlap = (
   const intersection = sorted(
     [...left].filter((value) => right.has(value)),
   );
-  const unionSize = new Set([
-    ...left,
-    ...right,
-  ]).size;
+  const unionSize = left.size + right.size - intersection.length;
   return {
     intersection,
     jaccard: unionSize === 0 ? 0 : intersection.length / unionSize,
@@ -156,7 +161,7 @@ const boundedStrings = (
     ) {
       values.push(value.trim());
     }
-    values.push(...boundedStrings(value, acceptedKeys, depth + 1));
+    for (const nested of boundedStrings(value, acceptedKeys, depth + 1)) values.push(nested);
   }
   return values;
 };
@@ -365,45 +370,43 @@ const sessionSummary = (
     }),
   );
   const repoId = repoIds.length === 1 ? repoIds[0] : undefined;
-  const prompts = ordered.flatMap((envelope) =>
-    isUserGoal(envelope) && envelope.content?.message !== undefined
-      ? [envelope.content.message]
-      : [],
-  );
+  const featureSources: Record<SessionFeature, Map<string, string>> = {
+    branches: new Map(), commits: new Map(), files: new Map(), issues: new Map(),
+    pullRequests: new Map(), testOrErrors: new Map(), tokens: new Map(),
+  };
+  for (const envelope of ordered) {
+    const add = (feature: SessionFeature, values: Iterable<string>): void => {
+      for (const value of values) {
+        // One deterministic witness per feature is sufficient; raw evidence remains canonical.
+        if (!featureSources[feature].has(value)) {
+          featureSources[feature].set(value, envelope.event.eventId);
+        }
+      }
+    };
+    if (envelope.event.branch !== undefined) add("branches", [envelope.event.branch]);
+    if (isCreatedCommitEvent(envelope) && envelope.event.commitSha !== undefined) {
+      add("commits", [envelope.event.commitSha]);
+    }
+    add("files", fileNames(envelope));
+    add("issues", referenceIds(envelope, "issue"));
+    add("pullRequests", referenceIds(envelope, "pull_request"));
+    add("testOrErrors", testOrErrorSignatures(envelope));
+    if (isUserGoal(envelope) && envelope.content?.message !== undefined) {
+      add("tokens", taskTokens([envelope.content.message]));
+    }
+  }
   return {
-    branches: new Set(
-      ordered.flatMap((envelope) =>
-        envelope.event.branch === undefined
-          ? []
-          : [envelope.event.branch],
-      ),
-    ),
-    commits: new Set(
-      ordered.flatMap((envelope) =>
-        !isCreatedCommitEvent(envelope) ||
-        envelope.event.commitSha === undefined
-          ? []
-          : [envelope.event.commitSha],
-      ),
-    ),
-    endMs: Math.max(
-      ...ordered.map((envelope) =>
-        Date.parse(envelope.event.timestamp),
-      ),
-    ),
+    branches: new Set(featureSources.branches.keys()),
+    commits: new Set(featureSources.commits.keys()),
+    endMs: Date.parse(ordered.at(-1)?.event.timestamp ?? "1970-01-01T00:00:00.000Z"),
     events: ordered,
-    files: new Set(ordered.flatMap(fileNames)),
-    issues: new Set(
-      ordered.flatMap((envelope) =>
-        referenceIds(envelope, "issue"),
-      ),
-    ),
-    prompts,
-    pullRequests: new Set(
-      ordered.flatMap((envelope) =>
-        referenceIds(envelope, "pull_request"),
-      ),
-    ),
+    featureSources,
+    files: new Set(featureSources.files.keys()),
+    issues: new Set(featureSources.issues.keys()),
+    pullRequests: new Set(featureSources.pullRequests.keys()),
+    repositorySourceEventId: ordered.find((envelope) =>
+      envelope.event.repoId !== undefined || envelope.event.repositoryState === "known_repo",
+    )?.event.eventId ?? ordered[0]?.event.eventId ?? sessionId,
     repoKey:
       repoId ??
       (
@@ -413,17 +416,240 @@ const sessionSummary = (
       ),
     ...(repoId === undefined ? {} : { repoId }),
     sessionId,
-    startMs: Math.min(
-      ...ordered.map((envelope) =>
-        Date.parse(envelope.event.timestamp),
-      ),
-    ),
-    testOrErrors: new Set(
-      ordered.flatMap(testOrErrorSignatures),
-    ),
-    tokens: taskTokens(prompts),
+    startMs: Date.parse(ordered[0]?.event.timestamp ?? "1970-01-01T00:00:00.000Z"),
+    testOrErrors: new Set(featureSources.testOrErrors.keys()),
+    tokens: new Set(featureSources.tokens.keys()),
   };
 };
+
+const supportingEvents = (
+  feature: SessionFeature,
+  values: readonly string[],
+  left: SessionSummary,
+  right: SessionSummary,
+): string[] => sorted(values.flatMap((value) =>
+  [left.featureSources[feature].get(value), right.featureSources[feature].get(value)]
+    .filter((eventId): eventId is string => eventId !== undefined),
+));
+
+function* associationPairs(
+  summaries: readonly SessionSummary[],
+  corrections: readonly EpisodeGroupingCorrection[],
+  sparse: boolean,
+): Generator<readonly [SessionSummary, SessionSummary]> {
+  if (!sparse) {
+    for (const [leftIndex, left] of summaries.entries()) {
+      for (let rightIndex = leftIndex + 1; rightIndex < summaries.length; rightIndex += 1) {
+        const right = summaries[rightIndex];
+        if (right !== undefined) yield [left, right];
+      }
+    }
+    return;
+  }
+  const candidates = new Map<number, Set<number>>();
+  const addPair = (first: number, second: number): void => {
+    if (first === second) return;
+    const left = Math.min(first, second);
+    const right = Math.max(first, second);
+    const selected = candidates.get(left) ?? new Set<number>();
+    selected.add(right);
+    candidates.set(left, selected);
+  };
+  const bySession = new Map(summaries.map((summary, index) => [summary.sessionId, index]));
+  for (const correction of corrections) {
+    const indexes = correction.sessionIds.flatMap((id) => {
+      const index = bySession.get(id);
+      return index === undefined ? [] : [index];
+    });
+    for (const [position, left] of indexes.entries()) {
+      for (let next = position + 1; next < indexes.length; next += 1) {
+        const right = indexes[next];
+        if (right !== undefined) addPair(left, right);
+      }
+    }
+  }
+  const repositories = new Map<string, number[]>();
+  for (const [index, summary] of summaries.entries()) {
+    const indexes = repositories.get(summary.repoKey) ?? [];
+    indexes.push(index);
+    repositories.set(summary.repoKey, indexes);
+  }
+  for (const indexes of repositories.values()) {
+    // Every nonzero automatic signal requires shared features or temporal proximity.
+    // Ancestry alone has no weight, so its corroborating pair is already included.
+    for (const feature of SESSION_FEATURES) {
+      const postings = new Map<string, number[]>();
+      for (const index of indexes) {
+        const summary = summaries[index];
+        if (summary === undefined) continue;
+        for (const value of summary[feature]) {
+          const previous = postings.get(value) ?? [];
+          for (const other of previous) addPair(other, index);
+          previous.push(index);
+          postings.set(value, previous);
+        }
+      }
+    }
+    const start = (index: number): number => summaries[index]?.startMs ?? 0;
+    const end = (index: number): number => summaries[index]?.endMs ?? 0;
+    const byStart = [...indexes].sort((left, right) => start(left) - start(right) || left - right);
+    const byEnd = [...indexes].sort((left, right) => end(left) - end(right) || left - right);
+    const active = new Set<number>();
+    let expired = 0;
+    for (const index of byStart) {
+      while (expired < byEnd.length) {
+        const previous = byEnd[expired];
+        if (previous === undefined || end(previous) >= start(index) - 24 * 60 * 60 * 1_000) break;
+        active.delete(previous);
+        expired += 1;
+      }
+      for (const previous of active) addPair(previous, index);
+      active.add(index);
+    }
+  }
+  for (const [leftIndex, left] of summaries.entries()) {
+    for (const rightIndex of [...(candidates.get(leftIndex) ?? [])].sort((a, b) => a - b)) {
+      const right = summaries[rightIndex];
+      if (right !== undefined) yield [left, right];
+    }
+  }
+}
+
+interface SessionInterval {
+  readonly index: number;
+  readonly endMs: number;
+  readonly startMs: number;
+  readonly maximumEndMs: number;
+  readonly left: SessionInterval | undefined;
+  readonly right: SessionInterval | undefined;
+}
+
+const sessionIntervals = (
+  entries: readonly { readonly index: number; readonly startMs: number; readonly endMs: number }[],
+  begin = 0, end = entries.length,
+): SessionInterval | undefined => {
+  if (begin >= end) return undefined;
+  const middle = Math.floor((begin + end) / 2);
+  const entry = entries[middle];
+  if (entry === undefined) return undefined;
+  const left = sessionIntervals(entries, begin, middle);
+  const right = sessionIntervals(entries, middle + 1, end);
+  return { ...entry, left, right, maximumEndMs: Math.max(
+    entry.endMs, left?.maximumEndMs ?? Number.NEGATIVE_INFINITY, right?.maximumEndMs ?? Number.NEGATIVE_INFINITY,
+  ) };
+};
+
+const featureBits: Readonly<Record<SessionFeature, number>> = {
+  branches: 1, commits: 2, files: 4, issues: 8, pullRequests: 16, testOrErrors: 32, tokens: 64,
+};
+const TEMPORAL_BIT = 128;
+const ANCESTRY_BIT = 256;
+const CORRECTION_BIT = 512;
+const CORROBORATING_BITS = 4 | 8 | 16 | 32 | 64 | TEMPORAL_BIT;
+const ASSOCIATION_MAXIMUM_WEIGHTS = [
+  [featureBits.branches, 0.72], [featureBits.commits, 0.99], [featureBits.files, 0.8],
+  [featureBits.issues, 0.96], [featureBits.pullRequests, 0.98], [featureBits.testOrErrors, 0.78],
+  [featureBits.tokens, 0.65], [TEMPORAL_BIT, 0.65], [ANCESTRY_BIT, 0.55],
+] as const;
+
+function* connectedAssociationPairs(
+  summaries: readonly SessionSummary[],
+  corrections: readonly EpisodeGroupingCorrection[],
+  associatedThreshold: number,
+  hasAncestry: boolean,
+): Generator<readonly [SessionSummary, SessionSummary]> {
+  interface RepositoryIndex {
+    readonly features: ReadonlyMap<SessionFeature, Map<string, number[]>>;
+    readonly entries: { readonly index: number; readonly startMs: number; readonly endMs: number }[];
+    intervals?: SessionInterval | undefined;
+  }
+  const repositories = new Map<string, RepositoryIndex>();
+  const indexesBySession = new Map<string, number>();
+  const correctionsBySession = new Map<string, EpisodeGroupingCorrection[]>();
+  for (const correction of corrections) {
+    for (const id of correction.sessionIds) {
+      const selected = correctionsBySession.get(id) ?? [];
+      selected.push(correction);
+      correctionsBySession.set(id, selected);
+    }
+  }
+  for (const [index, summary] of summaries.entries()) {
+    indexesBySession.set(summary.sessionId, index);
+    const repository = repositories.get(summary.repoKey) ?? {
+      features: new Map(SESSION_FEATURES.map((feature) => [feature, new Map<string, number[]>()])), entries: [],
+    };
+    repository.entries.push({ index, startMs: summary.startMs, endMs: summary.endMs });
+    for (const feature of SESSION_FEATURES) {
+      const postings = repository.features.get(feature);
+      if (postings === undefined) continue;
+      for (const value of summary[feature]) {
+        const indexes = postings.get(value) ?? [];
+        indexes.push(index);
+        postings.set(value, indexes);
+      }
+    }
+    repositories.set(summary.repoKey, repository);
+  }
+  for (const repository of repositories.values()) {
+    repository.intervals = sessionIntervals(repository.entries.sort((left, right) =>
+      left.startMs - right.startMs || left.index - right.index,
+    ));
+  }
+  const upperBounds = new Map<number, number>();
+  const couldAssociate = (mask: number): boolean => {
+    if ((mask & CORRECTION_BIT) !== 0) return true;
+    let upperBound = upperBounds.get(mask);
+    if (upperBound === undefined) {
+      let remaining = 1;
+      for (const [bit, weight] of ASSOCIATION_MAXIMUM_WEIGHTS) {
+        if ((mask & bit) !== 0) remaining *= 1 - weight;
+      }
+      upperBound = 1 - remaining;
+      upperBounds.set(mask, upperBound);
+    }
+    // Conservative slack avoids dropping a boundary case due to floating-point rounding.
+    return upperBound + Number.EPSILON * 8 >= associatedThreshold;
+  };
+  for (const [leftIndex, left] of summaries.entries()) {
+    const candidates = new Map<number, number>();
+    const add = (index: number, bit: number): void => {
+      if (index > leftIndex) candidates.set(index, (candidates.get(index) ?? 0) | bit);
+    };
+    for (const correction of correctionsBySession.get(left.sessionId) ?? []) {
+      for (const sessionId of correction.sessionIds) {
+        const index = indexesBySession.get(sessionId);
+        if (index !== undefined) add(index, CORRECTION_BIT);
+      }
+    }
+    const repository = repositories.get(left.repoKey);
+    for (const feature of SESSION_FEATURES) {
+      const postings = repository?.features.get(feature);
+      for (const value of left[feature]) {
+        for (const index of postings?.get(value) ?? []) add(index, featureBits[feature]);
+      }
+    }
+    const minimumEnd = left.startMs - 24 * 60 * 60 * 1_000;
+    const maximumStart = left.endMs + 24 * 60 * 60 * 1_000;
+    const visit = (node: SessionInterval | undefined): void => {
+      if (node === undefined || node.maximumEndMs < minimumEnd) return;
+      visit(node.left);
+      if (node.startMs > maximumStart) return;
+      if (node.endMs >= minimumEnd) add(node.index, TEMPORAL_BIT);
+      visit(node.right);
+    };
+    visit(repository?.intervals);
+    for (const index of [...candidates.keys()].sort((first, second) => first - second)) {
+      const right = summaries[index];
+      if (right === undefined) continue;
+      let mask = candidates.get(index) ?? 0;
+      if (hasAncestry && left.repoId !== undefined && left.repoId === right.repoId &&
+        left.commits.size > 0 && right.commits.size > 0 && (mask & CORROBORATING_BITS) !== 0) {
+        mask |= ANCESTRY_BIT;
+      }
+      if (couldAssociate(mask)) yield [left, right];
+    }
+  }
+}
 
 const evidence = (
   signal: EpisodeAssociationSignal,
@@ -613,8 +839,8 @@ const pairAssociation = (
         1,
         `Repository identities differ: ${left.repoKey} vs ${right.repoKey}.`,
         [
-          left.events[0]?.event.eventId ?? left.sessionId,
-          right.events[0]?.event.eventId ?? right.sessionId,
+          left.repositorySourceEventId,
+          right.repositorySourceEventId,
         ],
       ),
     );
@@ -641,8 +867,8 @@ const pairAssociation = (
       1,
       `Both Sessions resolve to repository ${left.repoKey}.`,
       [
-        left.events[0]?.event.eventId ?? left.sessionId,
-        right.events[0]?.event.eventId ?? right.sessionId,
+        left.repositorySourceEventId,
+        right.repositorySourceEventId,
       ],
     ),
   );
@@ -653,20 +879,7 @@ const pairAssociation = (
         "branch",
         0.72,
         `Shared branches: ${branchOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events
-            .filter((item) =>
-              item.event.branch !== undefined &&
-              branchOverlap.intersection.includes(item.event.branch),
-            )
-            .map((item) => item.event.eventId),
-          ...right.events
-            .filter((item) =>
-              item.event.branch !== undefined &&
-              branchOverlap.intersection.includes(item.event.branch),
-            )
-            .map((item) => item.event.eventId),
-        ],
+        supportingEvents("branches", branchOverlap.intersection, left, right),
       ),
     );
   }
@@ -677,22 +890,7 @@ const pairAssociation = (
         "commit",
         0.99,
         `Shared commits: ${commitOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events
-            .filter((item) =>
-              item.event.eventType === "git.commit" &&
-              item.event.commitSha !== undefined &&
-              commitOverlap.intersection.includes(item.event.commitSha),
-            )
-            .map((item) => item.event.eventId),
-          ...right.events
-            .filter((item) =>
-              item.event.eventType === "git.commit" &&
-              item.event.commitSha !== undefined &&
-              commitOverlap.intersection.includes(item.event.commitSha),
-            )
-            .map((item) => item.event.eventId),
-        ],
+        supportingEvents("commits", commitOverlap.intersection, left, right),
       ),
     );
   }
@@ -701,36 +899,6 @@ const pairAssociation = (
     left.repoId === right.repoId
       ? left.repoId
       : undefined;
-  const ancestryRelations =
-    ancestryRepoId === undefined || commitAncestry === undefined
-      ? []
-      : [...left.commits].flatMap((leftCommit) =>
-          [...right.commits].flatMap((rightCommit) => {
-            if (
-              commitAncestry.isAncestor({
-                ancestorCommit: leftCommit,
-                descendantCommit: rightCommit,
-                repoId: ancestryRepoId,
-              })
-            ) {
-              return [
-                `${leftCommit} -> ${rightCommit}`,
-              ];
-            }
-            if (
-              commitAncestry.isAncestor({
-                ancestorCommit: rightCommit,
-                descendantCommit: leftCommit,
-                repoId: ancestryRepoId,
-              })
-            ) {
-              return [
-                `${rightCommit} -> ${leftCommit}`,
-              ];
-            }
-            return [];
-          }),
-        );
   const pullRequestOverlap = overlap(
     left.pullRequests,
     right.pullRequests,
@@ -741,10 +909,7 @@ const pairAssociation = (
         "pull_request",
         0.98,
         `Shared pull requests: ${pullRequestOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events.map((item) => item.event.eventId),
-          ...right.events.map((item) => item.event.eventId),
-        ],
+        supportingEvents("pullRequests", pullRequestOverlap.intersection, left, right),
       ),
     );
   }
@@ -755,10 +920,7 @@ const pairAssociation = (
         "issue",
         0.96,
         `Shared issues: ${issueOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events.map((item) => item.event.eventId),
-          ...right.events.map((item) => item.event.eventId),
-        ],
+        supportingEvents("issues", issueOverlap.intersection, left, right),
       ),
     );
   }
@@ -769,10 +931,7 @@ const pairAssociation = (
         "changed_file",
         Math.min(0.8, 0.65 + fileOverlap.jaccard * 0.15),
         `Changed-file overlap: ${fileOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events.map((item) => item.event.eventId),
-          ...right.events.map((item) => item.event.eventId),
-        ],
+        supportingEvents("files", fileOverlap.intersection, left, right),
       ),
     );
   }
@@ -786,10 +945,7 @@ const pairAssociation = (
         "test_or_error",
         0.78,
         "The Sessions share a test result or error signature.",
-        [
-          ...left.events.map((item) => item.event.eventId),
-          ...right.events.map((item) => item.event.eventId),
-        ],
+        supportingEvents("testOrErrors", testOverlap.intersection, left, right),
       ),
     );
   }
@@ -800,14 +956,7 @@ const pairAssociation = (
         "task_semantics",
         Math.min(0.65, 0.4 + semanticOverlap.jaccard * 0.25),
         `Task-token overlap: ${semanticOverlap.intersection.join(", ")}.`,
-        [
-          ...left.events
-            .filter(isUserGoal)
-            .map((item) => item.event.eventId),
-          ...right.events
-            .filter(isUserGoal)
-            .map((item) => item.event.eventId),
-        ],
+        supportingEvents("tokens", semanticOverlap.intersection, left, right),
       ),
     );
   }
@@ -835,28 +984,32 @@ const pairAssociation = (
       "test_or_error",
     ].includes(item.signal),
   );
-  if (ancestryRelations.length > 0 && ancestryCorroborated) {
+  const ancestryRelations: string[] = [];
+  const ancestrySources = new Set<string>();
+  if (ancestryCorroborated && ancestryRepoId !== undefined && commitAncestry !== undefined) {
+    for (const leftCommit of left.commits) {
+      for (const rightCommit of right.commits) {
+        let relation: string | undefined;
+        if (commitAncestry.isAncestor({ ancestorCommit: leftCommit, descendantCommit: rightCommit, repoId: ancestryRepoId })) {
+          relation = `${leftCommit} -> ${rightCommit}`;
+        } else if (commitAncestry.isAncestor({ ancestorCommit: rightCommit, descendantCommit: leftCommit, repoId: ancestryRepoId })) {
+          relation = `${rightCommit} -> ${leftCommit}`;
+        }
+        if (relation === undefined) continue;
+        ancestryRelations.push(relation);
+        for (const source of [left.featureSources.commits.get(leftCommit), right.featureSources.commits.get(rightCommit)]) {
+          if (source !== undefined) ancestrySources.add(source);
+        }
+      }
+    }
+  }
+  if (ancestryRelations.length > 0) {
     evidenceItems.push(
       evidence(
         "commit_ancestry",
         0.55,
         `Commit ancestry connects the Sessions: ${ancestryRelations.join(", ")}.`,
-        [
-          ...left.events
-            .filter(
-              (item) =>
-                item.event.eventType === "git.commit" &&
-                item.event.commitSha !== undefined,
-            )
-            .map((item) => item.event.eventId),
-          ...right.events
-            .filter(
-              (item) =>
-                item.event.eventType === "git.commit" &&
-                item.event.commitSha !== undefined,
-            )
-            .map((item) => item.event.eventId),
-        ],
+        [...ancestrySources],
       ),
     );
   }
@@ -896,9 +1049,11 @@ const completeLinkClusters = (
       association,
     ]),
   );
-  const clusters = sessionIds.map(
-    (sessionId) => new Set([sessionId]),
-  );
+  const clusters = new Set(sessionIds.map((sessionId) => new Set([sessionId])));
+  const clusterBySession = new Map<string, Set<string>>();
+  for (const cluster of clusters) {
+    for (const sessionId of cluster) clusterBySession.set(sessionId, cluster);
+  }
   const hasSignal = (
     association: EpisodeAssociation,
     signal: EpisodeAssociationSignal,
@@ -920,21 +1075,12 @@ const completeLinkClusters = (
     association: EpisodeAssociation,
     requireCompleteLink: boolean,
   ): void => {
-    const leftIndex = clusters.findIndex((cluster) =>
-      cluster.has(association.leftSessionId),
-    );
-    const rightIndex = clusters.findIndex((cluster) =>
-      cluster.has(association.rightSessionId),
-    );
-    if (leftIndex === -1 || rightIndex === -1 || leftIndex === rightIndex) {
+    const leftCluster = clusterBySession.get(association.leftSessionId);
+    const rightCluster = clusterBySession.get(association.rightSessionId);
+    if (leftCluster === undefined || rightCluster === undefined || leftCluster === rightCluster) {
       return;
     }
-    const leftCluster = clusters[leftIndex];
-    const rightCluster = clusters[rightIndex];
-    if (leftCluster === undefined || rightCluster === undefined) {
-      return;
-    }
-    const splitConflict = [...leftCluster].some((leftSessionId) =>
+    const splitConflict = explicitSplits.size > 0 && [...leftCluster].some((leftSessionId) =>
       [...rightCluster].some((rightSessionId) =>
         explicitSplits.has(pairKey(leftSessionId, rightSessionId)),
       ),
@@ -955,19 +1101,13 @@ const completeLinkClusters = (
     if (!completeLink) {
       return;
     }
-    const merged = new Set([
-      ...leftCluster,
-      ...rightCluster,
-    ]);
-    clusters.splice(
-      Math.max(leftIndex, rightIndex),
-      1,
-    );
-    clusters.splice(
-      Math.min(leftIndex, rightIndex),
-      1,
-      merged,
-    );
+    const [merged, removed] = leftCluster.size >= rightCluster.size
+      ? [leftCluster, rightCluster] : [rightCluster, leftCluster];
+    for (const sessionId of removed) {
+      merged.add(sessionId);
+      clusterBySession.set(sessionId, merged);
+    }
+    clusters.delete(removed);
   };
   const explicitMerges = associations
     .filter(
@@ -997,7 +1137,7 @@ const completeLinkClusters = (
   for (const association of associated) {
     mergeClusters(association, true);
   }
-  return clusters;
+  return [...clusters];
 };
 
 const outcome = (
@@ -1060,34 +1200,19 @@ const outcome = (
 const episodeFromCluster = (
   cluster: ReadonlySet<string>,
   summaries: ReadonlyMap<string, SessionSummary>,
-  associations: readonly EpisodeAssociation[],
-  corrections: readonly EpisodeGroupingCorrection[],
+  internalAssociations: readonly EpisodeAssociation[],
+  correctionIds: readonly string[],
   observationWindowMs: number,
 ): WorkEpisode => {
   const sessionIds = sorted(cluster);
-  const events = sessionIds
-    .flatMap((sessionId) => summaries.get(sessionId)?.events ?? [])
-    .sort(byTimestampAndId);
-  const internalAssociations = associations.filter(
-    (association) =>
-      association.status === "associated" &&
-      cluster.has(association.leftSessionId) &&
-      cluster.has(association.rightSessionId),
-  );
+  const events = sessionIds.length === 1
+    ? summaries.get(sessionIds[0] ?? "")?.events ?? []
+    : sessionIds.flatMap((sessionId) => summaries.get(sessionId)?.events ?? []).sort(byTimestampAndId);
   const repoIds = sorted(
     sessionIds.flatMap((sessionId) => {
       const repoId = summaries.get(sessionId)?.repoId;
       return repoId === undefined ? [] : [repoId];
     }),
-  );
-  const correctionIds = sorted(
-    corrections
-      .filter((correction) =>
-        correction.sessionIds.some((sessionId) =>
-          cluster.has(sessionId),
-        ),
-      )
-      .map((correction) => correction.correctionId),
   );
   const prompt = events.find(isUserGoal);
   const goalSource = prompt ?? events.find(isSubstantiveWork);
@@ -1121,14 +1246,9 @@ const episodeFromCluster = (
   const outcomeState = outcome(events, observationWindowMs);
   return workEpisodeSchema.parse({
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    associationConfidence:
-      internalAssociations.length === 0
-        ? 1
-        : Math.min(
-            ...internalAssociations.map(
-              (association) => association.confidence,
-            ),
-          ),
+    associationConfidence: internalAssociations.reduce(
+      (confidence, association) => Math.min(confidence, association.confidence), 1,
+    ),
     associationEvidenceIds: sorted(
       internalAssociations.flatMap((association) =>
         association.evidence.map((item) => item.evidenceId),
@@ -1217,12 +1337,14 @@ const threshold = (
 };
 
 export class WorkEpisodeBuilder {
+  readonly #associationMode: "all" | "sparse" | "connected";
   readonly #associatedThreshold: number;
   readonly #candidateThreshold: number;
   readonly #commitAncestry: CommitAncestryResolver | undefined;
   readonly #observationWindowMs: number;
 
   public constructor(options: WorkEpisodeBuilderOptions = {}) {
+    this.#associationMode = options.associationMode ?? "all";
     this.#associatedThreshold = threshold(
       options.associatedThreshold,
       DEFAULT_ASSOCIATED_THRESHOLD,
@@ -1285,7 +1407,7 @@ export class WorkEpisodeBuilder {
           sessionId,
           sourceEventIds,
         });
-        ignoredEventIds.push(...sourceEventIds);
+        for (const eventId of sourceEventIds) ignoredEventIds.push(eventId);
         bySession.delete(sessionId);
       } else {
         bySession.set(sessionId, events.filter((envelope) => {
@@ -1306,51 +1428,56 @@ export class WorkEpisodeBuilder {
     const pairCorrections = correctionMap(parsedCorrections);
     const sessionIds = [...summaries.keys()];
     const associations: EpisodeAssociation[] = [];
-    for (
-      let leftIndex = 0;
-      leftIndex < sessionIds.length;
-      leftIndex += 1
-    ) {
-      for (
-        let rightIndex = leftIndex + 1;
-        rightIndex < sessionIds.length;
-        rightIndex += 1
-      ) {
-        const leftId = sessionIds[leftIndex];
-        const rightId = sessionIds[rightIndex];
-        if (leftId === undefined || rightId === undefined) {
-          continue;
-        }
-        const left = summaries.get(leftId);
-        const right = summaries.get(rightId);
-        if (left === undefined || right === undefined) {
-          continue;
-        }
-        associations.push(
-          pairAssociation(
-            left,
-            right,
-            pairCorrections.get(pairKey(leftId, rightId)),
-            this.#commitAncestry,
-            {
-              associated: this.#associatedThreshold,
-              candidate: this.#candidateThreshold,
-            },
-          ),
-        );
+    // At a zero threshold a no-signal pair can be a candidate; preserve that public option.
+    const indexed = this.#associationMode === "sparse" && this.#candidateThreshold > 0;
+    const pairs = this.#associationMode === "connected"
+      ? connectedAssociationPairs([...summaries.values()], parsedCorrections, this.#associatedThreshold, this.#commitAncestry !== undefined)
+      : associationPairs([...summaries.values()], parsedCorrections, indexed);
+    for (const [left, right] of pairs) {
+      const correction = pairCorrections.get(pairKey(left.sessionId, right.sessionId));
+      const association = pairAssociation(left, right, correction, this.#commitAncestry, {
+        associated: this.#associatedThreshold,
+        candidate: this.#candidateThreshold,
+      });
+      if (this.#associationMode === "all" || association.status === "associated" || correction !== undefined ||
+        (this.#associationMode === "sparse" && association.status === "candidate")) {
+        associations.push(association);
       }
     }
     const clusters = completeLinkClusters(
       sessionIds,
       associations,
     );
+    const clusterBySession = new Map<string, ReadonlySet<string>>();
+    for (const cluster of clusters) {
+      for (const sessionId of cluster) clusterBySession.set(sessionId, cluster);
+    }
+    const associationsByCluster = new Map<ReadonlySet<string>, EpisodeAssociation[]>();
+    for (const association of associations) {
+      if (association.status !== "associated") continue;
+      const cluster = clusterBySession.get(association.leftSessionId);
+      if (cluster === undefined || cluster !== clusterBySession.get(association.rightSessionId)) continue;
+      const internal = associationsByCluster.get(cluster) ?? [];
+      internal.push(association);
+      associationsByCluster.set(cluster, internal);
+    }
+    const correctionsByCluster = new Map<ReadonlySet<string>, Set<string>>();
+    for (const correction of parsedCorrections) {
+      for (const sessionId of correction.sessionIds) {
+        const cluster = clusterBySession.get(sessionId);
+        if (cluster === undefined) continue;
+        const ids = correctionsByCluster.get(cluster) ?? new Set<string>();
+        ids.add(correction.correctionId);
+        correctionsByCluster.set(cluster, ids);
+      }
+    }
     const episodes = clusters
       .map((cluster) =>
         episodeFromCluster(
           cluster,
           summaries,
-          associations,
-          parsedCorrections,
+          associationsByCluster.get(cluster) ?? [],
+          sorted(correctionsByCluster.get(cluster) ?? []),
           this.#observationWindowMs,
         ),
       )

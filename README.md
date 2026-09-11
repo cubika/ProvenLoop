@@ -18,7 +18,7 @@ The core output is concise, reusable engineering guidance distilled from actual 
 The intended benefit is less repeated investigation and rework as the agent gains
 relevant project experience. See the [distillation standard](docs/product-design.md#45-distillation-is-the-product).
 
-Unreleased development uses schema 20 and adds a separate model quality review,
+Unreleased development uses schema 21 and adds a separate model quality review,
 concise scoped delivery, bilingual search aliases, and repository-readiness diagnostics.
 New lessons use English, with source quotations preserved in their original language.
 Reviewed policy changes replace earlier guidance, independent evidence can renew
@@ -26,6 +26,10 @@ automatically expired lessons, and learning/use notices show the relevant conten
 These changes have not been published as a new version. Model review does not confer
 external verification or establish sustained productivity improvement; see the
 [development record](docs/feedback.md#development-update-reviewed-distillation-and-usable-delivery).
+
+The first [scalability repairs](docs/scalability-review.md#9-first-implementation-pass)
+reduce retrieval and projection work and add growth regressions. Persistent
+incremental history processing and sustained-capacity acceptance remain open.
 
 Learning also covers [agent investigation and self-directed recovery](docs/agent-experience-learning.md): captured findings can become source-backed candidates without a user correction; supported recovery evidence is required for automatic qualification.
 
@@ -410,6 +414,7 @@ are regression evidence, not measurements of a user's actual productivity.
 - [Product validation and quality evaluation](docs/product-validation.md)
 - [General correction-learning test catalog](docs/general-learning-test-catalog.md)
 - [Technical architecture](docs/architecture.md)
+- [Scalability findings and remediation design](docs/scalability-review.md)
 - [Copilot event capture design](docs/copilot-event-capture-design.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Executable implementation checklist](docs/implementation-checklist.md)

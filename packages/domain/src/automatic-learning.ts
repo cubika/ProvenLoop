@@ -268,17 +268,19 @@ export const verifyMcpRecovery = (proposal: RuleProposal, events: readonly Captu
   const otherAfter = Object.fromEntries(Object.entries(after).filter(([key]) => key !== predicate.argument));
   if (sha256(otherBefore) !== sha256(otherAfter)) return undefined;
   const traces = (entry: CaptureEnvelope, target: string): boolean => {
+    if (entry.event.sessionId !== user.event.sessionId || entry.event.repoId !== user.event.repoId ||
+        entry.event.worktree !== user.event.worktree || entry.event.repositoryState !== "known_repo") return false;
     const visited = new Set<string>(); let current = entry.event.parentEventId; let childTime = Date.parse(entry.event.timestamp); let child = entry;
     while (current && !visited.has(current)) {
       visited.add(current); const parent = byId.get(current);
       if (!parent || !validCapturedParent(child, parent)) return false;
-      if (current === target) return true;
-      if (!parent || parent.event.sessionId !== user.event.sessionId || parent.event.repoId !== user.event.repoId ||
+      if (parent.event.sessionId !== user.event.sessionId || parent.event.repoId !== user.event.repoId ||
           parent.event.worktree !== user.event.worktree || parent.event.repositoryState !== "known_repo" ||
           parent.redaction.truncatedPaths.length > 0 || parent.redaction.droppedPaths.length > 0 || parent.redaction.redactedPaths.length > 0 ||
           (parent.event.captureQuality?.truncatedFields.length ?? 0) > 0 || (parent.event.captureQuality?.omittedFields.length ?? 0) > 0 ||
-          Date.parse(parent.event.timestamp) > childTime ||
-          parent.event.trust === "user" || parent.event.trust === "external-content") return false;
+          Date.parse(parent.event.timestamp) > childTime) return false;
+      if (current === target) return true;
+      if (parent.event.trust === "user" || parent.event.trust === "external-content") return false;
       if (agentOrigin && (parent.event.actorId === "provenloop-internal" ||
           (parent.event.actorId !== undefined && executionActors.size > 0 && !executionActors.has(parent.event.actorId)) ||
           parent.event.adapter !== user.event.adapter || parent.event.adapterVersion !== user.event.adapterVersion ||

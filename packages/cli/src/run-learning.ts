@@ -92,7 +92,7 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
         try {
           if (await enabled() && !store.hasActiveDeletion()) {
             backend = new SqliteFtsKnowledgeBackend(paths.knowledgeDatabase);
-            await new KnowledgeProjectionManager({ store, backend }).rebuild();
+            await new KnowledgeProjectionManager({ store, backend }).synchronize();
           }
         } finally {
           await backend?.closeAsync();

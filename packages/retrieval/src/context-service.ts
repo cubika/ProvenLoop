@@ -87,6 +87,16 @@ const stopWords = new Set([
   "help",
 ]);
 
+// Generic actions alone do not identify a task. Explicit tool/file identities
+// remain usable even when an identifier happens to be one of these words.
+const genericActions = new Set([
+  "run", "running", "use", "do", "doing", "make", "add", "adding",
+  "change", "changing", "update", "updating", "modify", "modifying",
+  "execute", "executing", "perform", "implement", "write", "writing",
+  "create", "creating", "fix", "fixing",
+  "运行", "执行", "使用", "修改", "更新", "添加", "进行", "处理", "编写", "创建", "修复",
+]);
+
 const normalizedTokens = (input: string): readonly string[] =>
   retrievalTokens(input);
 
@@ -296,6 +306,19 @@ interface AggregatedKnowledge {
   readonly matchedTerms: ReadonlySet<string>;
   readonly score: number;
 }
+
+const duplicateGuidanceKey = (input: RetrievedKnowledge): string => {
+  const candidate = input.candidate;
+  // Preserve identifier case and punctuation; this suppresses repeated wording,
+  // not semantically similar commands or rules.
+  const text = (value: string) => value.normalize("NFC").replace(/\s+/gu, " ").trim();
+  const conditions = (values: readonly string[]) => values.map(text).sort();
+  return JSON.stringify([
+    candidate.scope, candidate.scopeId, input.deliveryMode,
+    text(candidate.content), conditions(candidate.appliesWhen),
+    conditions(candidate.nonApplicability), conditions(input.retrievalScope?.excludedTasks ?? []),
+  ]);
+};
 
 const knowledgeRank = (
   input: AggregatedKnowledge,
@@ -903,6 +926,7 @@ export class ContextRetrievalService {
     }
 
     let knowledge: readonly AggregatedKnowledge[];
+    let candidateBudgetExhausted = false;
     try {
       if (
         this.#backend.searchWithTimeout === undefined ||
@@ -927,6 +951,8 @@ export class ContextRetrievalService {
         request,
         now,
         Math.max(1, deadline - Date.now()),
+        previouslyReturned,
+        () => { candidateBudgetExhausted = true; },
       );
     } catch (error) {
       const latencyMs = Math.max(
@@ -992,19 +1018,6 @@ export class ContextRetrievalService {
     }
     candidates.push(
       ...knowledge
-        .filter(
-          (input) =>
-            !previouslyReturned.has(
-              `knowledge:${input.candidate.knowledgeId}`,
-            ) &&
-            !knowledgeContainsPotentialSecret(input.candidate) &&
-            !nonApplicabilityMatches(
-              input.candidate,
-              requestText,
-              input.searchExclusions,
-              input.retrievalScope,
-            ),
-        )
         .map((input) =>
           renderKnowledge(input, requestTokens, now),
         ),
@@ -1084,6 +1097,9 @@ export class ContextRetrievalService {
       renderedTokens,
       requestId,
       status: "ok",
+      ...(candidateBudgetExhausted ? {
+        statusDetail: "Knowledge retrieval candidate budget exhausted; returning validated partial results.",
+      } : {}),
     };
   }
 
@@ -1659,11 +1675,37 @@ export class ContextRetrievalService {
     request: ContextRequest,
     now: Date,
     timeoutMs: number,
+    previouslyReturned: ReadonlySet<string>,
+    onCandidateBudgetExhausted: () => void,
   ): Promise<readonly AggregatedKnowledge[]> {
     const terms = searchTerms(request);
     if (terms.length === 0) {
       return [];
     }
+    const requestText = [request.prompt, ...(request.fileHints ?? [])].join("\n");
+    const requestTokens = normalizedTokens(requestText);
+    const explicitTerms = new Set(retrievalWordTokens([
+      ...(request.fileHints ?? []), request.shellInvocation?.command ?? "",
+      request.toolInvocation?.serverName ?? "", request.toolInvocation?.toolName ?? "",
+    ].join("\n")));
+    const distinctHits = new Map<string, AggregatedKnowledge>();
+    const accept = (hit: RetrievedKnowledge): boolean => {
+      if (previouslyReturned.has(`knowledge:${hit.candidate.knowledgeId}`) ||
+          knowledgeContainsPotentialSecret(hit.candidate) ||
+          nonApplicabilityMatches(hit.candidate, requestText, hit.searchExclusions, hit.retrievalScope)) return false;
+      const candidateTokens = new Set(normalizedTokens([
+        hit.candidate.topicKey, hit.candidate.content, ...hit.candidate.appliesWhen, ...(hit.searchAliases ?? []),
+      ].join("\n")));
+      const matchedTerms = new Set(terms.filter((term) => candidateTokens.has(term)));
+      if (![...matchedTerms].some((term) => explicitTerms.has(term) || !genericActions.has(term))) return false;
+      const aggregated: AggregatedKnowledge = { ...hit, matchedTerms };
+      const key = duplicateGuidanceKey(hit);
+      const previous = distinctHits.get(key);
+      if (!previous || knowledgeRank(aggregated, requestTokens, now) > knowledgeRank(previous, requestTokens, now)) {
+        distinctHits.set(key, aggregated);
+      }
+      return previous === undefined;
+    };
     const hits = await withTimeout(
       this.#retriever.search(
         {
@@ -1693,33 +1735,16 @@ export class ContextRetrievalService {
               }),
         },
         {
+          accept,
+          onCandidateBudgetExhausted,
           timeoutMs,
         },
       ),
       timeoutMs,
     );
-    return (hits as readonly RetrievedKnowledge[]).map((hit) => {
-      const candidateTokens = new Set(
-        normalizedTokens([
-          hit.candidate.topicKey,
-          hit.candidate.content,
-          ...hit.candidate.appliesWhen,
-          ...(hit.searchAliases ?? []),
-        ].join("\n")),
-      );
-      return {
-        candidate: hit.candidate,
-        ...(hit.retrievalScope ? { retrievalScope: hit.retrievalScope } : {}),
-        ...(hit.searchExclusions ? { searchExclusions: hit.searchExclusions } : {}),
-        ...(hit.deliveryMode ? { deliveryMode: hit.deliveryMode, sources: hit.sources } : {}),
-        ...(hit.researchSummary ? { researchSummary: hit.researchSummary } : {}),
-        ...(hit.distilledLesson ? { distilledLesson: hit.distilledLesson } : {}),
-        ...(hit.reference ? { reference: hit.reference } : {}),
-        matchedTerms: new Set(
-          terms.filter((term) => candidateTokens.has(term)),
-        ),
-        score: hit.score,
-      };
+    return hits.flatMap((hit) => {
+      const selected = distinctHits.get(duplicateGuidanceKey(hit));
+      return selected ? [selected] : [];
     });
   }
 }
