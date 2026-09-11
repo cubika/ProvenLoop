@@ -55,6 +55,12 @@ import {
   CanonicalSqliteStore,
 } from "@provenloop/storage-sqlite";
 import { PROVENLOOP_CODE_VERSION } from "./release-metadata.js";
+import {
+  appendMcpIdentityDiagnostic,
+  describeMcpIdentityFailure,
+  type McpIdentityDiagnostic,
+  type McpIdentityReason,
+} from "./mcp-identity-diagnostics.js";
 
 interface JsonRpcRequest {
   readonly id?: number | string | null;
@@ -1214,12 +1220,33 @@ export const runMcpServer = async (
 ): Promise<void> => {
   const root = options.dataRoot ?? resolveWindowsProvenLoopDataRoot();
   const sessionId = options.sessionId ?? nonEmptyString(process.env.SESSION_ID);
-  const resolveTrustedContext = options.resolveTrustedContext ?? (async () => {
-    if (sessionId === undefined) {
-      return undefined;
+  const sessionIdSource = options.resolveTrustedContext !== undefined ? "resolver"
+    : options.sessionId !== undefined ? "options"
+      : sessionId !== undefined ? "environment" : "missing";
+  const resolveTrustedContext = async (): Promise<{
+    context?: TrustedMcpContext;
+    diagnostic?: McpIdentityDiagnostic;
+    failed?: boolean;
+  }> => {
+    let diagnostic: McpIdentityDiagnostic | undefined;
+    try {
+      if (options.resolveTrustedContext !== undefined) {
+        const context = await options.resolveTrustedContext();
+        return context === undefined
+          ? { diagnostic: { reason: "resolver_unavailable" } }
+          : { context };
+      }
+      if (sessionId === undefined) return { diagnostic: { reason: "session_id_missing" } };
+      if (sessionId.trim().length === 0) return { failed: true, diagnostic: { reason: "session_id_missing" } };
+      const context = await readTrustedSessionContext(root, sessionId, options.now?.() ?? new Date(),
+        (value) => { diagnostic = value; });
+      return { ...(context === undefined ? {} : { context }), ...(diagnostic === undefined ? {} : { diagnostic }) };
+    } catch {
+      return { failed: true, diagnostic: diagnostic ?? { reason: "resolver_failed" } };
     }
-    return readTrustedSessionContext(root, sessionId);
-  });
+  };
+  let previousIdentityFailure: { reason: McpIdentityReason; identityCheckId: string } | undefined;
+  let identityObservationSequence = 0;
   const handlers =
     options.handlers ??
     new LocalMcpToolHandlers({
@@ -1332,41 +1359,74 @@ export const runMcpServer = async (
               break;
             }
             try {
-              const trusted = await resolveTrustedContext();
+              const startedAt = Date.now();
+              const resolution = await resolveTrustedContext();
+              const observation = {
+                identityCheckId: `identity-${randomUUID()}`,
+                observationSequence: ++identityObservationSequence,
+                observedAt: new Date().toISOString(),
+              };
+              const trusted = resolution.context;
               if (
                 trusted === undefined ||
                 (trusted.repositoryState !== "known_repo" &&
                   trusted.repositoryState !== "known_outside_repo")
               ) {
-                if (call.name === "provenloop_context") {
-                  const contextRequest = trusted === undefined
-                    ? undefined
-                    : parseContextRequest(call.arguments, trusted);
-                  if (
-                    contextRequest !== undefined &&
-                    handlers.unavailableContext !== undefined
-                  ) {
-                    toolResult(
-                      io.output,
-                      request.id,
-                      await handlers.unavailableContext(
-                        contextRequest,
-                        "Trusted repository identity is unknown or being refreshed. No context was retrieved.",
-                      ),
-                    );
-                    break;
-                  }
-                  toolResult(io.output, request.id, {
-                    items: [],
-                    latencyMs: 0,
-                    renderedTokens: 0,
-                    requestId: `context-${randomUUID()}`,
-                    status: "degraded",
-                    statusDetail: "Trusted session/workspace identity is unavailable or being refreshed. No context was retrieved.",
+                const diagnostic = resolution.diagnostic ?? { reason: "repository_unknown" as const };
+                const failure = { reason: diagnostic.reason, identityCheckId: observation.identityCheckId };
+                previousIdentityFailure = failure;
+                const detail = describeMcpIdentityFailure(diagnostic.reason);
+                const resolvedSessionId = trusted?.sessionId ?? sessionId;
+                const logFailure = (requestId: string) => {
+                  return appendMcpIdentityDiagnostic(root, {
+                    event: "trusted_identity_unavailable", diagnostic, requestId, sessionIdSource, ...observation,
+                    ...(resolvedSessionId === undefined ? {} : { sessionId: resolvedSessionId }),
+                    elapsedMs: Date.now() - startedAt,
                   });
+                };
+                if (resolution.failed) {
+                  const requestId = `mcp-${randomUUID()}`;
+                  await logFailure(requestId);
+                  throw new Error(`${detail} Request ID: ${requestId}. See logs/mcp.jsonl.`);
+                }
+                if (call.name === "provenloop_context") {
+                  let requestId = `context-${randomUUID()}`;
+                  try {
+                    const contextRequest = trusted === undefined
+                      ? undefined
+                      : parseContextRequest(call.arguments, trusted);
+                    const result: ContextResponse = contextRequest !== undefined && handlers.unavailableContext !== undefined
+                      ? await handlers.unavailableContext(contextRequest, detail)
+                      : {
+                        items: [],
+                        latencyMs: Date.now() - startedAt,
+                        renderedTokens: 0,
+                        requestId,
+                        status: "degraded",
+                        statusDetail: detail,
+                      };
+                    requestId = result.requestId;
+                    toolResult(io.output, request.id, result);
+                  } catch (error) {
+                    throw new Error(`${sanitizeDiagnostic(error)} Identity check: [${diagnostic.reason}]. Request ID: ${requestId}. See logs/mcp.jsonl.`, { cause: error });
+                  } finally {
+                    await logFailure(requestId);
+                  }
                   break;
                 }
-                throw new Error("Trusted session/workspace identity is unavailable.");
+                const requestId = `mcp-${randomUUID()}`;
+                await logFailure(requestId);
+                throw new Error(`${detail} Request ID: ${requestId}. See logs/mcp.jsonl.`);
+              }
+              if (previousIdentityFailure !== undefined) {
+                const previousFailure = previousIdentityFailure;
+                previousIdentityFailure = undefined;
+                await appendMcpIdentityDiagnostic(root, {
+                  event: "trusted_identity_recovered", previousReason: previousFailure.reason,
+                  previousIdentityCheckId: previousFailure.identityCheckId, sessionIdSource, ...observation,
+                  requestId: `mcp-${randomUUID()}`, sessionId: trusted.sessionId,
+                  elapsedMs: Date.now() - startedAt,
+                });
               }
               toolResult(
                 io.output,

@@ -17,6 +17,7 @@ import {
 
 const MAX_RECORD_BYTES = 16_384;
 const CONTEXT_MAX_AGE_MS = 60_000;
+const FUTURE_TOLERANCE_MS = 5_000;
 const APPROVAL_MAX_AGE_MS = 5 * 60_000;
 const APPROVAL_TEXT = /^(?:confirm|\u786e\u8ba4) PL-[a-f0-9]{12}$/u;
 
@@ -37,11 +38,46 @@ export interface TrustedSessionContext {
   };
 }
 
+export interface TrustedSessionContextDiagnostic {
+  readonly reason:
+    | "reader_probe_busy"
+    | "session_producer_inactive"
+    | "record_missing"
+    | "record_session_mismatch"
+    | "record_expired"
+    | "record_from_future"
+    | "record_producer_inactive"
+    | "record_invalid"
+    | "record_too_large"
+    | "record_read_failed"
+    | "context_read_failed"
+    | "repository_expired"
+    | "repository_from_future"
+    | "workspace_refreshing"
+    | "repository_unknown";
+  readonly recordAgeMs?: number;
+  readonly repositoryAgeMs?: number;
+  readonly maxAgeMs?: number;
+  readonly futureToleranceMs?: number;
+  readonly errorCode?: string;
+}
+
+type ReportDiagnostic = (diagnostic: TrustedSessionContextDiagnostic) => void;
+
+const safeErrorCode = (error: unknown): string | undefined => {
+  const code = isRecord(error) ? error.code : undefined;
+  return typeof code === "string" && [
+    "EACCES", "EPERM", "ENOENT", "EIO", "EMFILE", "ENFILE",
+    "EBUSY", "ENOTDIR", "EISDIR", "ENAMETOOLONG", "ENOSPC", "EROFS",
+  ].includes(code) ? code : undefined;
+};
+
 interface ContextRecord {
   readonly schemaVersion: 1;
   readonly producerId: string;
   readonly updatedAt: string;
   readonly context: TrustedSessionContext;
+  readonly workspaceRefreshing?: boolean;
 }
 
 export interface TrustedSessionWorkspace {
@@ -103,6 +139,7 @@ const parseRecord = (value: unknown): ContextRecord => {
     value.schemaVersion !== 1 ||
     !nonEmpty(value.producerId) ||
     !validTime(value.updatedAt) ||
+    (value.workspaceRefreshing !== undefined && typeof value.workspaceRefreshing !== "boolean") ||
     !isRecord(value.context)
   ) {
     throw new TypeError("Invalid trusted Session context record.");
@@ -152,6 +189,7 @@ const parseRecord = (value: unknown): ContextRecord => {
     schemaVersion: 1,
     producerId: value.producerId,
     updatedAt: value.updatedAt,
+    ...(value.workspaceRefreshing === undefined ? {} : { workspaceRefreshing: value.workspaceRefreshing }),
     context: {
       cwd: context.cwd,
       sessionId: context.sessionId,
@@ -187,7 +225,7 @@ const readRecord = async (path: string): Promise<ContextRecord | undefined> => {
     const buffer = Buffer.alloc(MAX_RECORD_BYTES + 1);
     const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
     if (bytesRead > MAX_RECORD_BYTES) {
-      throw new Error("Trusted Session context exceeds its size limit.");
+      throw new RangeError("Trusted Session context exceeds its size limit.");
     }
     return parseRecord(JSON.parse(buffer.toString("utf8", 0, bytesRead)));
   } finally {
@@ -199,31 +237,56 @@ const readActiveRecord = async (
   dataRoot: string,
   sessionId: string,
   now: Date,
+  report: ReportDiagnostic,
 ): Promise<ContextRecord | undefined> => {
   const guardProvider = await leaseProvider(dataRoot, sessionId, undefined, "session-context-probe");
   const guard = await guardProvider.tryAcquire();
-  if (guard === undefined) return undefined;
+  if (guard === undefined) {
+    report({ reason: "reader_probe_busy" });
+    return undefined;
+  }
   try {
     // Readers must not mistake another reader's temporary probe lease for a live producer.
     const provider = await leaseProvider(dataRoot, sessionId);
     const unowned = await provider.tryAcquire();
     if (unowned !== undefined) {
       await unowned.release();
+      report({ reason: "session_producer_inactive" });
       return undefined;
     }
-    const record = await readRecord(contextPath(dataRoot, sessionId));
-    if (
-      record === undefined ||
-      record.context.sessionId !== sessionId ||
-      now.getTime() - Date.parse(record.updatedAt) > CONTEXT_MAX_AGE_MS ||
-      Date.parse(record.updatedAt) > now.getTime() + 5_000
-    ) {
+    let record: ContextRecord | undefined;
+    try {
+      record = await readRecord(contextPath(dataRoot, sessionId));
+    } catch (error) {
+      const errorCode = safeErrorCode(error);
+      report({
+        reason: error instanceof SyntaxError || error instanceof TypeError ? "record_invalid"
+          : error instanceof RangeError ? "record_too_large" : "record_read_failed",
+        ...(errorCode === undefined ? {} : { errorCode }),
+      });
+      throw error;
+    }
+    if (record === undefined) {
+      report({ reason: "record_missing" });
+      return undefined;
+    }
+    if (record.context.sessionId !== sessionId) {
+      report({ reason: "record_session_mismatch" });
+      return undefined;
+    }
+    const recordAgeMs = now.getTime() - Date.parse(record.updatedAt);
+    if (recordAgeMs > CONTEXT_MAX_AGE_MS || recordAgeMs < -FUTURE_TOLERANCE_MS) {
+      report({
+        reason: recordAgeMs > CONTEXT_MAX_AGE_MS ? "record_expired" : "record_from_future",
+        recordAgeMs, maxAgeMs: CONTEXT_MAX_AGE_MS, futureToleranceMs: FUTURE_TOLERANCE_MS,
+      });
       return undefined;
     }
     const producer = await leaseProvider(dataRoot, sessionId, record.producerId);
     const inactiveProducer = await producer.tryAcquire();
     if (inactiveProducer !== undefined) {
       await inactiveProducer.release();
+      report({ reason: "record_producer_inactive", recordAgeMs });
       return undefined;
     }
     return record;
@@ -236,6 +299,7 @@ export const readTrustedSessionContext = async (
   dataRoot: string,
   sessionId: string,
   now: Date = new Date(),
+  onDiagnostic?: ReportDiagnostic,
 ): Promise<TrustedSessionContext | undefined> => {
   if (!nonEmpty(sessionId)) {
     throw new TypeError("A non-empty trusted Session ID is required.");
@@ -243,12 +307,35 @@ export const readTrustedSessionContext = async (
   if (!Number.isFinite(now.getTime())) {
     throw new TypeError("Trusted Session context requires a valid current time.");
   }
-  const record = await readActiveRecord(dataRoot, sessionId, now);
+  let reported = false;
+  const report: ReportDiagnostic = (diagnostic) => {
+    reported = true;
+    try { onDiagnostic?.(diagnostic); } catch { /* Diagnostics cannot change identity checks. */ }
+  };
+  let record: ContextRecord | undefined;
+  try {
+    record = await readActiveRecord(dataRoot, sessionId, now, report);
+  } catch (error) {
+    if (!reported) {
+      const errorCode = safeErrorCode(error);
+      report({ reason: "context_read_failed", ...(errorCode === undefined ? {} : { errorCode }) });
+    }
+    throw error;
+  }
   if (record === undefined) return undefined;
   const snapshot = record.context;
+  const repositoryAgeMs = now.getTime() - Date.parse(snapshot.repositoryObservedAt);
   const repositoryFresh =
-    now.getTime() - Date.parse(snapshot.repositoryObservedAt) <= CONTEXT_MAX_AGE_MS &&
-    Date.parse(snapshot.repositoryObservedAt) <= now.getTime() + 5_000;
+    repositoryAgeMs <= CONTEXT_MAX_AGE_MS && repositoryAgeMs >= -FUTURE_TOLERANCE_MS;
+  if (!repositoryFresh || snapshot.repositoryState === "unknown") {
+    report({
+      reason: !repositoryFresh
+        ? (repositoryAgeMs > CONTEXT_MAX_AGE_MS ? "repository_expired" : "repository_from_future")
+        : record.workspaceRefreshing === true ? "workspace_refreshing" : "repository_unknown",
+      recordAgeMs: now.getTime() - Date.parse(record.updatedAt),
+      repositoryAgeMs, maxAgeMs: CONTEXT_MAX_AGE_MS, futureToleranceMs: FUTURE_TOLERANCE_MS,
+    });
+  }
   const context: TrustedSessionContext = repositoryFresh ? snapshot : {
     cwd: snapshot.cwd,
     sessionId,
@@ -482,6 +569,7 @@ export class TrustedSessionContextPublisher {
         schemaVersion: 1,
         producerId: this.#producerId,
         updatedAt: (this.#options.now?.() ?? new Date()).toISOString(),
+        workspaceRefreshing: this.#refreshing,
         context: {
           cwd: this.#workspace.cwd,
           sessionId: this.#options.sessionId,

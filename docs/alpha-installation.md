@@ -336,6 +336,40 @@ backfill; the runtime does not guess paths or enumerate historical Sessions.
 Capture is best effort, not lossless archival. Bounded enrichment preserves
 original source evidence and does not make unsupported or missing events complete.
 
+### MCP identity diagnostics
+
+When Context cannot confirm the session or workspace, `statusDetail` includes a
+reason code. The MCP server writes a matching entry to
+`%LOCALAPPDATA%\ProvenLoop\logs\mcp.jsonl`, or `logs\mcp.jsonl` under the
+configured data root. Match the response's `requestId` to the log entry.
+
+| Reason | What to check |
+| --- | --- |
+| `session_id_missing` | Whether the host supplied `SESSION_ID` to the MCP process. |
+| `session_producer_inactive` | Extension startup and whether the Extension and MCP server use the same data root. See `logs\extension.jsonl`. |
+| `record_missing`, `record_producer_inactive` | Publisher startup or restart; the record may not have been written by the active publisher yet. |
+| `record_expired`, `repository_expired` | Publisher heartbeat or workspace refresh. Compare `recordAgeMs` and `repositoryAgeMs` with `maxAgeMs`. |
+| `record_from_future`, `repository_from_future` | Clock differences greater than `futureToleranceMs`. |
+| `workspace_refreshing` | A workspace refresh is in progress. A later request should use the refreshed identity. |
+| `repository_unknown` | The publisher has not confirmed the repository state. |
+| `reader_probe_busy` | Another reader held the identity probe guard during the request. |
+| `record_invalid`, `record_too_large`, `record_session_mismatch` | An invalid, oversized, or mismatched session record. |
+| `record_read_failed`, `context_read_failed` | File or identity-probe access; inspect `errorCode` when present. |
+| `resolver_unavailable`, `resolver_failed` | A custom identity resolver returned no context or threw an error. |
+
+Entries include the runtime version, PID, session hash, and observation timing.
+The hash uses the same raw Session ID digest as the session record filename.
+`trusted_identity_recovered` links to the earlier failure through
+`previousIdentityCheckId`. Concurrent requests can finish out of order; use
+`observationSequence` within one server instance and `observedAt` to reconstruct
+identity checks. Recovery means identity became available; retrieval can still
+fail for another reason.
+
+These entries contain no prompts, approval text, raw workspace paths, or raw
+exception messages. Logging is best effort, with a 25 ms wait budget for each
+write. A slow write can finish later, and a failed write can leave no entry.
+Diagnostics do not change identity checks or add output to the JSON-RPC stream.
+
 ## Capability controls
 
 ```powershell

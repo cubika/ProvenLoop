@@ -174,10 +174,11 @@ export const registerMcpRegistryTests = (target: string): void => {
         delete process.env.SESSION_ID;
         const unidentified = await connect(dataRoot);
         clients.push(unidentified);
-        expect(object((await unidentified.call("provenloop_context", {
+        const missingSession = object((await unidentified.call("provenloop_context", {
           prompt: "Run focused tests",
           tokenBudget: 600,
-        })).structuredContent)).toMatchObject({ status: "degraded", items: [] });
+        })).structuredContent);
+        expect(missingSession).toMatchObject({ status: "degraded", items: [], statusDetail: expect.stringContaining("[session_id_missing]") });
 
         process.env.SESSION_ID = sessionId;
         const client = await connect(dataRoot);
@@ -185,7 +186,7 @@ export const registerMcpRegistryTests = (target: string): void => {
         expect(object((await client.call("provenloop_context", {
           prompt: "Run focused tests",
           tokenBudget: 600,
-        })).structuredContent)).toMatchObject({ status: "degraded", items: [] });
+        })).structuredContent)).toMatchObject({ status: "degraded", items: [], statusDetail: expect.stringContaining("[session_producer_inactive]") });
         publisher = new TrustedSessionContextPublisher({
           cwd: repoOne,
           repositoryId: identityOne.repositoryId,
@@ -217,10 +218,11 @@ export const registerMcpRegistryTests = (target: string): void => {
         await publisher.flush();
         publisher.beginWorkspaceRefresh();
         await publisher.flush();
-        expect(object((await client.call("provenloop_context", {
+        const refreshing = object((await client.call("provenloop_context", {
           prompt: "Run focused tests",
           tokenBudget: 600,
-        })).structuredContent)).toMatchObject({ status: "degraded", items: [] });
+        })).structuredContent);
+        expect(refreshing).toMatchObject({ status: "degraded", items: [], statusDetail: expect.stringContaining("[workspace_refreshing]") });
         expect((await client.call("provenloop_feedback", feedback)).isError).toBe(true);
         publisher.updateWorkspace({
           cwd: repoOne,
@@ -315,6 +317,18 @@ export const registerMcpRegistryTests = (target: string): void => {
           tokenBudget: 600,
         })).structuredContent)).toMatchObject({ status: "degraded", items: [] });
         expect(publisherErrors).toEqual([]);
+        const logBody = await readFile(join(paths.logs, "mcp.jsonl"), "utf8");
+        const logEntries = logBody.trim().split("\n").map((line) => object(JSON.parse(line)));
+        expect(logEntries).toEqual(expect.arrayContaining([
+          expect.objectContaining({ event: "trusted_identity_unavailable", reason: "session_id_missing", requestId: missingSession.requestId }),
+          expect.objectContaining({ event: "trusted_identity_unavailable", reason: "workspace_refreshing", requestId: refreshing.requestId }),
+          expect.objectContaining({ event: "trusted_identity_recovered", previousReason: "session_producer_inactive" }),
+          expect.objectContaining({ event: "trusted_identity_recovered", previousReason: "workspace_refreshing" }),
+        ]));
+        expect(new Set(logEntries.filter((entry) => entry.sessionHash !== undefined).map((entry) => entry.sessionHash)).size).toBe(1);
+        for (const privateValue of [sessionId, ordinaryPrompt, confirmation, repoOne, repoTwo, "Run focused tests"]) {
+          expect(logBody).not.toContain(privateValue);
+        }
       } finally {
         for (const client of clients) {
           await client.close();

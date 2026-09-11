@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import * as fs from "node:fs/promises";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -10,11 +11,17 @@ import * as atomicRename from "../../packages/copilot-adapter/src/atomic-rename.
 import {
   readTrustedSessionContext,
   TrustedSessionContextPublisher,
+  type TrustedSessionContextDiagnostic,
 } from "@provenloop/copilot-adapter";
 import {
   resolveWindowsProvenLoopLeaseName,
   windowsNamedPipePath,
 } from "@provenloop/platform-windows";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, open: vi.fn(original.open) };
+});
 
 describe("trusted Session context", () => {
   it("SYS-04 retains dirty context after a failed atomic replacement and reports background errors safely", async () => {
@@ -179,6 +186,10 @@ describe("trusted Session context", () => {
       const current = await readFile(path, "utf8");
       try {
         await writeFile(path, previous);
+        const diagnostics: TrustedSessionContextDiagnostic[] = [];
+        expect(await readTrustedSessionContext(root, "session-restarted", now, (value) => diagnostics.push(value)))
+          .toBeUndefined();
+        expect(diagnostics).toEqual([{ reason: "record_producer_inactive", recordAgeMs: 0 }]);
         for (let round = 0; round < 4; round += 1) {
           const contexts = await Promise.all(Array.from({ length: 64 }, () =>
             readTrustedSessionContext(root, "session-restarted", now)));
@@ -221,7 +232,9 @@ describe("trusted Session context", () => {
         once(child, "message"),
         once(child, "exit").then(([code]) => { throw new Error(`Probe guard child exited: ${code}`); }),
       ]);
-      expect(await readTrustedSessionContext(root, sessionId, now)).toBeUndefined();
+      const diagnostics: TrustedSessionContextDiagnostic[] = [];
+      expect(await readTrustedSessionContext(root, sessionId, now, (value) => diagnostics.push(value))).toBeUndefined();
+      expect(diagnostics).toEqual([{ reason: "reader_probe_busy" }]);
       const exited = once(child, "exit");
       child.send("release");
       await exited;
@@ -243,6 +256,109 @@ describe("trusted Session context", () => {
         child.kill();
         await exited;
       }
+      await publisher.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes record failure reasons without changing identity acceptance", async () => {
+    const root = await mkdtemp(join(process.cwd(), ".provenloop-context-diagnostics-"));
+    const now = new Date("2026-09-11T01:00:00.000Z");
+    const sessionId = "record-diagnostics";
+    const publisher = new TrustedSessionContextPublisher({
+      cwd: root, dataRoot: root, sessionId, repositoryId: "private-repo",
+      now: () => now, onError: (error) => { throw error; },
+    });
+    const diagnostics: TrustedSessionContextDiagnostic[] = [];
+    const read = () => {
+      diagnostics.length = 0;
+      return readTrustedSessionContext(root, sessionId, now, (value) => diagnostics.push(value));
+    };
+    try {
+      expect(await read()).toBeUndefined();
+      expect(diagnostics).toEqual([{ reason: "session_producer_inactive" }]);
+      await publisher.start();
+      const path = join(root, "data", "session-context", `${createHash("sha256").update(sessionId).digest("hex")}.json`);
+      const original = await readFile(path, "utf8");
+      const record = JSON.parse(original);
+      try {
+        expect(await read()).toBeDefined();
+        expect(diagnostics).toEqual([]);
+        const inaccessible = vi.spyOn(fs, "open").mockRejectedValueOnce(Object.assign(
+          new Error("Cannot open C:\\private-project\\record.json"), { code: "EACCES" },
+        ));
+        try {
+          await expect(read()).rejects.toThrow("Cannot open");
+          expect(diagnostics).toEqual([{ reason: "record_read_failed", errorCode: "EACCES" }]);
+        } finally { inaccessible.mockRestore(); }
+        await rm(path);
+        expect(await read()).toBeUndefined();
+        expect(diagnostics).toEqual([{ reason: "record_missing" }]);
+        await writeFile(path, JSON.stringify({ ...record, context: { ...record.context, sessionId: "other" } }));
+        expect(await read()).toBeUndefined();
+        expect(diagnostics).toEqual([{ reason: "record_session_mismatch" }]);
+        for (const [offset, reason] of [[-61_000, "record_expired"], [5_001, "record_from_future"]] as const) {
+          await writeFile(path, JSON.stringify({ ...record, updatedAt: new Date(now.getTime() + offset).toISOString() }));
+          expect(await read()).toBeUndefined();
+          expect(diagnostics).toEqual([{ reason, recordAgeMs: -offset, maxAgeMs: 60_000, futureToleranceMs: 5_000 }]);
+        }
+        for (const invalid of ['{"private-content":', '{}']) {
+          await writeFile(path, invalid);
+          await expect(read()).rejects.toThrow();
+          expect(diagnostics).toEqual([{ reason: "record_invalid" }]);
+        }
+        await writeFile(path, "x".repeat(16_385));
+        await expect(read()).rejects.toThrow("size limit");
+        expect(diagnostics).toEqual([{ reason: "record_too_large" }]);
+        await expect(readTrustedSessionContext(root, sessionId, now, () => { throw new Error("Diagnostic sink failed"); }))
+          .rejects.toThrow("size limit");
+      } finally { await writeFile(path, original); }
+      await publisher.stop();
+      await expect(readTrustedSessionContext(root, sessionId, now, () => { throw new Error("Diagnostic sink failed"); }))
+        .resolves.toBeUndefined();
+    } finally {
+      await publisher.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes workspace refresh, unknown repositories and stale repository observations", async () => {
+    const root = await mkdtemp(join(process.cwd(), ".provenloop-workspace-diagnostics-"));
+    let now = new Date("2026-09-11T01:00:00.000Z");
+    const sessionId = "workspace-diagnostics";
+    const publisher = new TrustedSessionContextPublisher({
+      cwd: root, dataRoot: root, sessionId, repositoryId: "repo",
+      now: () => now, onError: (error) => { throw error; },
+    });
+    const diagnostics: TrustedSessionContextDiagnostic[] = [];
+    const read = () => {
+      diagnostics.length = 0;
+      return readTrustedSessionContext(root, sessionId, now, (value) => diagnostics.push(value));
+    };
+    try {
+      await publisher.start();
+      publisher.beginWorkspaceRefresh();
+      await publisher.flush();
+      expect((await read())?.repositoryState).toBe("unknown");
+      expect(diagnostics[0]).toMatchObject({ reason: "workspace_refreshing", repositoryAgeMs: 0 });
+      publisher.updateWorkspace({ cwd: root, repositoryState: "unknown" });
+      await publisher.flush();
+      expect((await read())?.repositoryState).toBe("unknown");
+      expect(diagnostics[0]).toMatchObject({ reason: "repository_unknown" });
+      publisher.updateWorkspace({ cwd: root, repositoryState: "known_outside_repo" });
+      await publisher.flush();
+      expect((await read())?.repositoryState).toBe("known_outside_repo");
+      expect(diagnostics).toEqual([]);
+      const observedAt = now;
+      for (const [offset, reason] of [[61_000, "repository_expired"], [-5_001, "repository_from_future"]] as const) {
+        now = new Date(observedAt.getTime() + offset);
+        // Refresh the record heartbeat without refreshing the repository observation.
+        publisher.observeUserMessage({ eventId: "ordinary", text: "private prompt", timestamp: now.toISOString() });
+        await publisher.flush();
+        expect((await read())?.repositoryState).toBe("unknown");
+        expect(diagnostics).toEqual([{ reason, recordAgeMs: 0, repositoryAgeMs: offset, maxAgeMs: 60_000, futureToleranceMs: 5_000 }]);
+      }
+    } finally {
       await publisher.stop();
       await rm(root, { recursive: true, force: true });
     }

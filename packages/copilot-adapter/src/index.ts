@@ -107,6 +107,7 @@ export {
   readTrustedSessionContext,
   TrustedSessionContextPublisher,
   type TrustedSessionContext,
+  type TrustedSessionContextDiagnostic,
   type TrustedSessionContextPublisherOptions,
   type TrustedSessionWorkspace,
 } from "./trusted-session-context.js";
