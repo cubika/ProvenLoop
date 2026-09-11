@@ -415,6 +415,18 @@ authority of user instructions.
 
 #### What a distilled lesson must establish
 
+Newly distilled lessons use English for the rule, trigger, exclusions, retention
+rationale, future use, and concept key, regardless of conversation language. Model
+review explanations also use English and assess fidelity to the original sources.
+Keep evidence quotations in their original language and preserve executable syntax,
+identifiers, paths, proper names, and necessary literal examples. An English lesson
+may still specify Chinese conversation. This policy does not rewrite historical
+knowledge or change its authority.
+Short original-language search phrases may be retained as index metadata so a Chinese
+task can still find an English lesson. Positive topic phrases and excluded task
+contexts are kept separate, bound to the same review, and checked against source
+quotations. They do not create a second body of guidance.
+
 | Question | Required result |
 |---|---|
 | What should a later agent do or understand? | A concise action, decision rule, or durable project constraint that changes relevant work |

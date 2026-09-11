@@ -713,6 +713,11 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
     // Bound model-review metadata and job review summaries require the current reader.
     sql: "CREATE INDEX learning_proposal_distillation ON learning_proposals(json_extract(body_json, '$.distillation.inputDigest'));",
   },
+  {
+    version: 19,
+    // Original-language discovery/exclusion phrases are bound to English lesson reviews.
+    sql: "CREATE INDEX learning_proposal_query_terms ON learning_proposals(json_type(body_json, '$.queryTerms'));",
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 // Dependent rows precede their source tables; reset retains only schema and replay protection.

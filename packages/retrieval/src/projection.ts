@@ -16,23 +16,41 @@ export const knowledgeProjectionFromCandidate = (
   proposals: readonly RuleProposal[] = [],
 ): KnowledgeProjection => {
   const candidate = knowledgeCandidateSchema.parse(input);
-  const searchAliases = [...new Set(proposals.filter((proposal) =>
+  const reviewed = proposals.filter((proposal) =>
     proposal.knowledgeId === candidate.knowledgeId && proposal.rule === candidate.content &&
     sha256([proposal.trigger]) === sha256(candidate.appliesWhen) && sha256(proposal.exclusions) === sha256(candidate.nonApplicability) &&
     proposal.sourceDigests.length === candidate.sourceEvidenceIds.length &&
     proposal.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)) &&
-    hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) &&
-    proposal.canonicalKey !== undefined && !containsPotentialSecret(proposal.canonicalKey),
-  ).map((proposal) => proposal.canonicalKey as string))].sort();
+    hasAcceptedLearningDistillation(proposal, proposal.sourceDigests),
+  );
+  const queryTerms = reviewed.flatMap((proposal) => {
+    if (!proposal.queryTerms) return [];
+    const normalize = (text: string): string => text.normalize("NFKC").toLowerCase();
+    const quotes = [proposal.userSource?.quote, proposal.agentSource?.quote,
+      ...(proposal.supportingSources ?? []).map((source) => source.quote),
+      ...(proposal.agentSource?.evidenceSources ?? []).map((source) => source.quote),
+    ].filter((quote): quote is string => quote !== undefined).map(normalize);
+    return [...proposal.queryTerms.include, ...proposal.queryTerms.exclude].every((term) =>
+      !containsPotentialSecret(term) && quotes.some((quote) => quote.includes(normalize(term))))
+      ? [proposal.queryTerms] : [];
+  });
+  const searchAliases = [...new Set([
+    ...reviewed.flatMap((proposal) => proposal.canonicalKey && !containsPotentialSecret(proposal.canonicalKey) ? [proposal.canonicalKey] : []),
+    ...queryTerms.flatMap((terms) => terms.include),
+  ])].sort();
+  const searchExclusions = [...new Set(queryTerms.flatMap((terms) => terms.exclude))].sort();
   return {
     appliesWhen: candidate.appliesWhen,
     content: candidate.content,
     knowledgeId: candidate.knowledgeId,
     nonApplicability: candidate.nonApplicability,
     projectionVersion: 1,
-    // Aliases affect discovery, so bind them to canonical state and recheck them on retrieval.
-    sourceDigest: searchAliases.length ? sha256({ candidate, searchAliases }) : sha256(candidate),
+    // Search hints affect discovery and filtering; bind both to the reviewed canonical state.
+    sourceDigest: searchAliases.length || searchExclusions.length ? sha256({ candidate,
+      ...(searchAliases.length ? { searchAliases } : {}), ...(searchExclusions.length ? { searchExclusions } : {}),
+    }) : sha256(candidate),
     ...(searchAliases.length ? { searchAliases } : {}),
+    ...(searchExclusions.length ? { searchExclusions } : {}),
     topicKey: candidate.topicKey,
   };
 };

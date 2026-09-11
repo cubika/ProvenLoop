@@ -17,6 +17,7 @@ export const learningDistillationInputDigest = (
   predicate: proposal.predicate, shellPredicate: proposal.shellPredicate,
   failedOperationEventId: proposal.failedOperationEventId, retryOperationEventId: proposal.retryOperationEventId,
   completionEventId: proposal.completionEventId,
+  ...(proposal.queryTerms ? { queryTerms: proposal.queryTerms } : {}),
   sourceDigests: sourceDigests.map(({ eventId, digest }) => ({ eventId, digest })),
 });
 

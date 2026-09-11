@@ -10,6 +10,15 @@ capability; preserved excerpts alone do not meet the
 [final output standard](product-design.md#45-distillation-is-the-product). This update
 records the target without changing the implemented evidence or delivery rules.
 
+Language policy (2026-09-11): extractor v10 writes new lesson prose and retention
+metadata in English, including when the evidence is Chinese. Reviewer v2 checks the
+English output and its fidelity to the original meaning, and writes its rationale
+in English. Source quotations retain their original language; code, paths, identifiers,
+and necessary literal examples remain exact. Existing knowledge is not bulk-translated.
+Schema 19 adds optional original-language search phrases bound to the same review:
+positive phrases support discovery, while excluded task contexts suppress inappropriate
+matches. These phrases are separate index metadata, not non-English lesson prose.
+
 Development implementation (2026-09-11, unreleased schema 18): new untyped lessons
 receive a separate model quality review after extraction. The reviewer checks support,
 scope, lasting value, actionability, concision, and redundancy within the supplied

@@ -90,6 +90,46 @@ const retrieve = async (f: ReturnType<typeof fixture>, prompt: string, tokenBudg
 };
 
 describe("reviewed distillation production workflow", () => {
+  it("retains English lessons from Chinese evidence while preserving literal identifiers and quotations", async () => {
+    const message = '仓库文档必须用英文，聊天仍用中文；标识符 healthCheck 和界面文本“已完成”保持原样。';
+    const f = fixture("convention", message);
+    f.proposal.rule = 'Write repository documentation in English; preserve healthCheck and the UI label "已完成".';
+    f.proposal.exclusions = ["Conversation with the user remains in Chinese."];
+    f.proposal.queryTerms = { include: ["仓库文档"], exclude: ["聊天"] };
+    const p = await production(f);
+    expect(await p.coordinator.run()).toMatchObject({ status: "evaluated", proposals: 1 });
+    expect(p.calls[0]?.prompt).toContain("Use English for all newly authored lesson prose");
+    expect(p.calls[1]?.prompt).toContain("Mark concise false if prose violates this output-language requirement");
+    expect(p.calls[1]?.prompt).toContain("Write your review rationale in English");
+    const retained = f.store.learningProposals()[0];
+    expect(retained?.rule).toBe(f.proposal.rule);
+    expect(retained?.userSource?.quote).toBe(message);
+    expect(retained?.supportingSources?.[0]?.quote).toBe(message);
+    expect(retained?.queryTerms).toEqual({ include: ["仓库文档"], exclude: ["聊天"] });
+    const { result } = await retrieve(f, "Write repository documentation");
+    expect(result.items[0]?.guidance).toContain("Write repository documentation in English");
+    expect(result.items[0]?.guidance).toContain("healthCheck");
+    expect(result.items[0]?.guidance).toContain("已完成");
+    expect(result.items[0]?.applicabilitySummary).toContain("Conversation with the user remains in Chinese");
+  });
+
+  it("does not retain non-English lesson prose when the language review rejects it", async () => {
+    const f = fixture("convention", "仓库文档必须用英文，聊天仍用中文。");
+    f.proposal.rule = "仓库文档必须用英文。";
+    const p = await production(f, { response: { reviews: [review(0, { concise: false })] } });
+    expect(await p.coordinator.run()).toMatchObject({ status: "evaluated", proposals: 0 });
+    expect(f.store.knowledgeCandidates()).toEqual([]);
+    expect(f.store.learningJobs()[0]?.distillation).toMatchObject({ accepted: 0, rejected: 1, reasons: ["Quality review: concise"] });
+  });
+
+  it("rejects invented discovery phrases before the review request", async () => {
+    const f = fixture();
+    f.proposal.queryTerms = { include: ["invented source topic"], exclude: [] };
+    const p = await production(f);
+    expect(await p.coordinator.run()).toMatchObject({ status: "failed", reason: "inference_or_validation_failed" });
+    expect(p.calls).toHaveLength(1);
+    expect(f.store.knowledgeCandidates()).toEqual([]);
+  });
   it("learns an independent repository constraint from a long mixed task message without always", async () => {
     const f = fixture(); const p = await production(f);
     expect(f.message.length).toBeGreaterThan(2048);

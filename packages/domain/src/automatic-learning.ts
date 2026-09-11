@@ -157,8 +157,17 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
   for (const proposal of parsed.proposals) {
     const source = learningProposalSource(proposal);
     if ([proposal.rule, proposal.trigger, ...proposal.exclusions, source.quote,
+      ...(proposal.queryTerms?.include ?? []), ...(proposal.queryTerms?.exclude ?? []),
       ...(proposal.agentSource?.evidenceSources.map((item) => item.quote) ?? [])].some(containsPotentialSecret)) {
       throw new Error("Learning proposal contains sensitive content.");
+    }
+    if (proposal.queryTerms) {
+      const quoted = [source.quote, ...(proposal.supportingSources ?? []).map((entry) => entry.quote),
+        ...(proposal.agentSource?.evidenceSources ?? []).map((entry) => entry.quote)].map((value) => value.normalize("NFKC").toLowerCase());
+      const terms = [...proposal.queryTerms.include, ...proposal.queryTerms.exclude];
+      if (terms.some((term) => !quoted.some((quote) => quote.includes(term.normalize("NFKC").toLowerCase())))) {
+        throw new Error("Learning query terms must occur in quoted evidence.");
+      }
     }
     if (proposal.predicate && proposal.shellPredicate) throw new Error("A proposal cannot mix shell and MCP predicates.");
     const user = sources.get(source.eventId);

@@ -18,8 +18,9 @@ The core output is concise, reusable engineering guidance distilled from actual 
 The intended benefit is less repeated investigation and rework as the agent gains
 relevant project experience. See the [distillation standard](docs/product-design.md#45-distillation-is-the-product).
 
-Unreleased development uses schema 18 and adds a separate model quality review,
+Unreleased development uses schema 19 and adds a separate model quality review,
 concise scoped delivery, bilingual search aliases, and repository-readiness diagnostics.
+New lessons use English, with source quotations preserved in their original language.
 These changes have not been published as a new version. Model review does not confer
 external verification or establish sustained productivity improvement; see the
 [development record](docs/feedback.md#development-update-reviewed-distillation-and-usable-delivery).

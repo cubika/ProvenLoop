@@ -197,7 +197,8 @@ export class CanonicalKnowledgeRetriever {
           applicableById.get(candidate.knowledgeId) !== true ||
           admissionById.get(candidate.knowledgeId)?.admitted !== true ||
           hit.sourceDigest !== projection?.sourceDigest ||
-          sha256(hit.searchAliases ?? []) !== sha256(projection?.searchAliases ?? [])
+          sha256(hit.searchAliases ?? []) !== sha256(projection?.searchAliases ?? []) ||
+          sha256(hit.searchExclusions ?? []) !== sha256(projection?.searchExclusions ?? [])
         ) {
           continue;
         }
@@ -214,6 +215,7 @@ export class CanonicalKnowledgeRetriever {
           candidate: learningApplicabilityById.has(candidate.knowledgeId)
             ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
           ...(projection?.searchAliases ? { searchAliases: projection.searchAliases } : {}),
+          ...(projection?.searchExclusions ? { searchExclusions: projection.searchExclusions } : {}),
           score: hit.score,
         });
         if (retrieved.length === query.limit) {

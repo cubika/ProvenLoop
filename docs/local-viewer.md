@@ -5,8 +5,10 @@ It requires canonical schema 16. Use `provenloop upgrade` before opening an olde
 database. See the [release notes](releases/0.1.0-alpha.0.15.md) for this preview
 and its validation limits.
 
-The unreleased distillation work uses schema 18, following the schema 17 input-budget
-fix. It adds a separate model quality review, concise lesson delivery, and recovery
+The unreleased distillation work uses schema 19, following schema 18 model review
+and the schema 17 input-budget fix. New lesson prose is English; source quotations
+retain their original language. Source-language discovery and exclusion phrases are
+separate index metadata. The work adds model quality review, concise delivery, and recovery
 when captured sources change. Learning details show review counts and reasons;
 knowledge details distinguish model review from external verification. Overview
 checks the repository from which the viewer was launched and explains missing hook

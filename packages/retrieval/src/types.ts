@@ -21,6 +21,7 @@ export interface KnowledgeProjection {
   readonly projectionVersion: 1;
   readonly sourceDigest: string;
   readonly searchAliases?: readonly string[];
+  readonly searchExclusions?: readonly string[];
   readonly topicKey: string;
 }
 
@@ -147,6 +148,7 @@ export interface KnowledgeRetrievalQuery {
 export interface RetrievedKnowledge {
   readonly candidate: KnowledgeCandidate;
   readonly searchAliases?: readonly string[];
+  readonly searchExclusions?: readonly string[];
   readonly score: number;
   readonly deliveryMode?: "convention" | "reference";
   readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];

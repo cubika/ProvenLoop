@@ -134,7 +134,9 @@ const validateProjection = (
     record.content.trim().length === 0 ||
     !/^[a-f0-9]{64}$/u.test(record.sourceDigest) ||
     (record.searchAliases !== undefined && (!Array.isArray(record.searchAliases) ||
-      record.searchAliases.some((alias) => typeof alias !== "string" || alias.trim().length === 0 || alias.length > 256)))
+      record.searchAliases.some((alias) => typeof alias !== "string" || alias.trim().length === 0 || alias.length > 256))) ||
+    (record.searchExclusions !== undefined && (!Array.isArray(record.searchExclusions) ||
+      record.searchExclusions.some((term) => typeof term !== "string" || term.trim().length < 2 || term.length > 64)))
   ) {
     throw new Error("Knowledge projection is invalid.");
   }
@@ -146,6 +148,7 @@ const validateProjection = (
     projectionVersion: 1,
     sourceDigest: record.sourceDigest,
     ...(record.searchAliases === undefined ? {} : { searchAliases: [...record.searchAliases] }),
+    ...(record.searchExclusions === undefined ? {} : { searchExclusions: [...record.searchExclusions] }),
     topicKey: record.topicKey.trim(),
   };
 };

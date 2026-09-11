@@ -32,7 +32,7 @@ export interface LearningInferenceOptions {
 
 export class CopilotLearningProvider {
   public readonly timeoutMs = 100_000;
-  public readonly identity = { provider: "github-copilot", model: "host-default", version: "copilot-extractor-v9" };
+  public readonly identity = { provider: "github-copilot", model: "host-default", version: "copilot-extractor-v10" };
   readonly #runner: CommandRunner;
   readonly #prepared = new WeakMap<LearningWindow, ReturnType<typeof prepareLearningInput>>();
   public constructor(private readonly options: { readonly temporaryRoot: string; readonly runner?: CommandRunner; readonly enabled: () => Promise<boolean> }) {
@@ -97,7 +97,7 @@ export class CopilotLearningProvider {
         const assessment = learningDistillationReviewSchema.parse(review);
         assessment.rationale = sanitizeDiagnostic(assessment.rationale).slice(0, 512);
         const entry = { ...proposal, distillation: createLearningDistillation(proposal, window.sources, assessment,
-          { ...this.identity, version: "copilot-distillation-review-v1" }, new Date().toISOString()) };
+          { ...this.identity, version: "copilot-distillation-review-v2" }, new Date().toISOString()) };
         if (hasAcceptedLearningDistillation(entry, window.sources)) reviewed.set(proposal, entry);
         else reasons.push("Quality review: " + Object.entries(assessment.criteria).filter(([, accepted]) => !accepted).map(([key]) => key).join(", "));
       }

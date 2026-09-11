@@ -44,6 +44,34 @@ using temporary data and a fake Copilot host. The first packaging attempts hit t
 sandbox npm-cache and Windows process-inspection boundaries; the isolated check passed
 with a workspace cache and authorized native process inspection.
 
+## English lesson follow-up, 2026-09-11
+
+Extractor v10 and reviewer v2 were checked on an authored Chinese conversation. The
+actual provider returned English lesson text, applicability, exclusions, retention
+explanations, and review rationale while preserving the Chinese source quotations.
+No original evidence was translated.
+
+A follow-up with original-language search metadata returned an English documentation
+lesson for a Chinese documentation task in 290 rendered tokens. That run retained
+one proposal and rejected another for support/scope. An earlier attempt rejected
+both proposals; those results remain in the local attempt ledger. This confirms a
+working path, not consistent quality across all phrasings. The reviewer prompt was
+subsequently clarified to distinguish excluded task contexts from conditions within
+an otherwise applicable task.
+
+Evidence is under `.provenloop/english-distillation-validation/` and
+`.provenloop/english-query-validation/`. The latter diagnostic uses the same provider
+with an injected process runner to retain synthetic responses; it does not test the
+production supervisor or installed automatic hooks. Regression tests cover Chinese
+discovery, Chinese and English exclusions, unchanged identifiers/quotations, and
+rejection of fabricated or modified search metadata.
+
+Validation passed 1,188 unit tests with five existing skips. Integration passed 272
+of 273 tests on the initial run; the repository-version binding test observed edits
+during its comparison and passed with all four aggregate tests after changes stopped.
+Build, type checks, lint, and the isolated packed-installation/upgrade check passed.
+These changes use schema 19 and remain unreleased.
+
 ## Earlier agent-experience record
 
 The [implementation contract](agent-experience-learning.md) was written before source changes. This record separates model extraction, deterministic runtime replay and live-host acceptance. The existing user-correction path remains covered by regression tests.

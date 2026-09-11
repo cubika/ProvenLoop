@@ -67,6 +67,11 @@ export const shellLearningPredicateSchema = z.object({
 }).strict();
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
+  // Original-language search phrases only; final lesson prose remains English.
+  queryTerms: z.object({
+    include: z.array(z.string().trim().min(2).max(64)).max(8),
+    exclude: z.array(z.string().trim().min(2).max(64)).max(8),
+  }).strict().optional(),
   distillation: learningDistillationSchema.optional(),
   retention: learningRetentionSchema.optional(),
   supportingSources: z.array(learningSupportingSourceSchema).min(1).max(8).optional(),

@@ -136,11 +136,12 @@ const nonApplicabilityMatches = (
   candidate: KnowledgeCandidate,
   requestTokens: readonly string[],
   requestText: string,
+  searchExclusions: readonly string[] = [],
 ): boolean => {
   const normalizedRequest = requestText
     .normalize("NFKC")
     .toLocaleLowerCase("en-US");
-  return candidate.nonApplicability.some((condition) => {
+  return [...candidate.nonApplicability, ...searchExclusions].some((condition) => {
     const normalizedCondition = condition
       .normalize("NFKC")
       .toLocaleLowerCase("en-US");
@@ -252,6 +253,7 @@ const stalePenalty = (
 };
 
 interface AggregatedKnowledge {
+  readonly searchExclusions?: RetrievedKnowledge["searchExclusions"];
   readonly deliveryMode?: RetrievedKnowledge["deliveryMode"];
   readonly sources?: RetrievedKnowledge["sources"];
   readonly researchSummary?: RetrievedKnowledge["researchSummary"];
@@ -966,6 +968,7 @@ export class ContextRetrievalService {
               input.candidate,
               requestTokens,
               requestText,
+              input.searchExclusions,
             ),
         )
         .map((input) =>
@@ -1672,6 +1675,7 @@ export class ContextRetrievalService {
       );
       return {
         candidate: hit.candidate,
+        ...(hit.searchExclusions ? { searchExclusions: hit.searchExclusions } : {}),
         ...(hit.deliveryMode ? { deliveryMode: hit.deliveryMode, sources: hit.sources } : {}),
         ...(hit.researchSummary ? { researchSummary: hit.researchSummary } : {}),
         ...(hit.distilledLesson ? { distilledLesson: hit.distilledLesson } : {}),

@@ -973,3 +973,16 @@ A separate before/after documentation task changed from Chinese output to Englis
 after receiving the distilled convention. These bounded examples and the runtime
 regressions are recorded in [agent experience validation](agent-experience-validation.md#reviewed-distillation-development-check-2026-09-11);
 they do not establish broad semantic quality or sustained productivity gains.
+
+### Follow-up: English as the stored lesson language
+
+The user requested one language for distilled experience on 2026-09-11. New lesson
+prose, applicability, exclusions, retention explanations, and concept keys now target
+English regardless of the input language. The separate reviewer checks this policy
+and translation fidelity. Original evidence quotations and executable identifiers
+remain unchanged. The language of a lesson does not override a preference within
+it, such as communicating with the user in Chinese. Extractor v10 and reviewer v2
+identify this behavior; existing records retain their content and provenance.
+Schema 19 adds bounded source-language search phrases so Chinese task requests can
+still discover English lessons. Excluded contexts remain separate from positive
+search terms, and both are checked against quoted sources and the model review.
