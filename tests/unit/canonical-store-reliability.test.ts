@@ -420,6 +420,32 @@ describe("canonical verification evidence", () => {
 });
 
 describe("canonical verified recovery", () => {
+  it("does not restore an automatic-revival marker over a later explicit archive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provenloop-expiry-restore-")); roots.push(root);
+    const path = join(root, "canonical.db"); const snapshot = join(root, "auto-expired.db");
+    const store = new CanonicalSqliteStore(path);
+    try {
+      const lesson: KnowledgeCandidate = { ...candidate, knowledgeId: "learning-knowledge-expiry", evidenceTier: "inferred", evidenceMarks: [], state: "candidate", expiresAt: timestamp };
+      store.upsertKnowledgeCandidates([lesson]); expect(store.archiveExpiredLearning(lesson.knowledgeId, new Date("2026-09-02T00:00:00Z"))).toBe(true);
+      await store.backupTo(snapshot);
+      store.upsertKnowledgeCandidates([{ ...lesson, state: "archived" }]);
+      await expect(CanonicalSqliteStore.restoreFromBackup(snapshot, path)).rejects.toThrow("explicit lifecycle control");
+    } finally { store.close(); }
+  });
+
+  it("cascades new learning lifecycle markers when their knowledge is removed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provenloop-expiry-delete-")); roots.push(root);
+    const path = join(root, "canonical.db"); const store = new CanonicalSqliteStore(path); const db = new DatabaseSync(path);
+    try {
+      const lesson: KnowledgeCandidate = { ...candidate, knowledgeId: "learning-knowledge-expiry", evidenceTier: "inferred", evidenceMarks: [], state: "candidate", expiresAt: timestamp };
+      store.upsertKnowledgeCandidates([lesson]); store.archiveExpiredLearning(lesson.knowledgeId, new Date("2026-09-02T00:00:00Z"));
+      db.prepare("INSERT INTO learning_relation_conflicts VALUES (?)").run(lesson.knowledgeId); db.exec("PRAGMA foreign_keys=ON;");
+      db.prepare("DELETE FROM knowledge_candidates WHERE knowledge_id=?").run(lesson.knowledgeId);
+      for (const table of ["learning_auto_expiry", "learning_relation_conflicts"]) expect(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()?.count).toBe(0);
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { db.close(); store.close(); }
+  });
+
   it.each(["revoke", "correct"] as const)("refuses an older backup that would undo the user %s control", async (kind) => {
     const root = await mkdtemp(join(tmpdir(), "provenloop-control-restore-")); roots.push(root);
     const path = join(root, "canonical.db"); const snapshot = join(root, "before-control.db");

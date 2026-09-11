@@ -1,4 +1,4 @@
-import { learningProposalSource, type LearningWindow, type LearningJob, type LearningToolContract, type RuleProposal, type LearningRecoveryReceipt } from "@provenloop/contracts";
+import { learningProposalSource, type LearningWindow, type LearningJob, type LearningToolContract, type RuleProposal, type LearningRecoveryReceipt, type LearningComparisonCandidate } from "@provenloop/contracts";
 import { buildLearningWindows, validateLearningResponse, verifyLearningRecovery, learningKnowledgeCandidate, learningRecoveryMayGainEvidence, sha256, sanitizeDiagnostic } from "@provenloop/domain";
 import type { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
@@ -6,8 +6,8 @@ import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
 export interface LearningInferenceProvider {
   readonly timeoutMs?: number;
   readonly identity: { readonly provider: string; readonly model: string; readonly version: string };
-  prepare?(window: LearningWindow): void;
-  infer(window: LearningWindow, options: { readonly signal: AbortSignal; readonly reserveReviewAttempt?: () => boolean | Promise<boolean> }): Promise<unknown>;
+  prepare?(window: LearningWindow, priorKnowledge?: readonly LearningComparisonCandidate[]): void;
+  infer(window: LearningWindow, options: { readonly signal: AbortSignal; readonly reserveReviewAttempt?: () => boolean | Promise<boolean>; readonly priorKnowledge?: readonly LearningComparisonCandidate[] }): Promise<unknown>;
 }
 export interface LearningCoordinatorOptions {
   readonly store: CanonicalSqliteStore; readonly provider: LearningInferenceProvider;
@@ -44,7 +44,9 @@ export class LearningCoordinator {
           store.transitionLearningJob({ ...job, state: "archived", updatedAt: time.toISOString() }, job.state);
           for (const proposal of store.learningProposalsForJob(job.jobId)) {
             const candidate = store.knowledgeCandidates([proposal.knowledgeId])[0];
-            if (candidate?.state === "candidate") store.upsertKnowledgeCandidates([{ ...candidate, state: "archived" }]);
+            if (candidate?.state === "candidate" && candidate.expiresAt && Date.parse(candidate.expiresAt) <= time.getTime()) {
+              store.archiveExpiredLearning(candidate.knowledgeId, time);
+            }
           }
         } else if (job.state === "running" && job.deadline && Date.parse(job.deadline) <= time.getTime()) {
           store.transitionLearningJob({ ...job, state: job.attempts >= 3 ? "failed" : "pending", updatedAt: time.toISOString(), error: "Inference lease expired." }, "running");
@@ -112,8 +114,9 @@ export class LearningCoordinator {
         return { status: "cancelled", jobId: pending.jobId };
       }
       if (!await this.options.enabled()) return { status: "disabled" };
+      const priorKnowledge = store.learningComparisonCandidates(window);
       try {
-        provider.prepare?.(window);
+        provider.prepare?.(window, priorKnowledge);
       } catch (error) {
         const permanentInputFailure = error !== null && typeof error === "object" &&
           "code" in error && error.code === "input_too_large" && "permanent" in error && error.permanent === true;
@@ -162,7 +165,7 @@ export class LearningCoordinator {
         inference = Promise.resolve().then(() => {
           if (providerSignal.aborted) throw new Error("Learning inference cancelled.");
           providerCalled = true;
-          return provider.infer(window, { signal: providerSignal, reserveReviewAttempt: async () => {
+          return provider.infer(window, { signal: providerSignal, priorKnowledge, reserveReviewAttempt: async () => {
             if (providerSignal.aborted || !await this.options.enabled() || store.hasActiveDeletion() || !store.learningSourcesCurrent(window)) return false;
             return store.reserveLearningAttempt(now(), this.options.dailyLimit ?? 200);
           } });
@@ -180,9 +183,15 @@ export class LearningCoordinator {
         }
         const parsed = validateLearningResponse(window, output);
         const proposals: RuleProposal[] = parsed.proposals.map((entry): RuleProposal => {
+          const equivalent = entry.relations?.find((relation) => relation.kind === "equivalent");
           const identity = sha256([window.repoId, entry.shellPredicate ? [entry.shellPredicate, window.events.find((event) => event.event.eventId === learningProposalSource(entry).eventId)?.event.commitSha] : entry.predicate ?? [entry.rule, entry.trigger]]);
+          const legacyId = `learning-knowledge-${identity.slice(0, 24)}`;
+          const replacesIdentity = entry.relations?.some((relation) => relation.kind === "supersedes") &&
+            store.knowledgeCandidates([legacyId]).length > 0;
+          const knowledgeId = equivalent?.knowledgeId ?? (replacesIdentity
+            ? `learning-knowledge-${sha256([window.repoId, entry.rule, entry.trigger, entry.exclusions, entry.retrievalScope, entry.relations]).slice(0, 24)}` : legacyId);
           return { ...entry, schemaVersion: 1, proposalId: `learning-proposal-${sha256([running.jobId, entry]).slice(0, 24)}`, jobId: running.jobId,
-            knowledgeId: `learning-knowledge-${identity.slice(0, 24)}`, createdAt: window.createdAt, expiresAt: running.expiresAt, sourceDigests: window.sources };
+            knowledgeId, createdAt: window.createdAt, expiresAt: running.expiresAt, sourceDigests: window.sources };
         }).filter((proposal) => !store.learningProposalWasRecalled(proposal, window));
         const receipts = proposals.flatMap((proposal): LearningRecoveryReceipt[] => {
           const receipt = verifyLearningRecovery(proposal, window.events, this.options.contracts?.() ?? [], now());

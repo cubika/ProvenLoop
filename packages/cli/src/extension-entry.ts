@@ -31,6 +31,7 @@ export const runProvenLoopCopilotExtension = async (
   let timer: NodeJS.Timeout | undefined;
   let nextObservationAt = 0;
   let deliveryNoticeSent = false;
+  let deliveryNoticePending = false;
   let learningNoticeSent = false;
   let learningRunning = false;
   let learningTask: Promise<void> | undefined;
@@ -72,9 +73,21 @@ export const runProvenLoopCopilotExtension = async (
         }),
       });
       if (stopped || response.items.length === 0) return undefined;
-      if (!deliveryNoticeSent && host.session?.log && await notificationsEnabled()) {
-        deliveryNoticeSent = true;
-        void host.session.log(`ProvenLoop provided ${response.items.length} scoped guidance item(s). Sources: ${response.items.map((item) => item.explanationRef).join(", ")}`, { ephemeral: true }).catch(() => undefined);
+      if (!deliveryNoticeSent && !deliveryNoticePending && host.session?.log && await notificationsEnabled() &&
+          !stopped && !deliveryNoticeSent && !deliveryNoticePending) {
+        const first = response.items[0];
+        if (first) {
+          deliveryNoticePending = true;
+          void host.session.log([
+            "ProvenLoop supplied this guidance for the current task:",
+            first.guidance,
+            `When it applies: ${first.applicabilitySummary}`,
+            "Open ProvenLoop Usage to inspect the source and compare what the agent does next.",
+          ].join("\n"), { ephemeral: true })
+            .then(() => { deliveryNoticeSent = true; })
+            .catch(() => undefined)
+            .finally(() => { deliveryNoticePending = false; });
+        }
       }
       return response.items.map((item) => [
         item.guidance,

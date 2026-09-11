@@ -72,6 +72,79 @@ during its comparison and passed with all four aggregate tests after changes sto
 Build, type checks, lint, and the isolated packed-installation/upgrade check passed.
 These changes use schema 19 and remain unreleased.
 
+## Product-review fixes, 2026-09-11
+
+The review of dd2811f found concrete failures in task exclusion, independent rule
+updates, expiry, learning coverage, and visible use. The unreleased schema 20 fixes
+are recorded in [FB-009](feedback.md#fb-009-closing-the-gaps-found-by-the-product-review).
+
+The same six authored cases were rerun with the actual Copilot provider:
+
+| Case | Before the fixes | After the fixes |
+|---|---|---|
+| Order retry after commit plus response timeout | Proposed rule rejected | Retained a narrow idempotency-key rule and returned it for a related English task |
+| Out-of-order search responses | Review rationale exceeded 512 characters and failed the attempt | Retained current-request ownership of displayed results with the audit-log condition; related English and Chinese tasks received it |
+| Package unit tests, excluding integration tests | Rule was incorrectly returned for an integration-test task | Related English and Chinese tasks received it; the integration-test task received none |
+| Transient identical retry | No retained lesson | No retained lesson |
+| One-time screenshot edit | No retained lesson | No retained lesson |
+| Unsupported claim that all production caches should be disabled | No retained lesson | The model rejected that claim and retained a narrow warning about drawing production conclusions from a fixture-only failure |
+
+The last result is not a clean no-output negative case. It shows a source-supported
+qualification rather than adoption of the false universal claim, but its lasting value
+and relevance still need review. English-only source material also does not guarantee
+retrieval for an arbitrary Chinese paraphrase. These examples do not establish perfect
+noise rejection, recall, or semantics.
+
+Two authored sessions then exercised actual extraction, comparison, review, canonical
+storage, and retrieval. The first learned English repository documentation; the second
+explicitly changed that policy to Spanish. The former candidate became superseded and
+only the Spanish rule was returned afterward. An earlier attempt failed because the
+model copied a singleton trigger array from a comparison card; the final provider
+normalizes only that unambiguous shape and rejects multiple triggers.
+
+Evidence is retained under `.provenloop/review-current/` for the initial failures and
+`.provenloop/review-fixes/` for the reruns, including the unsuccessful lifecycle attempts.
+These remain authored cases with real provider calls and local runtime replay.
+
+### Real plugin learning and later-session use
+
+An isolated Copilot SDK host loaded the actual production plugin entry in a disposable
+Git repository, with its own profile, data root, and repository-hook permission. No
+user profile was copied, and no real installation or database was upgraded.
+
+In run-DpsHLx, the user task stated an English-documentation convention with an ending
+Limitations section. The actual background provider retained the lesson, and Copilot
+displayed the new model-reviewed learning notice. The first later session received
+no guidance and wrote Chinese output without Limitations. Its real hook record was
+no_match: the 24-term query budget had dropped the topic words in favor of CJK fragments.
+That failure led to the segmented-word priority fix.
+
+After the query fix, a new real session reused the same automatically learned knowledge
+and original task prompt. The harness did not inject context, call remember/retrieve,
+or rewrite the stored rule. The actual hook returned the lesson in 384 tokens, and
+Copilot displayed the delivery notice. The answer was English and ended with a
+Limitations section. The existing temporary permission file remained unchanged.
+
+Evidence is in `.provenloop/live-learning-smoke/run-DpsHLx/evidence/` and its
+`later-only-C8Z2LI/` directory. The source learning and later successful use span a
+code fix; this is a before/after integration case, not a claim that one unchanged
+build passed an entire product-acceptance trial. A fresh run, run-IRCJNT, encountered
+a provider-unavailable pause and then a support rejection, so it did not reach useful
+retention. That failed run remains part of the evidence. Model consistency and
+long-term benefit still need broader measurement.
+
+Earlier harness attempts failed before useful work because of an ESM bundling issue,
+a wrong assumption about local marketplace cache paths, and an omitted SDK
+requestExtensions option. Those were diagnosed separately from product behavior.
+The final harness validates actual extension startup and automatic hook records.
+
+Repository checks passed 1,238 unit tests with five existing skips. The integration
+run passed 272 of 273 tests; its code-version consistency test observed concurrent
+documentation edits and passed with all four aggregate tests when rerun afterward.
+Type checks, lint, and focused lifecycle, deletion, source-binding, and retrieval
+regressions passed. Packed installation and upgrade checks use a fake host and remain
+separate from the real-host evidence above.
+
 ## Earlier agent-experience record
 
 The [implementation contract](agent-experience-learning.md) was written before source changes. This record separates model extraction, deterministic runtime replay and live-host acceptance. The existing user-correction path remains covered by regression tests.

@@ -18,7 +18,7 @@ import {
   type RetrievedKnowledge,
 } from "./types.js";
 import { learningApplicable } from "./learning-applicability.js";
-import { knowledgeProjectionFromCandidate } from "./projection.js";
+import { knowledgeProjectionFromCandidate, reviewedRetrievalScope } from "./projection.js";
 
 const eligible = (
   candidate: KnowledgeCandidate,
@@ -96,6 +96,7 @@ export class CanonicalKnowledgeRetriever {
     const sourceUseById = new Map<string, LearningSourceUse>();
     const learningApplicabilityById = new Map<string, readonly string[]>();
     const projectionsById = new Map<string, ReturnType<typeof knowledgeProjectionFromCandidate>>();
+    const retrievalScopesById = new Map<string, NonNullable<RetrievedKnowledge["retrievalScope"]>>();
     const deadline =
       options.timeoutMs === undefined
         ? undefined
@@ -152,6 +153,8 @@ export class CanonicalKnowledgeRetriever {
         );
         for (const candidate of unevaluatedCandidates) {
           projectionsById.set(candidate.knowledgeId, knowledgeProjectionFromCandidate(candidate, evidence.learningProposals));
+          const retrievalScope = reviewedRetrievalScope(candidate, evidence.learningProposals ?? []);
+          if (retrievalScope) retrievalScopesById.set(candidate.knowledgeId, retrievalScope);
           const sourceUse = learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords);
           if (sourceUse) sourceUseById.set(candidate.knowledgeId, sourceUse);
           const sourceApplicable = sourceUse !== undefined && query.worktree !== undefined &&
@@ -203,6 +206,7 @@ export class CanonicalKnowledgeRetriever {
           continue;
         }
         const sourceUse = sourceUseById.get(candidate.knowledgeId);
+        const retrievalScope = retrievalScopesById.get(candidate.knowledgeId);
         retrieved.push({
           ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
           ...(sourceUse?.researchSummary ? { researchSummary: sourceUse.researchSummary } : {}),
@@ -216,6 +220,7 @@ export class CanonicalKnowledgeRetriever {
             ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
           ...(projection?.searchAliases ? { searchAliases: projection.searchAliases } : {}),
           ...(projection?.searchExclusions ? { searchExclusions: projection.searchExclusions } : {}),
+          ...(retrievalScope ? { retrievalScope } : {}),
           score: hit.score,
         });
         if (retrieved.length === query.limit) {

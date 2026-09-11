@@ -32,7 +32,7 @@ import {
 } from "./copilot-cli-adapter.js";
 import type { CopilotSessionLike } from "./extension-runtime.js";
 import { CopilotLearningToolRegistry } from "./learning-tool-registry.js";
-import { hasCopilotLearningHookApproval } from "./automatic-host-capability.js";
+import { getCopilotAutomaticLearningHostCapability, hasCopilotLearningHookApproval } from "./automatic-host-capability.js";
 import { recoverPermissionBridges } from "./permission-bridge-recovery.js";
 import { homedir } from "node:os";
 import type { LearningToolContract } from "@provenloop/contracts";
@@ -293,7 +293,15 @@ export const runInstalledCopilotExtension = async (
     const hooksEnabled = learning.enabled &&
       await hasCopilotLearningHookApproval(options.copilotHome ?? environment.COPILOT_HOME ?? join(homedir(), ".copilot"),
         identity.worktreePath ?? process.cwd(), adapterVersion);
-    if (learning.enabled && !hooksEnabled) diagnostic("Automatic retrieval paused: grant Copilot repository-scoped ProvenLoop hook access, then restart this session. Capture and bounded extraction remain enabled.");
+    const quoteCommandArgument = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+    const statusCommand = `provenloop learning status --cwd ${quoteCommandArgument(identity.worktreePath ?? process.cwd())} --data-root ${quoteCommandArgument(paths.root)}`;
+    const reuseBlocker = !learning.enabled || hooksEnabled ? undefined
+      : getCopilotAutomaticLearningHostCapability(adapterVersion).status === "unverified"
+        ? `Automatic reuse is unavailable in this session: Copilot ${adapterVersion} has not been verified for ProvenLoop hooks. Run ${statusCommand} to check supported setup. Collection and extraction can continue.`
+        : observedRepositoryState(identity) !== "known_repo"
+          ? `Automatic reuse needs a Git repository. Open Copilot in a repository, run ${statusCommand}, and follow its setup steps.`
+          : `Automatic reuse is paused for this repository. Run provenloop learning approve-hooks --cwd ${quoteCommandArgument(identity.worktreePath ?? process.cwd())} --confirm, then restart Copilot here. This grants persistent access to session prompts and tool calls. Collection and extraction can continue. Check setup: ${statusCommand}.`;
+    if (reuseBlocker) diagnostic(reuseBlocker);
     let queueReady: Promise<void> | undefined;
     const initializeQueue = (): Promise<void> => {
       queueReady ??= queue.initialize().catch((error: unknown) => {
@@ -441,11 +449,11 @@ export const runInstalledCopilotExtension = async (
           if (!runtimeActive || input.sessionId !== sessionId || resolve(input.workingDirectory).toLowerCase() !== resolve(workspace.cwd ?? "").toLowerCase()) return;
           try {
             let builtinShell = false;
-            if (sdkSession?.rpc?.tools !== undefined) {
+            if (input.toolName !== undefined && sdkSession?.rpc?.tools !== undefined) {
               let timer: NodeJS.Timeout | undefined;
               const metadata = await Promise.race([sdkSession.rpc.tools.getCurrentMetadata(), new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 100); })]).finally(() => clearTimeout(timer));
-              if (metadata === undefined) return;
-              if (metadata.tools !== null) toolRegistry.replace(metadata.tools, adapterVersion);
+              if (metadata === undefined || metadata.tools === null) return;
+              toolRegistry.replace(metadata.tools, adapterVersion);
               builtinShell = metadata.tools?.some((entry) => entry.name === input.toolName &&
                 (entry.name === "powershell" || entry.name === "bash") &&
                 entry.mcpServerName === undefined && entry.mcpToolName === undefined) === true;
@@ -496,6 +504,10 @@ export const runInstalledCopilotExtension = async (
         }
         if (session.sessionId !== undefined && session.sessionId !== sessionId) {
           throw new Error("Joined SDK Session does not match SESSION_ID.");
+        }
+        if (reuseBlocker && learning.notificationsEnabled && session.log) {
+          void session.log(`ProvenLoop: ${reuseBlocker}`, { level: "warning", ephemeral: true })
+            .catch((error: unknown) => diagnostic(`Setup notice unavailable: ${sanitizeDiagnostic(error)}`));
         }
         if (
           session.sessionId === sessionId &&

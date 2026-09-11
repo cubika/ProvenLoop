@@ -31,7 +31,8 @@ import {
 import {
   branchContextSchema,
   learningWindowSchema, learningJobSchema, ruleProposalSchema, learningRecoveryReceiptSchema,
-  type LearningWindow, type LearningJob, type RuleProposal, type LearningRecoveryReceipt,
+  type LearningWindow, type LearningJob, type RuleProposal, type LearningRecoveryReceipt, type LearningComparisonCandidate,
+  learningComparisonCandidateSchema, learningProposalSource,
   captureEnvelopeSchema,
   captureQueueItemSchema,
   classifyRawEvent,
@@ -72,6 +73,7 @@ import {
   KnowledgeAdmissionPolicy,
   validateLearningResponse,
   hasAcceptedLearningDistillation,
+  learningSourceUse, researchTerms, containsPotentialSecret,
   conflictingShellLearning,
   selectAgentResearchEvents,
   closedAgentResearchTurn,
@@ -718,11 +720,23 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
     // Original-language discovery/exclusion phrases are bound to English lesson reviews.
     sql: "CREATE INDEX learning_proposal_query_terms ON learning_proposals(json_type(body_json, '$.queryTerms'));",
   },
+  {
+    version: 20,
+    // Reviewed relations, applicability metadata and inferred-lesson notices require this reader.
+    sql: `CREATE TABLE learning_auto_expiry (
+      knowledge_id TEXT PRIMARY KEY REFERENCES knowledge_candidates(knowledge_id) ON DELETE CASCADE,
+      expired_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE learning_relation_conflicts (
+      knowledge_id TEXT PRIMARY KEY REFERENCES knowledge_candidates(knowledge_id) ON DELETE CASCADE
+    ) STRICT;
+    CREATE INDEX learning_proposal_relations ON learning_proposals(json_type(body_json, '$.relations'));`,
+  },
 ] as const satisfies readonly SqliteMigration[];
 
 // Dependent rows precede their source tables; reset retains only schema and replay protection.
 const RECORD_RESET_TABLES = [
-  "learning_sources", "learning_proposals", "learning_notices", "learning_notice_work",
+  "learning_sources", "learning_proposals", "learning_notices", "learning_notice_work", "learning_auto_expiry", "learning_relation_conflicts",
   "learning_event_changes", "learning_prompt_work", "raw_event_enrichments",
   "correction_key_sources", "correction_opportunities", "context_use_records",
   "session_mutes", "feedback_events", "evidence_links", "process_claims", "queue_processing",
@@ -2428,14 +2442,105 @@ export class CanonicalSqliteStore {
     }
   }
 
+  public archiveExpiredLearning(knowledgeId: string, now: Date): boolean {
+    this.#assertNoRestoreBarrier();
+    const candidate = this.knowledgeCandidates([knowledgeId])[0];
+    if (!candidate || candidate.state !== "candidate" || !candidate.expiresAt ||
+        Date.parse(candidate.expiresAt) > now.getTime() || this.hasActiveDeletion()) return false;
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const archived = { ...candidate, state: "archived" as const };
+      this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
+        .run(JSON.stringify(archived), sha256(archived), now.toISOString(), knowledgeId);
+      this.#database.prepare("INSERT OR REPLACE INTO learning_auto_expiry VALUES (?,?)").run(knowledgeId, candidate.expiresAt);
+      this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(knowledgeId);
+      this.#database.exec("COMMIT;"); return true;
+    } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
+  }
+
+  #automaticLearningMutable(candidate: KnowledgeCandidate): boolean {
+    return candidate.scope === "repository" && candidate.evidenceTier === "inferred" && candidate.conflictsWith.length === 0 &&
+      (candidate.state === "candidate" || (candidate.state === "disputed" &&
+        Boolean(this.#database.prepare("SELECT 1 FROM learning_relation_conflicts WHERE knowledge_id=?").get(candidate.knowledgeId))) || (candidate.state === "archived" &&
+        Boolean(this.#database.prepare("SELECT 1 FROM learning_auto_expiry WHERE knowledge_id=?").get(candidate.knowledgeId)))) &&
+      !this.feedbackEvents(candidate.knowledgeId).some((event) => event.source === "user") && !this.knowledgeDeletionBlocked(candidate.knowledgeId);
+  }
+
+  /** Bounded comparison material. Relations remain proposals until the commit rechecks each digest. */
+  public learningComparisonCandidates(window: LearningWindow): readonly LearningComparisonCandidate[] {
+    this.#assertNoRestoreBarrier();
+    const anchor = window.events.find((entry) => entry.event.eventId === window.anchorEventId) ??
+      window.events.find((entry) => entry.event.trust === "user" && entry.event.timestamp === window.createdAt);
+    const normalize = (text: string) => text.normalize("NFKC").toLowerCase();
+    const query = normalize(anchor?.content?.message ?? "");
+    const generic = new Set(["以后", "应该", "必须", "这个", "我们", "现在", "需要", "不要", "使用", "仓库"]);
+    const chineseTerms = (value: string) => [...new Set((value.match(/[\p{Script=Han}]+/gu) ?? []).flatMap((span) =>
+      Array.from({ length: Math.max(0, span.length - 1) }, (_, index) => span.slice(index, index + 2))))].filter((term) => !generic.has(term));
+    const terms = [...new Set([...researchTerms(query), ...chineseTerms(query)])];
+    const rows = this.#database.prepare(`SELECT body_json FROM knowledge_candidates WHERE
+      json_extract(body_json,'$.scope')='repository' AND json_extract(body_json,'$.scopeId')=?
+      AND json_extract(body_json,'$.state') IN ('candidate','active','archived','disputed') ORDER BY updated_at DESC,knowledge_id`).iterate(window.repoId);
+    const ranked: { value: LearningComparisonCandidate; score: number }[] = [];
+    for (const row of rows) {
+      const candidate = knowledgeCandidateSchema.parse(JSON.parse(String(row.body_json)));
+      if (this.knowledgeDeletionBlocked(candidate.knowledgeId)) continue;
+      const mutable = this.#automaticLearningMutable(candidate);
+      const reviewed = this.learningProposals([candidate.knowledgeId]).filter((proposal) =>
+        hasAcceptedLearningDistillation(proposal, proposal.sourceDigests) && proposal.rule === candidate.content &&
+        sha256([proposal.trigger]) === sha256(candidate.appliesWhen) && sha256(proposal.exclusions) === sha256(candidate.nonApplicability) &&
+        proposal.sourceDigests.length === candidate.sourceEvidenceIds.length &&
+        proposal.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)) &&
+        (() => { const sourceWindow = this.learningWindow(proposal.jobId); return sourceWindow && this.learningSourcesCurrent(sourceWindow); })());
+      const prior = reviewed[0];
+      const parsed = learningComparisonCandidateSchema.safeParse({ knowledgeId: candidate.knowledgeId, targetDigest: sha256(candidate),
+        rule: candidate.content, trigger: candidate.appliesWhen, exclusions: candidate.nonApplicability, canonicalKey: prior?.canonicalKey,
+        state: candidate.state, evidenceTier: candidate.evidenceTier, mutable: mutable && prior !== undefined });
+      if (!parsed.success || JSON.stringify(parsed.data).length > 7000) continue;
+      const searchable = normalize([candidate.content, ...candidate.appliesWhen, prior?.canonicalKey ?? ""].join(" "));
+      let score = terms.filter((term) => searchable.includes(term)).length;
+      for (const proposal of reviewed) {
+        const quotes = [proposal.userSource?.quote, proposal.agentSource?.quote, ...(proposal.supportingSources ?? []).map((source) => source.quote),
+          ...(proposal.agentSource?.evidenceSources ?? []).map((source) => source.quote)].filter((quote): quote is string => quote !== undefined).map(normalize);
+        const aliases = proposal.queryTerms?.include.filter((term) => !containsPotentialSecret(term) &&
+          quotes.some((quote) => quote.includes(normalize(term)))) ?? [];
+        score += aliases.filter((alias) => !generic.has(normalize(alias)) && query.includes(normalize(alias))).length * 12;
+        // Older reviewed lessons may lack queryTerms. Their bound original-language
+        // evidence still supplies weak topic matches; it is never sent as new guidance.
+        score += terms.filter((term) => quotes.some((quote) => quote.includes(term))).length * 0.5;
+      }
+      ranked.push({ value: parsed.data, score });
+      ranked.sort((a, b) => b.score - a.score);
+      // Stream the complete repository while retaining only a bounded shortlist.
+      // Recency is a tie-breaker, never a prefilter that can hide an old policy.
+      if (ranked.length > 32) ranked.pop();
+    }
+    const selected: LearningComparisonCandidate[] = [];
+    for (const { value } of ranked) {
+      if (selected.length >= 8) break;
+      if (JSON.stringify([...selected, value]).length > 7000) continue;
+      selected.push(value);
+    }
+    return selected;
+  }
+
+  #reviewedLearningNoticeEligible(candidate: KnowledgeCandidate, now: Date): boolean {
+    if (!this.#automaticLearningMutable(candidate) || candidate.state !== "candidate" ||
+        (candidate.expiresAt && Date.parse(candidate.expiresAt) <= now.getTime()) ||
+        this.knowledgeCandidatesWithUnavailableSources([candidate]).size > 0) return false;
+    const evidence = this.knowledgeAdmissionEvidence([candidate]);
+    return Boolean(learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords)?.distilledLesson);
+  }
+
   public claimLearningActivationNotice(knowledgeId: string): boolean {
     this.#assertNoRestoreBarrier();
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       const candidate = this.knowledgeCandidates([knowledgeId])[0];
       if (this.hasActiveDeletion()) { this.#database.exec("ROLLBACK;"); return false; }
-      if (!candidate || candidate.state !== "active" || candidate.evidenceTier !== "externally_verified" || !knowledgeId.startsWith("learning-knowledge-") ||
-          !new KnowledgeAdmissionPolicy().evaluate({ candidate, ...this.knowledgeAdmissionEvidence([candidate]) }).admitted) {
+      const eligible = candidate && ((candidate.state === "active" && candidate.evidenceTier === "externally_verified" &&
+        new KnowledgeAdmissionPolicy().evaluate({ candidate, ...this.knowledgeAdmissionEvidence([candidate]) }).admitted) ||
+        this.#reviewedLearningNoticeEligible(candidate, this.#now()));
+      if (!candidate || !knowledgeId.startsWith("learning-knowledge-") || !eligible) {
         // Rotate ineligible entries so later valid notices still get a bounded turn.
         this.#database.prepare("UPDATE learning_notice_work SET rowid=(SELECT coalesce(max(rowid),0)+1 FROM learning_notice_work) WHERE knowledge_id=?").run(knowledgeId);
         this.#database.exec("COMMIT;"); return false;
@@ -2624,6 +2729,58 @@ export class CanonicalSqliteStore {
       if (!window || stored?.state !== (input.reevaluation ? "waiting_evidence" : "running") || Date.parse(job.updatedAt) >= Date.parse(job.expiresAt) || this.hasActiveDeletion() || !this.learningSourcesCurrent(window) ||
           proposals.some((proposal) => this.learningProposalWasRecalled(proposal, window)) ||
           candidates.some((item) => this.knowledgeDeletionBlocked(item.knowledgeId)) || this.knowledgeCandidatesWithUnavailableSources(candidates).size > 0) { this.#database.exec("ROLLBACK;"); return false; }
+      // A reviewed relationship is valid only against the exact candidate the
+      // reviewer compared. Source enrichment and user controls can invalidate it.
+      const relationTargets = new Map<string, KnowledgeCandidate>();
+      const rejectedRevisions = new Set<string>();
+      for (const proposal of proposals) {
+        if (!proposal.relations?.length) continue;
+        if (input.reevaluation || proposal.predicate || proposal.shellPredicate ||
+            !hasAcceptedLearningDistillation(proposal, window.sources)) { this.#database.exec("ROLLBACK;"); return false; }
+        for (const relation of proposal.relations) {
+          const target = this.knowledgeCandidates([relation.knowledgeId])[0];
+          const prior = target && this.learningProposals([target.knowledgeId]).find((entry) =>
+            hasAcceptedLearningDistillation(entry, entry.sourceDigests) && entry.rule === target.content &&
+            sha256([entry.trigger]) === sha256(target.appliesWhen) && sha256(entry.exclusions) === sha256(target.nonApplicability) &&
+            entry.sourceDigests.length === target.sourceEvidenceIds.length &&
+            entry.sourceDigests.every((source) => target.sourceEvidenceIds.includes(source.eventId)) &&
+            (() => { const priorWindow = this.learningWindow(entry.jobId); return priorWindow && this.learningSourcesCurrent(priorWindow); })());
+          if (!target || target.scopeId !== window.repoId || sha256(target) !== relation.targetDigest ||
+              !this.#automaticLearningMutable(target) || !prior ||
+              relationTargets.has(target.knowledgeId) || prior.retention?.kind !== proposal.retention?.kind ||
+              (relation.kind === "equivalent" && proposal.knowledgeId !== target.knowledgeId) ||
+              (relation.kind === "supersedes" && (!proposal.userSource || proposal.retention?.kind !== "convention" ||
+                prior.retention?.kind !== "convention" || proposal.knowledgeId === target.knowledgeId)) ||
+              this.knowledgeCandidatesWithUnavailableSources([target]).size > 0) { this.#database.exec("ROLLBACK;"); return false; }
+          relationTargets.set(target.knowledgeId, target);
+        }
+      }
+      // Exact concept keys are useful for a conservative conflict stop even when
+      // the extractor omitted a relation. Similarity never authorizes replacement.
+      for (const proposal of proposals) {
+        if (proposal.relations?.length || !proposal.canonicalKey || !hasAcceptedLearningDistillation(proposal, window.sources)) continue;
+        const peers = this.#database.prepare(`SELECT DISTINCT candidate.body_json FROM learning_proposals prior
+          JOIN knowledge_candidates candidate ON prior.knowledge_id=candidate.knowledge_id
+          WHERE json_extract(prior.body_json,'$.canonicalKey')=? AND json_extract(candidate.body_json,'$.scopeId')=?
+          AND candidate.knowledge_id != ? AND json_extract(candidate.body_json,'$.state') IN ('candidate','active','archived')`)
+          .all(proposal.canonicalKey, window.repoId, proposal.knowledgeId);
+        const conflicts = peers.map((row) => knowledgeCandidateSchema.parse(JSON.parse(String(row.body_json)))).filter((peer) =>
+          peer.content !== proposal.rule || sha256(peer.appliesWhen) !== sha256([proposal.trigger]) || sha256(peer.nonApplicability) !== sha256(proposal.exclusions));
+        if (conflicts.length === 0) continue;
+        for (const peer of conflicts) if (this.#automaticLearningMutable(peer) && peer.state === "candidate") {
+          const disputed = { ...peer, state: "disputed" as const };
+          this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
+            .run(JSON.stringify(disputed), sha256(disputed), job.updatedAt, peer.knowledgeId);
+          this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(peer.knowledgeId);
+          this.#database.prepare("INSERT OR IGNORE INTO learning_relation_conflicts VALUES (?)").run(peer.knowledgeId);
+        }
+        const failed = { ...job, state: "failed" as const, result: "error" as const, error: "A prior lesson with the same concept requires an explicit relationship review.",
+          ...(job.distillation ? { distillation: { ...job.distillation, accepted: 0, rejected: job.distillation.proposed,
+            reasons: [...job.distillation.reasons, "Retention: unresolved relationship"].slice(0, 3) } } : {}) };
+        this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=?")
+          .run(failed.state, JSON.stringify(failed), job.updatedAt, job.jobId);
+        this.#database.exec("COMMIT;"); return false;
+      }
       if (input.reevaluation) {
         const priorRow = this.#database.prepare("SELECT body_json FROM learning_jobs WHERE job_id=?").get(job.jobId);
         const priorJob = priorRow ? learningJobSchema.parse(JSON.parse(String(priorRow.body_json))) : undefined;
@@ -2664,9 +2821,8 @@ export class CanonicalSqliteStore {
             this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?").run(JSON.stringify(candidate), sha256(candidate), candidate.validatedAt ?? candidate.createdAt, candidate.knowledgeId);
             this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
           }
-          if (existing.state === "candidate" && existing.evidenceTier === "inferred" && existing.conflictsWith.length === 0 &&
-              candidate.state === "candidate" && candidate.evidenceTier === "inferred" && !userControls && !input.reevaluation &&
-              (existing.expiresAt === undefined || Date.parse(job.updatedAt) < Date.parse(existing.expiresAt))) {
+          if (this.#automaticLearningMutable(existing) && candidate.state === "candidate" &&
+              candidate.evidenceTier === "inferred" && !userControls && !input.reevaluation) {
             const incoming = proposals.find((proposal) => proposal.knowledgeId === candidate.knowledgeId &&
               hasAcceptedLearningDistillation(proposal, window.sources) && sha256(proposal.sourceDigests) === sha256(window.sources) &&
               candidate.content === proposal.rule && sha256(candidate.appliesWhen) === sha256([proposal.trigger]) &&
@@ -2678,21 +2834,63 @@ export class CanonicalSqliteStore {
               existing.sourceEvidenceIds.length === proposal.sourceDigests.length &&
               proposal.sourceDigests.every((source) => existing.sourceEvidenceIds.includes(source.eventId)));
             const priorWindows = priorProposals.map((proposal) => this.learningWindow(proposal.jobId));
-            if (incoming && priorWindows.some((priorWindow) => priorWindow?.windowId === window.windowId) &&
-                priorWindows.every((priorWindow) => priorWindow !== undefined && !this.learningSourcesCurrent(priorWindow))) {
+            const anchorId = incoming && learningProposalSource(incoming).eventId;
+            const currentTask = window.origin === "agent" ? window.events.find((entry) => entry.event.trust === "user" && entry.event.eventType === "prompt.submitted")?.event.eventId : anchorId;
+            const independent = anchorId && currentTask && priorWindows.length > 0 && priorWindows.every((priorWindow) =>
+              priorWindow && priorWindow.windowId !== window.windowId && !priorWindow.sources.some((source) => source.eventId === currentTask));
+            const exact = candidate.content === existing.content && sha256(candidate.appliesWhen) === sha256(existing.appliesWhen) &&
+              sha256(candidate.nonApplicability) === sha256(existing.nonApplicability) && priorProposals.some((prior) =>
+                sha256(prior.retrievalScope) === sha256(incoming?.retrievalScope));
+            const equivalent = incoming?.relations?.some((relation) => relation.kind === "equivalent" && relation.knowledgeId === existing.knowledgeId);
+            const enrichment = existing.state === "candidate" && priorWindows.some((priorWindow) => priorWindow?.windowId === window.windowId) &&
+              priorWindows.every((priorWindow) => priorWindow !== undefined && !this.learningSourcesCurrent(priorWindow));
+            if (incoming && (enrichment || (independent && (equivalent || (exact && existing.state !== "disputed"))))) {
               const expiry = [existing.expiresAt, candidate.expiresAt].filter((value): value is string => value !== undefined)
                 .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+              const renewedExpiry = [existing.expiresAt, candidate.expiresAt].filter((value): value is string => value !== undefined)
+                .sort((left, right) => Date.parse(right) - Date.parse(left))[0];
               const refreshed = normalizedKnowledgeCandidate({ ...candidate, createdAt: existing.createdAt,
                 importance: existing.importance, utility: existing.utility, coverage: existing.coverage,
-                ...(expiry ? { expiresAt: expiry } : {}) });
+                ...(independent && renewedExpiry ? { expiresAt: renewedExpiry } : expiry ? { expiresAt: expiry } : {}) });
               this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
                 .run(JSON.stringify(refreshed), sha256(refreshed), job.updatedAt, candidate.knowledgeId);
+              this.#database.prepare("DELETE FROM learning_auto_expiry WHERE knowledge_id=?").run(candidate.knowledgeId);
+              this.#database.prepare("DELETE FROM learning_relation_conflicts WHERE knowledge_id=?").run(candidate.knowledgeId);
+              if (this.#reviewedLearningNoticeEligible(refreshed, new Date(job.updatedAt))) {
+                this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
+              }
+            } else if (incoming && independent && !exact && !equivalent) {
+              // Changed exceptions need an explicit relationship review; stop
+              // returning the obsolete wording while that ambiguity is unresolved.
+              const disputed = { ...existing, state: "disputed" as const };
+              this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
+                .run(JSON.stringify(disputed), sha256(disputed), job.updatedAt, existing.knowledgeId);
+              this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(existing.knowledgeId);
+              this.#database.prepare("INSERT OR IGNORE INTO learning_relation_conflicts VALUES (?)").run(existing.knowledgeId);
+              rejectedRevisions.add(incoming.proposalId);
+              this.#database.prepare("DELETE FROM learning_proposals WHERE proposal_id=?").run(incoming.proposalId);
             }
           }
           continue;
         }
         this.#database.prepare("INSERT INTO knowledge_candidates VALUES (?,?,?,?,?,?)").run(candidate.knowledgeId, candidate.schemaVersion, JSON.stringify(candidate), sha256(candidate), candidate.createdAt, candidate.validatedAt ?? candidate.createdAt);
-        if (candidate.state === "active") this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
+        if (candidate.state === "active" || this.#reviewedLearningNoticeEligible(candidate, new Date(job.updatedAt))) {
+          this.#database.prepare("INSERT OR IGNORE INTO learning_notice_work VALUES (?)").run(candidate.knowledgeId);
+        }
+      }
+      for (const proposal of proposals) for (const relation of proposal.relations ?? []) {
+        if (relation.kind !== "supersedes") continue;
+        const target = relationTargets.get(relation.knowledgeId);
+        const replacement = this.knowledgeCandidates([proposal.knowledgeId])[0];
+        if (!target || !replacement || replacement.state !== "candidate" || replacement.content !== proposal.rule) {
+          this.#database.exec("ROLLBACK;"); return false;
+        }
+        const superseded = { ...target, state: "superseded" as const };
+        this.#database.prepare("UPDATE knowledge_candidates SET body_json=?,source_digest=?,updated_at=? WHERE knowledge_id=?")
+          .run(JSON.stringify(superseded), sha256(superseded), job.updatedAt, target.knowledgeId);
+        this.#database.prepare("DELETE FROM learning_notice_work WHERE knowledge_id=?").run(target.knowledgeId);
+        this.#database.prepare("DELETE FROM learning_auto_expiry WHERE knowledge_id=?").run(target.knowledgeId);
+        this.#database.prepare("DELETE FROM learning_relation_conflicts WHERE knowledge_id=?").run(target.knowledgeId);
       }
       const shellPeers = this.#learningShellPeers(receipts);
       for (const incoming of shellPeers) {
@@ -2709,8 +2907,12 @@ export class CanonicalSqliteStore {
           }
         }
       }
-      this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=?").run(job.state, JSON.stringify(job), job.updatedAt, job.jobId);
-      this.#database.exec("COMMIT;"); return true;
+      const completedJob = rejectedRevisions.size ? { ...job, state: "failed" as const, result: "error" as const,
+        error: "Changed lesson conditions require an explicit relationship review.",
+        ...(job.distillation ? { distillation: { ...job.distillation, accepted: Math.max(0, job.distillation.accepted - rejectedRevisions.size),
+          rejected: job.distillation.rejected + rejectedRevisions.size, reasons: [...job.distillation.reasons, "Retention: unresolved relationship"].slice(0, 3) } } : {}) } : job;
+      this.#database.prepare("UPDATE learning_jobs SET state=?,body_json=?,updated_at=? WHERE job_id=?").run(completedJob.state, JSON.stringify(completedJob), job.updatedAt, job.jobId);
+      this.#database.exec("COMMIT;"); return rejectedRevisions.size === 0;
     } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
   }
 
@@ -2897,6 +3099,7 @@ export class CanonicalSqliteStore {
     const requiredLearningSuppressions = new Set<string>();
     const requiredUserFeedback = new Map<string, string>();
     const requiredLifecycleStates = new Map<string, string>();
+    const requiredLearningMutability = new Map<string, boolean>();
     let requiredResetCutoff: string | undefined;
     let installedIncompleteDeletion = false;
     let requiredDeletionKey: string | undefined;
@@ -2938,6 +3141,10 @@ export class CanonicalSqliteStore {
         if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 3) {
           for (const row of current.prepare("SELECT knowledge_id,body_json FROM knowledge_candidates WHERE json_extract(body_json, '$.state') IN ('archived','disputed','superseded')").all()) {
             requiredLifecycleStates.set(String(row.knowledge_id), String(JSON.parse(String(row.body_json)).state));
+            if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 20) {
+              const id = String(row.knowledge_id);
+              requiredLearningMutability.set(id, Boolean(current.prepare("SELECT 1 FROM learning_auto_expiry WHERE knowledge_id=? UNION ALL SELECT 1 FROM learning_relation_conflicts WHERE knowledge_id=?").get(id, id)));
+            }
           }
         }
         if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 11) {
@@ -3121,6 +3328,10 @@ export class CanonicalSqliteStore {
           const row = source.prepare("SELECT body_json FROM knowledge_candidates WHERE knowledge_id=?").get(knowledgeId);
           if (!row || JSON.parse(String(row.body_json)).state !== state) {
             throw new InvalidCanonicalSchemaError("Backup would reverse an installed knowledge lifecycle state.");
+          }
+          if (requiredLearningMutability.get(knowledgeId) === false && asNumber(source.prepare("PRAGMA user_version").get()?.user_version) >= 20 &&
+              source.prepare("SELECT 1 FROM learning_auto_expiry WHERE knowledge_id=? UNION ALL SELECT 1 FROM learning_relation_conflicts WHERE knowledge_id=?").get(knowledgeId, knowledgeId)) {
+            throw new InvalidCanonicalSchemaError("Backup would restore automatic learning over an explicit lifecycle control.");
           }
         }
         await backup(source, temporaryPath);
@@ -3844,12 +4055,18 @@ export class CanonicalSqliteStore {
       if (sourceIds.has(String(row.event_id))) affectedLearningJobs.add(String(row.job_id));
     }
     if (targetType === "knowledge") for (const proposal of this.learningProposals([targetId])) affectedLearningJobs.add(proposal.jobId);
-    const affectedLearningKnowledge = new Set<string>();
+    const affectedLearningKnowledge = new Set<string>(targetType === "knowledge" ? [targetId] : []);
     const allLearningProposals = this.learningProposals();
     let learningChanged: boolean;
     do {
       learningChanged = false;
       for (const proposal of allLearningProposals) {
+        // Relationship reviews retain the compared identity and its digest. A
+        // descendant cannot keep that binding after its target is forgotten.
+        if (proposal.relations?.some((relation) => affectedLearningKnowledge.has(relation.knowledgeId)) &&
+            !affectedLearningJobs.has(proposal.jobId)) {
+          affectedLearningJobs.add(proposal.jobId); learningChanged = true;
+        }
         if (affectedLearningJobs.has(proposal.jobId) && !affectedLearningKnowledge.has(proposal.knowledgeId)) {
           affectedLearningKnowledge.add(proposal.knowledgeId); learningChanged = true;
         }
@@ -6172,6 +6389,12 @@ export class CanonicalSqliteStore {
            updated_at = excluded.updated_at`,
       );
       for (const candidate of this.#retainSupersededKnowledge(candidates)) {
+        // Explicit upserts are not the automatic-expiry transition. An archived
+        // record written here must not inherit permission to revive.
+        if (asNumber(this.#database.prepare("PRAGMA user_version").get()?.user_version) >= 20) {
+          this.#database.prepare("DELETE FROM learning_auto_expiry WHERE knowledge_id=?").run(candidate.knowledgeId);
+          this.#database.prepare("DELETE FROM learning_relation_conflicts WHERE knowledge_id=?").run(candidate.knowledgeId);
+        }
         upsert.run(
           candidate.knowledgeId,
           candidate.schemaVersion,

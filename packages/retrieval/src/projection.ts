@@ -11,18 +11,30 @@ import type {
   KnowledgeProjection,
 } from "./types.js";
 
-export const knowledgeProjectionFromCandidate = (
-  input: KnowledgeCandidate,
-  proposals: readonly RuleProposal[] = [],
-): KnowledgeProjection => {
-  const candidate = knowledgeCandidateSchema.parse(input);
-  const reviewed = proposals.filter((proposal) =>
+const reviewedProposals = (candidate: KnowledgeCandidate, proposals: readonly RuleProposal[]): readonly RuleProposal[] =>
+  proposals.filter((proposal) =>
     proposal.knowledgeId === candidate.knowledgeId && proposal.rule === candidate.content &&
     sha256([proposal.trigger]) === sha256(candidate.appliesWhen) && sha256(proposal.exclusions) === sha256(candidate.nonApplicability) &&
     proposal.sourceDigests.length === candidate.sourceEvidenceIds.length &&
     proposal.sourceDigests.every((source) => candidate.sourceEvidenceIds.includes(source.eventId)) &&
     hasAcceptedLearningDistillation(proposal, proposal.sourceDigests),
   );
+
+export const reviewedRetrievalScope = (
+  candidate: KnowledgeCandidate, proposals: readonly RuleProposal[],
+): RuleProposal["retrievalScope"] => {
+  const scopes = reviewedProposals(candidate, proposals).flatMap((proposal) => proposal.retrievalScope &&
+    !proposal.retrievalScope.excludedTasks.some(containsPotentialSecret) ? [proposal.retrievalScope] : []);
+  return scopes.length ? { excludedTasks: [...new Set(scopes.flatMap((scope) => scope.excludedTasks))].sort() } : undefined;
+};
+
+export const knowledgeProjectionFromCandidate = (
+  input: KnowledgeCandidate,
+  proposals: readonly RuleProposal[] = [],
+): KnowledgeProjection => {
+  const candidate = knowledgeCandidateSchema.parse(input);
+  const reviewed = reviewedProposals(candidate, proposals);
+  const retrievalScope = reviewedRetrievalScope(candidate, reviewed);
   const queryTerms = reviewed.flatMap((proposal) => {
     if (!proposal.queryTerms) return [];
     const normalize = (text: string): string => text.normalize("NFKC").toLowerCase();
@@ -46,8 +58,9 @@ export const knowledgeProjectionFromCandidate = (
     nonApplicability: candidate.nonApplicability,
     projectionVersion: 1,
     // Search hints affect discovery and filtering; bind both to the reviewed canonical state.
-    sourceDigest: searchAliases.length || searchExclusions.length ? sha256({ candidate,
+    sourceDigest: searchAliases.length || searchExclusions.length || retrievalScope ? sha256({ candidate,
       ...(searchAliases.length ? { searchAliases } : {}), ...(searchExclusions.length ? { searchExclusions } : {}),
+      ...(retrievalScope ? { retrievalScope } : {}),
     }) : sha256(candidate),
     ...(searchAliases.length ? { searchAliases } : {}),
     ...(searchExclusions.length ? { searchExclusions } : {}),

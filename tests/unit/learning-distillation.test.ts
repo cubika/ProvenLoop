@@ -62,6 +62,8 @@ describe("model distillation assessment binding", () => {
     ["trigger", (input: RuleProposalInput) => { input.trigger = "Writing any content"; }],
     ["exclusions", (input: RuleProposalInput) => { input.exclusions = ["No exceptions"]; }],
     ["canonical meaning", (input: RuleProposalInput) => { input.canonicalKey = "English everywhere"; }],
+    ["retrieval task scope", (input: RuleProposalInput) => { input.retrievalScope = { excludedTasks: ["all documentation"] }; }],
+    ["replacement target", (input: RuleProposalInput) => { input.relations = [{ kind: "supersedes", knowledgeId: "old", targetDigest: "a".repeat(64), reason: "Changed policy" }]; }],
     ["query include phrase", (input: RuleProposalInput) => { input.queryTerms = { include: ["无关任务"], exclude: [] }; }],
     ["query exclusion phrase", (input: RuleProposalInput) => { input.queryTerms = { include: [], exclude: ["全部任务"] }; }],
     ["source quotation", (input: RuleProposalInput) => { input.userSource = { eventId: "user", quote: "Always write in English." }; }],

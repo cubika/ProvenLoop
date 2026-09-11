@@ -147,6 +147,7 @@ export interface KnowledgeRetrievalQuery {
 
 export interface RetrievedKnowledge {
   readonly candidate: KnowledgeCandidate;
+  readonly retrievalScope?: RuleProposal["retrievalScope"];
   readonly searchAliases?: readonly string[];
   readonly searchExclusions?: readonly string[];
   readonly score: number;

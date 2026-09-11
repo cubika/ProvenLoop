@@ -18,6 +18,8 @@ export const learningDistillationInputDigest = (
   failedOperationEventId: proposal.failedOperationEventId, retryOperationEventId: proposal.retryOperationEventId,
   completionEventId: proposal.completionEventId,
   ...(proposal.queryTerms ? { queryTerms: proposal.queryTerms } : {}),
+  ...(proposal.retrievalScope ? { retrievalScope: proposal.retrievalScope } : {}),
+  ...(proposal.relations ? { relations: proposal.relations } : {}),
   sourceDigests: sourceDigests.map(({ eventId, digest }) => ({ eventId, digest })),
 });
 

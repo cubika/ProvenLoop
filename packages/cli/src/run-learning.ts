@@ -128,9 +128,12 @@ export async function notifyLearningActivation(dataRoot: string, ids: readonly s
     const controls = claimed.map((id) => {
       const rule = store?.knowledgeCandidates([id])[0];
       const rootOption = `--data-root "${dataRoot}"`;
-      return `${rule?.content ?? id} Source: provenloop knowledge show ${id} ${rootOption}. Undo after review: provenloop knowledge revoke ${id} --expect <review-digest> --confirm ${rootOption}. Delete: provenloop forget ${id} ${rootOption}.`;
+      const assessment = rule?.state === "candidate" && rule.evidenceTier === "inferred"
+        ? "Model-reviewed lesson; external verification and user confirmation have not been recorded."
+        : "Externally verified tool-invocation rule.";
+      return `${assessment}\n${rule?.content ?? id}${rule?.appliesWhen.length ? `\nWhen it applies: ${rule.appliesWhen.join("; ")}` : ""}${rule?.nonApplicability.length ? `\nExceptions: ${rule.nonApplicability.join("; ")}` : ""}\nSource: provenloop knowledge show ${id} ${rootOption}. Undo after review: provenloop knowledge revoke ${id} --expect <review-digest> --confirm ${rootOption}. Delete: provenloop forget ${id} ${rootOption}.`;
     });
-    await log(`ProvenLoop learned ${claimed.length} verified tool-invocation rule(s). ${controls.join("\n")}`);
+    await log(`ProvenLoop learned ${claimed.length} reusable lesson(s).\n${controls.join("\n\n")}`);
     return true;
   } catch (error) {
     for (const id of claimed) store?.releaseLearningActivationNotice(id);

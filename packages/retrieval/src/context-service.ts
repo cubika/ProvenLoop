@@ -20,7 +20,7 @@ import {
 } from "@provenloop/domain";
 
 import { CanonicalKnowledgeRetriever } from "./retriever.js";
-import { retrievalTokens } from "./search-text.js";
+import { retrievalTokens, retrievalWordTokens } from "./search-text.js";
 import { branchScopeIdFor } from "./types.js";
 import type {
   CanonicalContextStore,
@@ -94,24 +94,20 @@ const distinct = <T>(input: readonly T[]): T[] =>
   [...new Set(input)];
 
 const searchTerms = (request: ContextRequest): readonly string[] => {
-  const shellTerms = request.shellInvocation === undefined ? [] : normalizedTokens(request.shellInvocation.command).slice(0, 8);
-  const toolTerms = request.toolInvocation === undefined ? [] : normalizedTokens(
+  const validTerm = (token: string): boolean => token.length >= 2 && token.length <= 64 && !stopWords.has(token);
+  const shellTerms = request.shellInvocation === undefined ? [] : retrievalWordTokens(request.shellInvocation.command).slice(0, 8);
+  const toolTerms = request.toolInvocation === undefined ? [] : retrievalWordTokens(
     `${request.toolInvocation.serverName} ${request.toolInvocation.toolName}`,
   ).slice(0, 8);
-  const hints = normalizedTokens((request.fileHints ?? []).join("\n"))
+  const hints = retrievalWordTokens((request.fileHints ?? []).join("\n"))
     .filter((token) => token.length >= 2 && token.length <= 64)
     .slice(0, 8);
-  const prompt = distinct(normalizedTokens(request.prompt).filter((token) =>
-    token.length >= 2 && token.length <= 64 && !stopWords.has(token),
-  ));
-  const available = SEARCH_TERM_LIMIT - hints.length;
-  const selected = prompt.length <= available
-    ? prompt
-    : [
-        ...prompt.slice(0, Math.ceil(available / 2)),
-        ...prompt.slice(-Math.floor(available / 2)),
-      ];
-  return distinct([...shellTerms, ...toolTerms, ...hints, ...selected]).slice(0, SEARCH_TERM_LIMIT);
+  const explicit = distinct([...shellTerms, ...toolTerms, ...hints]);
+  const words = retrievalWordTokens(request.prompt).filter(validTerm);
+  const fallbacks = normalizedTokens(request.prompt).filter(validTerm);
+  // Preserve the task's words in their original order. Suffix formatting requests
+  // and their generated bigrams must not evict an earlier topic from the budget.
+  return distinct([...explicit, ...words, ...fallbacks]).slice(0, SEARCH_TERM_LIMIT);
 };
 
 const overlapRatio = (
@@ -132,33 +128,69 @@ const overlapRatio = (
   return overlap / Math.min(leftSet.size, rightSet.size);
 };
 
-const nonApplicabilityMatches = (
-  candidate: KnowledgeCandidate,
-  requestTokens: readonly string[],
-  requestText: string,
-  searchExclusions: readonly string[] = [],
-): boolean => {
-  const normalizedRequest = requestText
-    .normalize("NFKC")
-    .toLocaleLowerCase("en-US");
-  return [...candidate.nonApplicability, ...searchExclusions].some((condition) => {
-    const normalizedCondition = condition
-      .normalize("NFKC")
-      .toLocaleLowerCase("en-US");
-    const conditionTokens = normalizedTokens(condition);
-    const requestTokenSet = new Set(requestTokens);
-    const matchedConditionTokens = conditionTokens.filter((token) =>
-      requestTokenSet.has(token),
-    ).length;
-    return (
-      normalizedCondition.length > 0 &&
-      normalizedRequest.includes(normalizedCondition)
-    ) || (
-      conditionTokens.length >= 2 &&
-      matchedConditionTokens / conditionTokens.length >= 0.6
-    );
+const normalizeTaskText = (text: string): string => text.normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/gu, " ").trim();
+
+// Older lessons mixed task boundaries and instructions within a task in one field.
+// Only explicit applicability syntax and short task-name fragments supply legacy filters.
+const legacyExcludedTasks = (text: string): readonly string[] => text.split(/[;；。\n]/u).flatMap((part) => {
+  const clause = normalizeTaskText(part).replace(/[.!?！？]+$/u, "");
+  const scoped = clause.match(/\b(?:do not|don't|does not|doesn't|must not) apply\b.{0,96}?\b(?:to|when|for)\s+(.+)$/u) ??
+    clause.match(/\b(?:not applicable|inapplicable)\s+(?:to|when|for)\s+(.+)$/u) ??
+    clause.match(/^(?:skip when|not when|except(?: for)?|excluding)\s+(.+)$/u) ??
+    clause.match(/(?:不适用于|不适用於|不适用的场景是)(.+)$/u) ??
+    clause.match(/^(.+?)(?:除外|不适用)$/u);
+  if (scoped?.[1]) return [scoped[1].split(/[,，]/u)[0]?.trim() ?? ""].filter(Boolean);
+  if (/^(?:do\b|does\b|don['’]t\b|must\b|never\b|preserve\b|keep\b|this\b|不|不要|不得|保留|保持)/u.test(clause) ||
+      /[.!?！？:,，]/u.test(clause) || clause.split(" ").length > 8) return [];
+  return clause.length >= 2 && clause.length <= 128 ? [clause] : [];
+});
+
+const negatedTaskMention = (before: string, after: string): boolean => {
+  // Negation belongs to this clause, not to every subsequent occurrence of the task.
+  if (/\bnot\s+(?:only|just)\s*$/u.test(before) || /(?:不仅|不但)\s*$/u.test(before) ||
+      /\b(?:not|never)\s+(?:skip|exclude|omit|avoid)\s*$/u.test(before) || /(?:不要|不应|不能)(?:跳过|排除|省略)\s*$/u.test(before)) return false;
+  return /\b(?:not|never|without|except|excluding|exclude|skip|skipping|omit|omitting|no)\b(?:[\s-]+[\p{L}\p{N}_]+){0,5}\s*$/u.test(before) ||
+    /(?:不(?:要|再|会|必|用)?|无需|勿|避免|排除|除了)[^，,;；。\n]{0,16}$/u.test(before) ||
+    /^(?:除外|不涉及|无需|不需要|保持原样|保持不变|\s+(?:are |is )?(?:excluded|out of scope)\b)/u.test(after);
+};
+
+const excludedTaskMentioned = (task: string, requestText: string): boolean => {
+  const target = normalizeTaskText(task).replace(/[.!?！？]+$/u, "");
+  if (!target) return false;
+  return requestText.normalize("NFKC").toLocaleLowerCase("en-US")
+    .split(/[\n,，;；。.!?！？]+|\b(?:but|however)\b|但是|不过/u).map(normalizeTaskText).some((clause) => {
+    let offset = 0;
+    while (offset < clause.length) {
+      const index = clause.indexOf(target, offset);
+      if (index < 0) break;
+      const end = index + target.length;
+      const wordBoundary = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(target) ||
+        !/[\p{L}\p{N}_-]/u.test(clause[index - 1] ?? "") && !/[\p{L}\p{N}_-]/u.test(clause[end] ?? "");
+      if (wordBoundary && !negatedTaskMention(clause.slice(0, index), clause.slice(end))) return true;
+      offset = end;
+    }
+    // Retain complete qualifiers when English task words are reordered in a clause.
+    if (/[^\p{ASCII}]/u.test(target)) return false;
+    const terms = [...new Set(target.match(/[a-z0-9_-]+/gu) ?? [])];
+    if (terms.length < 2) return false;
+    const words = [...clause.matchAll(/[a-z0-9_-]+/gu)];
+    const matched = terms.flatMap((term) => { const word = words.find((entry) => entry[0] === term); return word ? [word] : []; });
+    if (matched.length !== terms.length) return false;
+    const start = Math.min(...matched.map((word) => word.index));
+    const end = Math.max(...matched.map((word) => word.index + word[0].length));
+    return !negatedTaskMention(clause.slice(0, start), clause.slice(end));
   });
 };
+
+const nonApplicabilityMatches = (
+  candidate: KnowledgeCandidate,
+  requestText: string,
+  searchExclusions: readonly string[] = [],
+  retrievalScope?: RetrievedKnowledge["retrievalScope"],
+): boolean => [
+  ...(retrievalScope?.excludedTasks ?? candidate.nonApplicability.flatMap(legacyExcludedTasks)),
+  ...searchExclusions.flatMap(legacyExcludedTasks),
+].some((task) => excludedTaskMentioned(task, requestText));
 
 const knowledgeContainsPotentialSecret = (
   candidate: KnowledgeCandidate,
@@ -253,6 +285,7 @@ const stalePenalty = (
 };
 
 interface AggregatedKnowledge {
+  readonly retrievalScope?: RetrievedKnowledge["retrievalScope"];
   readonly searchExclusions?: RetrievedKnowledge["searchExclusions"];
   readonly deliveryMode?: RetrievedKnowledge["deliveryMode"];
   readonly sources?: RetrievedKnowledge["sources"];
@@ -350,8 +383,9 @@ const renderKnowledge = (
     applicabilitySummary: [
       ...candidate.appliesWhen,
       ...candidate.nonApplicability.map(
-        (condition) => `Not when: ${condition}`,
+        (condition) => `Limits: ${condition}`,
       ),
+      ...(input.retrievalScope?.excludedTasks ?? []).map((task) => `Excluded task: ${task}`),
     ].join("; "),
     evidenceTier: candidate.evidenceTier,
     explanationRef: `knowledge:${candidate.knowledgeId}`,
@@ -966,9 +1000,9 @@ export class ContextRetrievalService {
             !knowledgeContainsPotentialSecret(input.candidate) &&
             !nonApplicabilityMatches(
               input.candidate,
-              requestTokens,
               requestText,
               input.searchExclusions,
+              input.retrievalScope,
             ),
         )
         .map((input) =>
@@ -1675,6 +1709,7 @@ export class ContextRetrievalService {
       );
       return {
         candidate: hit.candidate,
+        ...(hit.retrievalScope ? { retrievalScope: hit.retrievalScope } : {}),
         ...(hit.searchExclusions ? { searchExclusions: hit.searchExclusions } : {}),
         ...(hit.deliveryMode ? { deliveryMode: hit.deliveryMode, sources: hit.sources } : {}),
         ...(hit.researchSummary ? { researchSummary: hit.researchSummary } : {}),

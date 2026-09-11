@@ -21,7 +21,7 @@ const review = { criteria: { supported: true, scoped: true, reusable: true, acti
   rationale: "The source states a lasting documentation convention and preserves its archive exception." };
 const reviewer = { provider: "fixture", model: "fixture", version: "1" };
 
-const fixture = async (reviewed = true, fileBacked = false) => {
+const fixture = async (reviewed = true, fileBacked = false, originalTerm = "文档") => {
   const directory = fileBacked ? await mkdtemp(join(tmpdir(), "provenloop-query-terms-")) : undefined;
   const path = directory ? join(directory, "knowledge.sqlite") : ":memory:";
   const store = new CanonicalSqliteStore(":memory:"); const backend = new SqliteFtsKnowledgeBackend(path);
@@ -29,7 +29,7 @@ const fixture = async (reviewed = true, fileBacked = false) => {
     if (directory) await rm(directory, { recursive: true, force: true });
   });
   for (const [index, item] of [
-    { type: "prompt.submitted", trust: "user" as const, content: { message } },
+    { type: "prompt.submitted", trust: "user" as const, content: { message: message.replaceAll("文档", originalTerm) } },
     { type: "agent.turn_completed", trust: "model" as const, content: {} },
   ].entries()) {
     const timestamp = new Date(now.getTime() - 10_000 + index * 1_000).toISOString();
@@ -42,8 +42,9 @@ const fixture = async (reviewed = true, fileBacked = false) => {
   const user = store.episodeSourceEnvelopes().find((event) => event.event.trust === "user"); assert(user);
   const input: RuleProposalInput = { rule, trigger: "Creating or editing repository documentation.",
     exclusions: ["Historical archives"], canonicalKey: alias,
-    queryTerms: { include: ["文档"], exclude: ["历史存档"] },
-    userSource: { eventId: user.event.eventId, quote: message }, supportingSources: [{ eventId: user.event.eventId, quote: message }],
+    queryTerms: { include: [originalTerm], exclude: ["历史存档"] },
+    userSource: { eventId: user.event.eventId, quote: message.replaceAll("文档", originalTerm) },
+    supportingSources: [{ eventId: user.event.eventId, quote: message.replaceAll("文档", originalTerm) }],
     retention: { kind: "convention", lifetime: "durable", rationale: "Keep repository documentation consistent without altering archived material or code.",
       futureUse: "Apply when adding or revising repository documentation.", targetRepository: { status: "captured", repoId: "repo" } } };
   const coordinator = new LearningCoordinator({ store, now: () => now, enabled: async () => true,
@@ -64,6 +65,21 @@ const fixture = async (reviewed = true, fileBacked = false) => {
 };
 
 describe("reviewed original-language query terms", () => {
+  it.each([
+    ["文档", "请为这个仓库写一份简短的缓存设计文档，介绍按仓库路径缓存配置的方案。只返回正文，不读文件也不创建文件。"],
+    ["说明", "请直接给我一份简短的缓存设计说明正文，介绍按仓库路径缓存配置的方案。只返回正文，不读文件也不创建文件。"],
+  ])("preserves the reviewed %s alias in a bounded Chinese task query", async (term, prompt) => {
+    const f = await fixture(true, false, term);
+    const backendSearch = vi.spyOn(f.backend, "searchWithTimeout");
+    const result = await f.context(prompt);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.guidance).toContain(rule);
+    const selected = backendSearch.mock.calls[0]?.[0].text.split(" ") ?? [];
+    expect(selected).toContain(term);
+    expect(selected).toContain("缓存");
+    expect(selected.length).toBeLessThanOrEqual(24);
+  });
+
   it("retrieves an English lesson for a Chinese task while retaining English guidance and scope", async () => {
     const f = await fixture();
     expect(await f.backend.get(f.candidate.knowledgeId)).toMatchObject({

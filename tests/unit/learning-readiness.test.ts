@@ -8,6 +8,7 @@ import { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import { resolveWindowsProvenLoopPaths } from "@provenloop/platform-windows";
 import { readLearningReadiness } from "../../packages/cli/src/run-learning.js";
 import { runCli } from "../../packages/cli/src/run-cli.js";
+import type { AgentAdapter } from "@provenloop/contracts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -38,6 +39,27 @@ const fixture = async () => {
 };
 
 describe("first reuse readiness", () => {
+  it("shows repository setup after CLI install without granting hook permission", async () => {
+    const f = await fixture();
+    const paths = resolveWindowsProvenLoopPaths(f.root);
+    await writeCopilotAdapterState(paths.adapterState, readyState());
+    vi.stubEnv("COPILOT_HOME", f.copilotHome);
+    vi.spyOn(SpawnCommandRunner.prototype, "run").mockImplementation(f.runner.run);
+    const logs: string[] = [];
+    const installed = vi.fn(async () => ({ status: "changed" as const, message: "Integration installed." }));
+    expect(await runCli(["install", "--data-root", f.root], { log: (value) => { logs.push(value); }, error: () => undefined }, {
+      createAdapter: () => ({ install: installed }) as unknown as AgentAdapter, runMcpServer: async () => undefined,
+    })).toBe(0);
+    expect(installed).toHaveBeenCalledOnce();
+    const message = logs.join("\n");
+    expect(message).toContain("Collection: configured. Extraction: eligible. Automatic reuse: blocked.");
+    expect(message).toContain("approve-hooks --cwd ");
+    expect(message).toContain(f.repositoryPath);
+    expect(message).toContain("Restart Copilot");
+    await expect(readFile(f.approvalPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(paths.adapterState, "utf8")).toContain('"installed": true');
+  });
+
   it("distinguishes extraction eligibility from missing repository hook approval without granting permission", async () => {
     const f = await fixture();
     await f.approve(join(f.root, "other-repository"));

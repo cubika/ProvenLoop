@@ -152,6 +152,7 @@ describe("operational CLI", () => {
     expect(harness.logs).toEqual([
       AUTOMATIC_LEARNING_DISCLOSURE,
       "installed",
+      expect.stringContaining("Check automatic reuse in your repository: provenloop learning status"),
       AUTOMATIC_LEARNING_DISCLOSURE,
       "upgraded",
       "capture disabled",

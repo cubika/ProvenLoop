@@ -5,11 +5,13 @@ const work = vi.hoisted(() => ({
   worker: vi.fn(),
   collect: vi.fn(),
   reconcile: vi.fn(),
+  state: vi.fn(),
 }));
 
 vi.mock("@provenloop/copilot-adapter", async (original) => ({
   ...await original<typeof import("@provenloop/copilot-adapter")>(),
   runInstalledCopilotExtension: work.installed,
+  readCopilotAdapterState: work.state,
 }));
 vi.mock("../../packages/cli/src/run-worker.js", () => ({
   runCaptureWorkerOnce: work.worker,
@@ -47,6 +49,8 @@ beforeEach(() => {
     return once(event, listener);
   });
   work.installed.mockResolvedValue({ status: "started" });
+  work.state.mockResolvedValue({ installed: false, capabilities: { capture: { enabled: false }, worker: { enabled: false },
+    correction_learning: { enabled: false }, retrieval: { enabled: false } } });
   work.worker.mockResolvedValue({
     status: "completed",
     acknowledged: 0,
@@ -70,6 +74,38 @@ afterEach(() => {
 });
 
 describe("automatic Extension observation scheduling", () => {
+  it("shows the actual delivered lesson once and keeps muted retrieval working", async () => {
+    const log = vi.fn<(message: string) => Promise<void>>(async () => undefined);
+    const state = { installed: true, automaticLearning: { enabled: true, notificationsEnabled: false }, capabilities: {
+      capture: { enabled: true }, worker: { enabled: true }, correction_learning: { enabled: true }, retrieval: { enabled: true },
+    } };
+    work.state.mockResolvedValue(state);
+    work.installed.mockResolvedValue({ status: "started", hostSession: { log, on: () => undefined } });
+    const item: ContextItem = { id: "docs", kind: "knowledge", rank: 20, evidenceTier: "inferred",
+      guidance: "Lesson: Write repository documentation in English.", applicabilitySummary: "Writing documentation; preserve identifiers.",
+      scope: "repository", scopeId: "repo", explanationRef: "knowledge:docs" };
+    vi.spyOn(LocalMcpToolHandlers.prototype, "context").mockResolvedValue({ items: [item], latencyMs: 1,
+      renderedTokens: 50, requestId: "request", status: "ok" });
+    await runProvenLoopCopilotExtension(options, { runLearning: async () => ({ status: "disabled" }) });
+    const installed = work.installed.mock.calls[0]?.[0] as InstalledCopilotExtensionOptions;
+    const input = { sessionId: "current-session", prompt: "Write documentation",
+      workspace: { repositoryState: "known_repo" as const, repoId: "repo", cwd: "C:/repo" } };
+    expect(await installed.onAutomaticContext?.(input)).toContain(item.guidance);
+    expect(log).not.toHaveBeenCalled();
+    state.automaticLearning.notificationsEnabled = true;
+    log.mockRejectedValueOnce(new Error("Host log unavailable"));
+    await installed.onAutomaticContext?.(input);
+    await vi.advanceTimersByTimeAsync(0);
+    await installed.onAutomaticContext?.(input);
+    await vi.advanceTimersByTimeAsync(0);
+    await installed.onAutomaticContext?.(input);
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log.mock.lastCall?.[0]).toContain(item.guidance);
+    expect(log.mock.lastCall?.[0]).toContain(item.applicabilitySummary);
+    expect(log.mock.lastCall?.[0]).not.toContain(item.explanationRef);
+    expect(log.mock.lastCall?.[0]).toContain("supplied this guidance");
+  });
+
   it("preserves complete applicability and scope in the native hook context", async () => {
     const item: ContextItem = {
       id: "docs-language", kind: "knowledge", rank: 20, evidenceTier: "inferred", deliveryMode: "convention", sources: [],

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CopilotSessionEvent } from "../../packages/copilot-adapter/src/event-mapper.js";
 import { runInstalledCopilotExtension } from "../../packages/copilot-adapter/src/extension-entry.js";
+import type { InstalledCopilotExtensionOptions } from "../../packages/copilot-adapter/src/extension-entry.js";
 
 const fixtures = vi.hoisted(() => {
   const release = vi.fn(async () => undefined);
@@ -18,7 +19,9 @@ const fixtures = vi.hoisted(() => {
     state: {
       installed: true,
       capabilities: { capture: { enabled: false }, retrieval: { enabled: true }, worker: { enabled: true }, correction_learning: { enabled: true } },
+      automaticLearning: { enabled: true, notificationsEnabled: true },
     },
+    version: "1.0.84-1",
     release,
     publisherStart,
     publishers,
@@ -69,7 +72,7 @@ vi.mock("@provenloop/platform-windows", async (original) => ({
 vi.mock("../../packages/copilot-adapter/src/copilot-cli-adapter.js", () => ({
   assertCopilotAdapterDataRoot: fixtures.assertRoot,
   CopilotCliAdapter: class {
-    capabilities = async () => ({ compatibility: "supported", installedVersion: "1.0.82-0" });
+    capabilities = async () => ({ compatibility: "supported", installedVersion: fixtures.version });
     resolveSession = fixtures.resolveSession;
   },
 }));
@@ -77,7 +80,8 @@ vi.mock("../../packages/copilot-adapter/src/operational-state.js", async (origin
   ...await original<typeof import("../../packages/copilot-adapter/src/operational-state.js")>(),
   readCopilotAdapterState: fixtures.readState,
 }));
-vi.mock("../../packages/copilot-adapter/src/automatic-host-capability.js", () => ({
+vi.mock("../../packages/copilot-adapter/src/automatic-host-capability.js", async (original) => ({
+  ...await original<typeof import("../../packages/copilot-adapter/src/automatic-host-capability.js")>(),
   hasCopilotLearningHookApproval: fixtures.hooksApproved,
 }));
 vi.mock("../../packages/copilot-adapter/src/trusted-session-context.js", () => ({
@@ -143,6 +147,8 @@ beforeEach(() => {
   fixtures.publishers.length = 0;
   sessions.length = 0;
   fixtures.state.installed = true;
+  fixtures.state.automaticLearning = { enabled: true, notificationsEnabled: true };
+  fixtures.version = "1.0.84-1";
   fixtures.state.capabilities.capture.enabled = false;
   fixtures.state.capabilities.retrieval.enabled = true;
   fixtures.hooksApproved.mockReset().mockResolvedValue(false);
@@ -170,6 +176,51 @@ afterEach(async () => {
 });
 
 describe("installed extension trusted context wiring", () => {
+  it("delivers prompt guidance without tool metadata and keeps the pre-tool deadline", async () => {
+    fixtures.state.capabilities.capture.enabled = true;
+    fixtures.hooksApproved.mockResolvedValue(true);
+    const metadata = [{ name: "read", mcpServerName: "files", mcpToolName: "read", input_schema: { type: "object", required: ["path"] } }];
+    const getCurrentMetadata = vi.fn(async () => ({ tools: metadata }));
+    const sdk = { ...session(), rpc: { tools: { getCurrentMetadata } } };
+    let hooks: NonNullable<Parameters<InstalledCopilotExtensionOptions["joinSession"]>[0]>["hooks"];
+    const onAutomaticContext = vi.fn<NonNullable<InstalledCopilotExtensionOptions["onAutomaticContext"]>>(async () => "Write repository documentation in English.");
+    await runInstalledCopilotExtension({
+      dataRoot: `${process.cwd()}\\.entry-context-unit`, environment: { SESSION_ID: "sdk-session" },
+      joinSession: async (config) => { hooks = config?.hooks; return sdk; },
+      signalSource: { once: vi.fn() }, terminate: vi.fn(), onAutomaticContext,
+    });
+    const input = { sessionId: "sdk-session", workingDirectory: process.cwd() };
+    await expect(hooks?.onPreToolUse?.({ ...input, toolName: "read", toolArgs: { path: "README.md" } }))
+      .resolves.toEqual({ additionalContext: "Write repository documentation in English." });
+    expect(onAutomaticContext).toHaveBeenLastCalledWith(expect.objectContaining({ tool: expect.objectContaining({ serverName: "files", toolName: "read" }) }));
+    getCurrentMetadata.mockImplementation(() => new Promise(() => undefined));
+    onAutomaticContext.mockClear();
+    await expect(hooks?.onUserPromptSubmitted?.({ ...input, prompt: "Write repository documentation" }))
+      .resolves.toEqual({ additionalContext: "Write repository documentation in English." });
+    expect(getCurrentMetadata).toHaveBeenCalledTimes(1);
+    onAutomaticContext.mockClear();
+    await expect(hooks?.onPreToolUse?.({ ...input, toolName: "read", toolArgs: { path: "README.md" } })).resolves.toBeUndefined();
+    expect(onAutomaticContext).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "unsupported", "muted"] as const)("shows a setup blocker only when notices are enabled: %s", async (reason) => {
+    fixtures.state.capabilities.capture.enabled = true;
+    fixtures.state.automaticLearning.notificationsEnabled = reason !== "muted";
+    if (reason === "unsupported") fixtures.version = "1.0.85-1";
+    const log = vi.fn<(message: string) => Promise<void>>(async () => undefined);
+    const sdk = { ...session(), log };
+    const running = start(sdk);
+    expect(await running.result).toMatchObject({ status: "started" });
+    expect(running.joinSession).toHaveBeenCalledWith(undefined);
+    if (reason === "muted") { expect(log).not.toHaveBeenCalled(); return; }
+    expect(log).toHaveBeenCalledOnce();
+    const message = log.mock.calls[0]?.[0];
+    expect(message).toContain("Automatic reuse");
+    expect(message).toContain("learning status");
+    if (reason === "missing") { expect(message).toContain("approve-hooks"); expect(message).toContain("restart Copilot"); }
+    else { expect(message).toContain("1.0.85-1"); expect(message).not.toContain("approve-hooks"); }
+  });
+
   it.each([false, true])("automatic default registers hooks only with repository approval: %s", async (approved) => {
     fixtures.state.capabilities.capture.enabled = true;
     fixtures.hooksApproved.mockResolvedValue(approved);

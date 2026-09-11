@@ -2,6 +2,13 @@
 
 Status: implementation contract. Validation results are recorded separately.
 
+Development update (2026-09-11, schema 20): new lessons carry explicit excluded task
+contexts separately from in-task conditions. Bounded prior-knowledge comparison lets
+the extractor propose equivalent or superseding lessons, with a separate review and
+transactional target-digest checks. Fresh independent evidence can renew automatically
+expired knowledge; user revocation and deliberate archival remain protected. Reviewed
+lessons now have learning and first-use notices. See [FB-009](feedback.md#fb-009-closing-the-gaps-found-by-the-product-review).
+
 Product requirement update (2026-09-11):
 [FB-008](feedback.md#fb-008-distillation-quality-noise-and-missed-learning) requires
 instruction-quality distillation of experience, with both noise and missed valuable

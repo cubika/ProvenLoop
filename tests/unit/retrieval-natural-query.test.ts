@@ -115,4 +115,17 @@ describe("bounded natural-language retrieval", () => {
     expect((await query("tests")).items.map((item) => item.id)).toEqual(["tests"]);
     expect((await query("database tests against production")).items).toEqual([]);
   });
+
+  it("does not filter a task that explicitly leaves an excluded area untouched", async () => {
+    const { add, query } = await fixture();
+    await add("documentation", "Write documentation in English. 文档使用英语", "repo-1", ["Historical archives", "历史存档"]);
+    for (const prompt of ["补充文档，不涉及历史存档", "补充文档，历史存档保持原样",
+      "Update documentation; do not touch historical archives.", "Update documentation without historical archives."]) {
+      expect((await query(prompt)).items, prompt).toHaveLength(1);
+    }
+    for (const prompt of ["更新历史存档中的文档", "Update historical archives documentation.",
+      "Update documentation, not only historical archives.", "不要跳过历史存档中的文档"]) {
+      expect((await query(prompt)).items, prompt).toEqual([]);
+    }
+  });
 });

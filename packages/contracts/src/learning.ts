@@ -3,6 +3,13 @@ import { captureEnvelopeSchema } from "./capture.js";
 import { identifierSchema, isoTimestampSchema, sha256DigestSchema } from "./common.js";
 
 const text = z.string().trim().min(1).max(2048);
+export const learningComparisonCandidateSchema = z.object({
+  knowledgeId: identifierSchema, targetDigest: sha256DigestSchema,
+  rule: text, trigger: z.array(text).max(16), exclusions: z.array(text).max(16),
+  canonicalKey: text.optional(), state: text.max(64), evidenceTier: text.max(64),
+  mutable: z.boolean().optional(),
+}).strict();
+export type LearningComparisonCandidate = z.infer<typeof learningComparisonCandidateSchema>;
 export const learningDistillationCriteriaSchema = z.object({
   supported: z.boolean(), scoped: z.boolean(), reusable: z.boolean(),
   actionable: z.boolean(), concise: z.boolean(), nonredundant: z.boolean(),
@@ -67,6 +74,11 @@ export const shellLearningPredicateSchema = z.object({
 }).strict();
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
+  retrievalScope: z.object({ excludedTasks: z.array(z.string().trim().min(2).max(128)).max(8) }).strict().optional(),
+  relations: z.array(z.object({
+    kind: z.enum(["equivalent", "supersedes"]), knowledgeId: identifierSchema,
+    targetDigest: sha256DigestSchema, reason: text.max(512),
+  }).strict()).max(3).optional(),
   // Original-language search phrases only; final lesson prose remains English.
   queryTerms: z.object({
     include: z.array(z.string().trim().min(2).max(64)).max(8),
@@ -82,6 +94,9 @@ export const ruleProposalInputSchema = z.object({
   completionEventId: identifierSchema.optional(), predicate: learningPredicateSchema.optional(),
   shellPredicate: shellLearningPredicateSchema.optional(),
 }).strict().superRefine((value, context) => {
+  if ((value.relations?.filter((relation) => relation.kind === "equivalent").length ?? 0) > 0 && value.relations?.length !== 1) {
+    context.addIssue({ code: "custom", message: "Equivalence requires exactly one comparison target and no supersession relations." });
+  }
   if ((value.userSource === undefined) === (value.agentSource === undefined)) {
     context.addIssue({ code: "custom", message: "A proposal must name exactly one user or agent source." });
   }

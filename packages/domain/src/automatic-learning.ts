@@ -52,10 +52,10 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
       if (user.event.trust !== "user" || user.event.eventType !== "prompt.submitted" ||
           !user.content?.message || !user.event.sessionId || !user.event.repoId || !user.event.worktree ||
           user.event.repositoryState !== "known_repo") continue;
-      const recentFailure = latestFailure && i - latestFailure.index <= 12 ? latestFailure : undefined;
+      // A missing recovery chain must not suppress an independent user requirement.
+      const recentFailure = latestFailure && i - latestFailure.index <= 12 &&
+        (latestFailure.start === undefined || i - latestFailure.start <= 12) ? latestFailure : undefined;
       const failedStart = recentFailure?.start;
-      // Do not spend an inference attempt on a window that has already lost its failed operation.
-      if (failedStart !== undefined && i - failedStart > 12) continue;
       const previous = group.slice(failedStart ?? Math.max(0, i - 8), i);
       const failed = failedStart === undefined ? undefined : group[failedStart];
       const before = record(failed?.event.redactedArguments);
@@ -103,7 +103,7 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
       const nativeProofs = completion.event.eventType === "tool.completed" ? proofs.get(proofKey(completion, completion.sourceEventId)) ?? [] : [];
       const retry = completion.event.operationId === undefined ? undefined : retryStarts.get(completion.event.operationId);
       const command = record(retry?.event.redactedArguments).command;
-      if (retry && !retry.event.mcp && typeof command === "string" && supportedLearningTestCommand(command) &&
+      if (failed && retry && !retry.event.mcp && typeof command === "string" && supportedLearningTestCommand(command) &&
           completion.event.completionStatus === "succeeded" && completion.event.exitCode === 0 &&
           !nativeProofs.some((proof) => proof.event.evidence?.sourceStartEventId === retry.sourceEventId)) continue;
       const additionalProofs = nativeProofs.filter((proof) => !selected.includes(proof));
@@ -157,6 +157,8 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
   for (const proposal of parsed.proposals) {
     const source = learningProposalSource(proposal);
     if ([proposal.rule, proposal.trigger, ...proposal.exclusions, source.quote,
+      ...(proposal.retrievalScope?.excludedTasks ?? []), ...(proposal.relations ?? []).flatMap((relation) => [relation.reason,
+        /^learning-knowledge-[a-f0-9]{24}$/u.test(relation.knowledgeId) ? "" : relation.knowledgeId]),
       ...(proposal.queryTerms?.include ?? []), ...(proposal.queryTerms?.exclude ?? []),
       ...(proposal.agentSource?.evidenceSources.map((item) => item.quote) ?? [])].some(containsPotentialSecret)) {
       throw new Error("Learning proposal contains sensitive content.");

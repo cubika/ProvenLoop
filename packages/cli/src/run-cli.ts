@@ -1580,6 +1580,21 @@ export const runCli = async (
             : undefined,
         );
         io.log(result.message);
+        if (operationExitCode(result) === 0) {
+          const root = dataRoot(args);
+          const quotedRoot = `'${root.replaceAll("'", "''")}'`;
+          io.log(`Check automatic reuse in your repository: provenloop learning status --cwd <repository-directory> --data-root ${quotedRoot}. Follow its next steps for collection, extraction and repository hook approval, then restart Copilot in that repository.`);
+          try {
+            const state = await readCopilotAdapterState(resolveWindowsProvenLoopPaths(root).adapterState, new Date());
+            if (state.installed) {
+              const readiness = await readLearningReadiness(state, { cwd: process.cwd(), dataRoot: root });
+              io.log(`Current repository: ${readiness.repositoryPath ?? "No Git repository found"}. Collection: ${readiness.capture.status}. Extraction: ${readiness.extraction.status}. Automatic reuse: ${readiness.automaticReuse.status}.`);
+              for (const step of readiness.nextSteps) io.log(step);
+            }
+          } catch {
+            io.log("Repository readiness could not be checked. Run the status command above from your repository before starting Copilot.");
+          }
+        }
         return operationExitCode(result);
       }
       case "upgrade": {

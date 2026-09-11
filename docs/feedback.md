@@ -17,6 +17,7 @@ The dated implementation records distinguish source changes from verified outcom
 | FB-006 | 2026-09-10 | Captured-event growth, count explanations, and retention controls | Implemented with limits | Growth/storage metrics and reviewed retention cleanup; reported database unavailable |
 | FB-007 | 2026-09-11 | Oversized learning input repeated three times | Implemented, unreleased | Select source excerpts, preflight request size, and recover eligible old failures once |
 | FB-008 | 2026-09-11 | Distillation quality, noise, and missed valuable learning | Implemented first slice, unreleased; broader quality validation pending | Separate quality review, concise delivery, mixed-message learning, source-change recovery, bilingual discovery, and repository readiness |
+| FB-009 | 2026-09-11 | Review found conflicting retained rules, missed learning, wrong task filtering, and invisible automatic reuse | Fixes implemented, unreleased; live validation in progress | Reviewed replacement/renewal, separate task exclusions, prompt-hook independence, and concrete learning/use notices |
 
 FB-002 adds concrete examples and changes the implementation order: establish
 useful retention before widening reference delivery. Source accuracy and lasting
@@ -986,3 +987,57 @@ identify this behavior; existing records retain their content and provenance.
 Schema 19 adds bounded source-language search phrases so Chinese task requests can
 still discover English lessons. Excluded contexts remain separate from positive
 search terms, and both are checked against quoted sources and the model review.
+
+## FB-009: Closing the gaps found by the product review
+
+The review of dd2811f reproduced failures despite passing regressions: later policy
+changes could leave contradictory rules active, changes to exceptions could be ignored,
+and renewed evidence could still expire under an old job. Task-internal safeguards
+were mistaken for excluded tasks. Unrelated auxiliary reads and an old oversized
+failure chain could suppress new learning. A 100 ms tool-metadata timeout could skip
+ordinary prompt retrieval. Reviewed lessons did not receive learning notifications.
+
+The unreleased schema 20 changes address those paths:
+
+- Extraction and review receive bounded prior knowledge from the same repository.
+  Reviewed equivalence and supersession relations name the exact compared digest.
+  Commit rechecks that digest, scope, current evidence state, and user controls.
+  Explicitly changed conventions replace their earlier version; independently
+  reaffirmed equivalent lessons renew their usefulness window.
+- Auto-expiry is recorded separately from deliberate user archival or revocation.
+  Fresh independent evidence can restore an automatically expired lesson. Old jobs
+  cannot archive a candidate whose evidence has since been renewed. Reset, deletion,
+  and backup restore preserve these distinctions.
+- A same-concept conflict without an accepted relationship stops use pending review
+  instead of silently returning both rules. This bounded comparison does not claim
+  exhaustive semantic conflict detection across the whole knowledge base.
+- New retrievalScope metadata names whole excluded tasks. Other caveats remain
+  conditions within an applicable task. Legacy output receives conservative syntax
+  handling, including negated exclusions in English and Chinese. Word-overlap scores
+  no longer turn identifier-preservation instructions into a task exclusion.
+- Tool metadata is checked only where tool identity is needed. Ordinary prompt
+  retrieval continues independently. Installation and session messages explain
+  missing hook permission or unsupported versions without granting permission.
+- Reviewed lessons receive accurately labeled learning notices; first use displays
+  the actual guidance and conditions. Muting affects notices, not eligibility.
+- An unrelated, unquoted, explicitly read-only auxiliary operation no longer changes
+  the target of a reviewed user convention. External writes, cited external targets,
+  and ambiguous shell operations keep their existing restrictions. An incomplete
+  old recovery trace does not prevent a separate semantic learning window.
+- Long review rationale is sanitized and bounded before storage validation. A
+  singleton trigger array copied from comparison input is normalized without
+  broadening its condition. Malformed decisions and multi-trigger ambiguity still
+  fail. Review input keeps full anchors and cited evidence while removing redundant
+  serialization.
+- The live two-session check exposed another missed-retrieval path: CJK bigram
+  fragments displaced the actual topic words from the bounded search query. Query
+  construction now prioritizes segmented words before optional fragments.
+- Prior-knowledge comparison uses reviewed source-language topics and scans the
+  repository candidates instead of truncating to the latest 128 records. Deleting
+  an earlier lesson also follows dependent supersession/equivalence references,
+  preserving deletion verification across a chain of replacements.
+
+Extractor v11 and reviewer v3 identify these changes. Source excerpts, model review,
+and external verification remain separate. The updated behavior is validated with
+regressions and actual-provider cases; full learning quality and sustained improvement
+still require observations beyond these examples.

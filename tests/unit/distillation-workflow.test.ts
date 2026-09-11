@@ -90,6 +90,48 @@ const retrieve = async (f: ReturnType<typeof fixture>, prompt: string, tokenBudg
 };
 
 describe("reviewed distillation production workflow", () => {
+  it("accepts an unambiguous singleton trigger copied from comparison-card shape", async () => {
+    const f = fixture();
+    const raw = { ...f.proposal, trigger: [f.proposal.trigger] } as unknown as RuleProposalInput;
+    const p = await production(f, { proposals: [raw] });
+    expect(await p.coordinator.run()).toMatchObject({ status: "evaluated", proposals: 1 });
+    expect(f.store.learningProposals()[0]?.trigger).toBe(f.proposal.trigger);
+  });
+
+  it("does not combine several trigger values into a broader condition", async () => {
+    const f = fixture();
+    const raw = { ...f.proposal, trigger: [f.proposal.trigger, "All unrelated tasks"] } as unknown as RuleProposalInput;
+    const p = await production(f, { proposals: [raw] });
+    expect(await p.coordinator.run()).toMatchObject({ status: "failed" });
+    expect(f.store.learningProposals()).toEqual([]);
+  });
+  it("keeps valid review decisions when their explanatory rationale exceeds the storage limit", async () => {
+    const f = fixture();
+    const response = { reviews: [{ ...review(), rationale: "The source supports the stated scope and unchanged exceptions. ".repeat(30) }] };
+    const p = await production(f, { response });
+    expect(await p.coordinator.run()).toMatchObject({ status: "evaluated", proposals: 1 });
+    const saved = f.store.learningProposals()[0];
+    expect(saved?.distillation?.rationale.length).toBeLessThanOrEqual(512);
+    expect(saved?.distillation?.criteria).toEqual(positive);
+    expect(saved && hasAcceptedLearningDistillation(saved, saved.sourceDigests)).toBe(true);
+  });
+
+  it("cannot hide an invalid review decision behind a long rationale", async () => {
+    const f = fixture();
+    const response = { reviews: [{ ...review(), criteria: { ...positive, scoped: "true" }, rationale: "Repeated explanation. ".repeat(80) }] };
+    const p = await production(f, { response });
+    expect(await p.coordinator.run()).toMatchObject({ status: "failed" });
+    expect(f.store.learningProposals()).toEqual([]);
+  });
+
+  it("rejects relationships to knowledge that was not supplied for comparison", async () => {
+    const f = fixture();
+    f.proposal.relations = [{ kind: "supersedes", knowledgeId: "unseen-rule", targetDigest: "a".repeat(64), reason: "Invented comparison" }];
+    const p = await production(f);
+    expect(await p.coordinator.run()).toMatchObject({ status: "failed" });
+    expect(p.calls).toHaveLength(1);
+    expect(f.store.learningProposals()).toEqual([]);
+  });
   it("retains English lessons from Chinese evidence while preserving literal identifiers and quotations", async () => {
     const message = '仓库文档必须用英文，聊天仍用中文；标识符 healthCheck 和界面文本“已完成”保持原样。';
     const f = fixture("convention", message);
@@ -119,7 +161,8 @@ describe("reviewed distillation production workflow", () => {
     const p = await production(f, { response: { reviews: [review(0, { concise: false })] } });
     expect(await p.coordinator.run()).toMatchObject({ status: "evaluated", proposals: 0 });
     expect(f.store.knowledgeCandidates()).toEqual([]);
-    expect(f.store.learningJobs()[0]?.distillation).toMatchObject({ accepted: 0, rejected: 1, reasons: ["Quality review: concise"] });
+    expect(f.store.learningJobs()[0]?.distillation).toMatchObject({ accepted: 0, rejected: 1 });
+    expect(f.store.learningJobs()[0]?.distillation?.reasons[0]).toContain("Quality review: concise:");
   });
 
   it("rejects invented discovery phrases before the review request", async () => {

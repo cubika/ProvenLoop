@@ -49,6 +49,18 @@ const operationPaths = (entry: CaptureEnvelope): string[] => {
 export const learningEventTargetsWorkspace = (entry: CaptureEnvelope, worktree: string): boolean =>
   operationPaths(entry).every((path) => inside(path, worktree));
 
+// Only native, explicitly read-only auxiliary tools can be omitted from a user
+// convention's target check. Shell composition and unknown tools remain conservative.
+const auxiliaryRead = (entry: CaptureEnvelope): boolean => {
+  if (entry.event.trust !== "tool" || entry.event.mcp || !complete(entry)) return false;
+  if (/^(?:view|read_file|readFile|read|glob|grep|list_dir|list_directory|rg)$/u.test(entry.event.toolName ?? "")) return true;
+  if (!["powershell", "bash"].includes(entry.event.toolName ?? "")) return false;
+  const args = entry.event.redactedArguments;
+  const command = args && typeof args === "object" && !Array.isArray(args) ? (args as Readonly<Record<string, unknown>>).command : undefined;
+  return typeof command === "string" && !/[;&|<>`$\r\n]/u.test(command) &&
+    /^(?:Get-Content(?:\s+-LiteralPath)?|cat|head|tail)\s+(?:"[^"]+"|'[^']+'|[^\s]+)\s*$/iu.test(command);
+};
+
 const taskOnly = /\b(?:this|current) (?:task|session|change|edit|deployment|run|branch)\b|\b(?:for now|just this once|one[- ]time)\b|(?:这次|本次|当前任务|当前会话|当前分支|这个分支|暂时|先别)/iu;
 const commitRestriction = /\b(?:do not commit|don't commit|without committing)\b|(?:不要|别|不|无需)\s*(?:提交|commit\b)/iu;
 const shortApproval = /^(?:yes|yeah|ok(?:ay)?|sure|correct|do it|delete it|remove it|嗯|恩|好|好的|可以|对|删掉|删除|删了|删吧)[\s,，.!！。]*(?:(?:delete|remove)(?: it)?|(?:就|那就)?(?:删掉|删除|删了|删吧))?(?:一下)?[\s,，.!！。]*$/iu;
@@ -96,7 +108,11 @@ export const assessLearningRetention = (
       entry.event.branch !== anchor.event.branch || entry.event.commitSha !== anchor.event.commitSha ||
       entry.event.repoId !== scope.repoId || entry.event.worktree !== scope.worktree || entry.event.repositoryState !== "known_repo")) return reject("scope_unresolved");
   const citedPaths = [...sources.flatMap((source) => pathsInText(source.quote)), ...pathsInText(anchor.content?.message ?? "")];
-  if ([...citedPaths, ...events.flatMap(operationPaths)].some((path) => !inside(path, scope.worktree))) return reject("cross_repository_target");
+  const citedIds = new Set(material.map((entry) => entry.event.eventId));
+  const citedOperations = new Set(material.flatMap((entry) => entry.event.operationId ? [entry.event.operationId] : []));
+  const targets = events.filter((entry) => !(distilled && proposal.userSource && retention.kind === "convention" &&
+    !citedIds.has(entry.event.eventId) && !citedOperations.has(entry.event.operationId ?? "") && auxiliaryRead(entry)));
+  if ([...citedPaths, ...targets.flatMap(operationPaths)].some((path) => !inside(path, scope.worktree))) return reject("cross_repository_target");
   if (taskOnly.test(retention.futureUse)) return reject("task_only");
   if (!distilled && (normalize(retention.futureUse).length < 16 || normalize(retention.rationale).length < 16 ||
       normalize(retention.rationale) === normalize(proposal.rule))) return reject("missing_future_value");
