@@ -1,5 +1,6 @@
 import { createConnection } from "node:net";
 import { resolveWindowsProvenLoopLeaseName } from "./operational-paths.js";
+import { isRecordsResetPending } from "./record-reset.js";
 import { WindowsNamedPipeLeaseProvider, windowsNamedPipePath, type ProcessLease, type ProcessLeaseProvider } from "./process-lease.js";
 
 // A live lease needs no persistent marker recovery after the installer exits.
@@ -10,6 +11,7 @@ export const beginUpgradeMaintenance = async (dataRoot: string): Promise<Process
 };
 
 export const isUpgradeMaintenanceActive = async (dataRoot: string): Promise<boolean> => {
+  if (await isRecordsResetPending(dataRoot)) return true;
   const path = windowsNamedPipePath(await resolveWindowsProvenLoopLeaseName(dataRoot, "upgrade-maintenance"));
   return new Promise<boolean>((resolve, reject) => {
     const socket = createConnection(path);

@@ -24,6 +24,18 @@ const fixture = () => {
 };
 
 describe("explicit Knowledge review controls", () => {
+  it("moves an explicitly reviewed rule to its intended repository as a new manual rule", async () => {
+    const { service, store } = fixture();
+    const saved = await service.remember({ content: "Keep derived uniqueness fields private.", appliesWhen: ["Implementing uniqueness"], scope: "repository", scopeId: "wrong-repo" });
+    assert(saved.candidate);
+    const knowledgeId = saved.candidate.knowledgeId;
+    const review = service.review({ knowledgeId, scope: "repository", scopeId: "wrong-repo" });
+    const moved = await service.resolve({ knowledgeId, scope: "repository", scopeId: "wrong-repo", expectedDigest: review.expectedDigest,
+      userConfirmed: true, replacementScope: { scope: "repository", scopeId: "target-repo" } });
+    expect(moved.candidate).toMatchObject({ scopeId: "target-repo", state: "active", evidenceTier: "user_confirmed", supersedes: knowledgeId });
+    expect(store.knowledgeCandidates([knowledgeId])[0]?.state).toBe("superseded");
+    expect(service.list({ scope: "repository", scopeId: "target-repo" })).toHaveLength(1);
+  });
   it("lists disputed items without making them active or crossing repository scope", async () => {
     const { service } = fixture();
     const remembered = await service.remember({

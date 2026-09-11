@@ -1,6 +1,6 @@
 # ProvenLoop 0.1 Alpha installation
 
-**Updated:** 2026-09-09
+**Updated:** 2026-09-11
 
 ## Supported environment
 
@@ -11,7 +11,7 @@
 | npm | `>=11` |
 | GitHub Copilot CLI | `>=1.0.71` |
 | Automatic retrieval hooks | Copilot CLI `1.0.84-1`, with repository approval |
-| ProvenLoop | `0.1.0-alpha.0.14` evidence candidate |
+| ProvenLoop | `0.1.0-alpha.0.15` evidence candidate |
 
 The relaxed Node.js/npm ranges apply starting with `0.1.0-alpha.0.11`. Older
 tagged installers and tarballs retain their original requirements; use the new
@@ -24,12 +24,13 @@ The runtime also suppresses only SQLite's experimental-feature notice
 during SQLite module loading, including the background search reader. Other
 warnings and SQLite errors remain visible.
 
-The URLs below target the `0.1.0-alpha.0.14` Windows Design Partner Preview.
-The preview adds `provenloop ui`, a local read-only browser for knowledge, evidence,
-learning jobs, and usage. It retains 0.13's Windows upgrade recovery and 0.12's
-opt-in learning from ordinary corrections and captured agent investigation.
-See the [release notes](releases/0.1.0-alpha.0.14.md). M0/MVP remain No-Go for
-quality release; `0.1.0-alpha.1` is still an unapproved target.
+The URLs below target the `0.1.0-alpha.0.15` Windows Design Partner Preview.
+The preview adds source-qualified conventions and references, clearer work
+episodes, and knowledge review and cleanup through `provenloop ui`. It uses
+schema 16 and enables background learning when prerequisites are met, preserving
+explicit opt-outs. See the [release notes](releases/0.1.0-alpha.0.15.md).
+M0/MVP remain No-Go for quality release; `0.1.0-alpha.1` is still an unapproved
+target.
 
 Local 0.13 validation passed on Windows with Node.js 22.18.0: lint, typecheck,
 918/918 unit tests across 82 files with `PROVENLOOP_PROCESS_FIXTURE=1` and no
@@ -37,7 +38,9 @@ skipped tests, 269/269 integration tests across 25 files, `package:verify`, and
 Windows PowerShell 5.1 `install.ps1 -DryRun`. Native process-preservation and
 directory-lock fixtures and installed bundled-CLI error-32 recovery are included.
 These are retained 0.13 results. The [0.14 release notes](releases/0.1.0-alpha.0.14.md)
-record the new viewer and its validation separately.
+record that release's viewer validation separately. They do not establish 0.15
+acceptance. Actual model quality remains unvalidated in this round because a
+working model host was unavailable.
 
 The earlier `0.1.0-alpha.0.8` and `0.1.0-alpha.0.9` tags remain immutable.
 Package smoke stopped 0.8 publication; a real-runtime source context assertion
@@ -71,13 +74,13 @@ For the Microsoft-internal Design Partner preview, the canonical installation
 source is the exact tarball attached to the versioned GitHub Release.
 
 Upgrading does not require closing every foreground Copilot session, including
-hosts that loaded 0.11 or earlier. The 0.13 upgrade coordinates participating
+hosts that loaded 0.11 or earlier. The upgrade coordinates participating
 runtimes and retires only ownership-verified legacy ProvenLoop helpers. Old tools
 may disconnect; load the updated integration in a new session or through a
 host-supported reload. See [Upgrade](#upgrade) before migrating an older data root.
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
 ```
 
 The installer:
@@ -94,8 +97,9 @@ The installer:
    a fresh bootstrap install, or preserves existing settings on upgrade;
 8. runs passive Doctor.
 
-Background model requests stay disabled until you explicitly enable automatic
-learning. Capability switches alone do not provide inference consent.
+Background model requests are eligible when learning prerequisites are met,
+unless the user has explicitly disabled learning. This default also applies
+to older installations with no recorded preference.
 The bootstrap probes the exact target runtime's existing state even when the
 current process inherited a stale PATH. An already-version-matched plugin goes
 through verification rather than unnecessary uninstall/reinstall. Same-version
@@ -107,7 +111,7 @@ Install without automatic event collection:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1)
 )) -NoAutoCollect
 ```
 
@@ -119,14 +123,14 @@ Install without retrieval or correction learning:
 ```powershell
 & ([ScriptBlock]::Create(
   (Invoke-RestMethod `
-    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1)
+    https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1)
 )) -NoLearning
 ```
 
 For a manual tarball installation (without the bootstrap's orchestration):
 
 ```powershell
-$version = "0.1.0-alpha.0.14"
+$version = "0.1.0-alpha.0.15"
 $release = "https://github.com/cubika/ProvenLoop/releases/download/v$version"
 $downloadRoot = New-Item -ItemType Directory -Force .\.provenloop\downloads
 $package = Join-Path $downloadRoot.FullName "provenloop-cli-$version.tgz"
@@ -181,13 +185,13 @@ The bootstrap enables retrieval and correction-learning capabilities on fresh
 installs unless `-NoLearning` is supplied; upgrades preserve existing settings.
 Direct `provenloop install` enables capture and the worker unless
 `--no-auto-collect` is supplied. The manual example enables learning
-capabilities explicitly; model inference still requires the opt-in below.
+capabilities explicitly; see the automatic-learning version boundary below.
 Manual steps are not a transactional replacement for bootstrap rollback.
 Keep the previous runtime slot and stop
 on any failed command before editing PATH.
 
 The installer registers the release-pinned
-`cubika/ProvenLoop#v0.1.0-alpha.0.14` marketplace, installs
+`cubika/ProvenLoop#v0.1.0-alpha.0.15` marketplace, installs
 `provenloop@provenloop-marketplace`, and preserves existing JSONC settings.
 The MCP server runs through the globally installed `provenloop` command. The
 Extension is bundled in the plugin and does not reference a source checkout.
@@ -202,14 +206,14 @@ provenloop install --no-auto-collect
 ## Upgrade
 
 To upgrade from a published candidate, retain the previous runtime slot and
-recovery snapshots, then run the versioned 0.13 bootstrap. Foreground Copilot
+recovery snapshots, then run the versioned 0.15 bootstrap. Foreground Copilot
 work can remain open; only verified ProvenLoop helpers are eligible for targeted
 cleanup. Load the updated tools in a new session or through a host-supported
 reload after success. The bootstrap stages the new runtime in a separate slot,
 performs the integration upgrade, and switches the user PATH only after success:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
 ```
 
 For a manually downloaded and verified release tarball, use the same
@@ -218,7 +222,7 @@ global prefix or an unqualified `provenloop` command, because either can select
 an older runtime:
 
 ```powershell
-$version = "0.1.0-alpha.0.14"
+$version = "0.1.0-alpha.0.15"
 $runtimeSlot = Join-Path `
   $env:LOCALAPPDATA `
   "ProvenLoopRuntime\versions\$version"
@@ -257,7 +261,7 @@ installed code, not canonical user data.
 
 ### Maintenance migrations
 
-The 0.13 upgrade retires verified old ProvenLoop helper processes before plugin
+The upgrade retires verified old ProvenLoop helper processes before plugin
 replacement. It matches exact MCP runtime slots, launchers and attested extension
 bootstrap PIDs using Windows owner, parent, path and creation identity. Foreground
 Copilot, current ancestors and unrelated processes are excluded. Legacy extension
@@ -275,10 +279,11 @@ not invent Copilot `source_sha` metadata. Rollback errors remain explicit.
 See [plugin process recovery](plugin-process-recovery.md) for the recovery contract
 and the separately labeled historical 0.12 manual repair.
 
-Both 0.12 and 0.13 use schema 14; published 0.11 uses schema 10. Existing older
-databases require explicit `provenloop upgrade`; ordinary runtime opens do not
-silently migrate them. Old readers reject schema 14, which includes the new
-learning job and source-role formats.
+This release uses schema 16. Versions 0.12 through 0.14 use schema 14, and
+published 0.11 uses schema 10. Existing older databases require explicit
+`provenloop upgrade`; ordinary runtime opens do not silently migrate them.
+Older readers reject schema 16. Keep the pre-upgrade snapshot and runtime
+identity if rollback may be needed.
 
 The following coordination applies to sessions running a participating runtime.
 Upgrade first pauses new ProvenLoop MCP requests and background work. It waits up
@@ -381,57 +386,72 @@ provenloop doctor --online
 It classifies the provider as `available`, `signed_out`, `rate_limited`,
 `incompatible`, or `unavailable`.
 
-## Enable automatic learning
+## Automatic learning
 
-With capture and the worker enabled, review the disclosure and enable the
-learner. This opt-in covers ordinary user corrections and captured agent
-investigation and recovery. Bounded, redacted conversation and tool excerpts
-are sent to GitHub Copilot with the existing sign-in. Background requests have
-no tools or plugins, and Copilot service usage and retention policies apply.
+Learning starts when installation, capture, worker, and correction learning are
+enabled. Missing legacy preferences
+use this default. Explicitly disabled learning remains disabled across upgrades
+and capability changes. No acknowledgement timestamp is invented for a default.
+
+Background learning covers user corrections and captured agent investigation
+and recovery. It sends bounded, redacted conversation and tool excerpts to
+GitHub Copilot with the existing sign-in and service quota. Background requests
+have no tools or plugins; Copilot usage and retention policies apply.
 
 ```powershell
 provenloop enable retrieval
 provenloop enable correction_learning
-provenloop learning enable --confirm
+provenloop learning status
 provenloop learning approve-hooks --cwd C:\path\to\repository --confirm
 provenloop learning status
 ```
 
 `approve-hooks` grants the ProvenLoop Extension access to session hooks for
 that exact repository root. It currently supports Copilot CLI `1.0.84-1`;
-restart the Session after approval. Learning consent alone does not grant host
-permissions. Repeat repository approval for each repository used with automatic
-retrieval. Existing consent and capability settings survive upgrade.
+restart the Session after approval. Automatic learning does not grant host
+permissions or repair an unavailable Session identity. Repeat repository approval
+for each repository used with automatic retrieval.
 
 Ordinary corrections can produce source-backed candidates about code, documents,
 data meaning or plans. Agent findings require an exact captured summary and
-supporting tool-result quotations. Research and broad semantic proposals remain
-unverified candidates outside ordinary Context. Automatic activation covers
+supporting tool-result quotations. Qualified lasting conventions and source
+references can be returned while retaining the `inferred` label. References
+return captured excerpts only in the matching worktree and revision; they do
+not establish a broader reusable lesson. Task-local constraints stay within
+their originating session. Unsupported or legacy findings remain review-only.
+Automatic activation covers
 supported MCP invocation recovery and repository test-command substitutions
 with native causal evidence. Inspect provenance and scope using Knowledge
 review commands; agent text never counts as user confirmation.
 
 The learner keeps at most 32 events per window, processes a durable incremental
 queue, and applies bounded attempts, expiry and daily usage. `learning status`
-shows job progress, pause reasons and retry times. The controls are:
+shows effective `enabled`, `mode`, missing prerequisites in `blockedBy`, job
+progress, pause reasons, and retry times. Automatic eligibility does not prove
+that a provider request ran or that a job completed. The controls are:
 
 ```powershell
 provenloop learning disable
-provenloop learning enable --confirm
+provenloop learning enable
 provenloop learning mute
 provenloop learning unmute
 ```
+
+Mute changes only notifications. Disabling any prerequisite pauses extraction;
+restoring it resumes automatic eligibility unless learning was explicitly disabled.
+The installer displays the data/usage disclosure and effective learning
+state, and applies `-NoLearning` before restarting an existing integration.
 
 Disabling learning prevents subsequent result submission; it does not establish
 that every active process has already finished cleanup. Upgrade maintenance
 waits for the learner's full database lifetime and cleanup before migration.
 See the historical [0.12 release notes](releases/0.1.0-alpha.0.12.md) for the
 inherited learning features' provider experiments and their limits. Those results
-are not new 0.13 installed-host acceptance or evidence of controlled benefit.
+are not new 0.15 installed-host acceptance or evidence of controlled benefit.
 
 ## First useful use
 
-After enabling learning and restarting the approved Session, work normally.
+Once learning is eligible and the approved Session has restarted, work normally.
 A captured correction or supported self-directed recovery can produce a scoped
 rule; research alone produces a candidate. Use a later relevant task to inspect
 whether guidance was delivered, then check its source with Explain.
@@ -613,7 +633,7 @@ pipeline to the designated producer Feed, normally Common, with consumption
 through Enzyme. Direct publication to Enzyme is not assumed without approval
 from its owners.
 
-This 0.13 preview is not being published to the public npm registry. Any separate
+This 0.15 preview is not being published to the public npm registry. Any separate
 public/developer npm channel is not an installation dependency for this preview.
 
 This decision is recorded in

@@ -252,6 +252,8 @@ const stalePenalty = (
 };
 
 interface AggregatedKnowledge {
+  readonly deliveryMode?: RetrievedKnowledge["deliveryMode"];
+  readonly sources?: RetrievedKnowledge["sources"];
   readonly candidate: KnowledgeCandidate;
   readonly matchedTerms: ReadonlySet<string>;
   readonly score: number;
@@ -338,6 +340,7 @@ const renderKnowledge = (
 ): ContextItem => {
   const candidate = input.candidate;
   return {
+    ...(input.deliveryMode ? { deliveryMode: input.deliveryMode, sources: input.sources ?? [] } : {}),
     applicabilitySummary: [
       ...candidate.appliesWhen,
       ...candidate.nonApplicability.map(
@@ -346,10 +349,14 @@ const renderKnowledge = (
     ].join("; "),
     evidenceTier: candidate.evidenceTier,
     explanationRef: `knowledge:${candidate.knowledgeId}`,
-    guidance: candidate.content,
+    guidance: input.deliveryMode === "convention"
+      ? `Previously stated user convention (applies only within the recorded scope; current instructions take precedence):\n${input.sources?.filter((source) => source.role === "user").map((source) => source.quote).join("\n") ?? ""}`
+      : input.deliveryMode === "reference"
+        ? `Experience reference from a prior task. Check the cited source before applying; this is not verified execution guidance or permission. Captured source excerpts:\n${input.sources?.filter((source) => source.role === "tool").map((source) => source.quote).join("\n") ?? ""}`
+        : candidate.content,
     id: candidate.knowledgeId,
     kind: "knowledge",
-    rank: knowledgeRank(input, requestTokens, now),
+    rank: knowledgeRank(input, requestTokens, now) - (input.deliveryMode === "reference" ? 30 : 0),
     scope: candidate.scope,
     ...(candidate.scopeId === undefined
       ? {}
@@ -857,6 +864,10 @@ export class ContextRetrievalService {
       });
       if (
         branchContext !== undefined &&
+        branchContext.closedAt === undefined &&
+        (branchContext.supersededAt === undefined || (request.continuationEpisodeId !== undefined && branchContext.sourceEpisodeIds.includes(request.continuationEpisodeId))) &&
+        (branchContext.sourceSessionIds?.includes(sessionId) === true ||
+          (request.continuationEpisodeId !== undefined && branchContext.sourceEpisodeIds.includes(request.continuationEpisodeId))) &&
         !branchContextContainsPotentialSecret(branchContext) &&
         !previouslyReturned.has(
           `branch-context:${branchContext.branchContextId}`,
@@ -891,6 +902,8 @@ export class ContextRetrievalService {
 
     const items: ContextItem[] = [];
     for (const item of candidates) {
+      if (item.deliveryMode === "reference" && items.some((entry) => entry.deliveryMode === "reference")) continue;
+      if (item.deliveryMode === "reference" && estimateRenderedTokens(JSON.stringify(item)) > Math.min(400, Math.floor(tokenBudget / 2))) continue;
       if (items.length === MAX_CONTEXT_ITEMS) {
         break;
       }
@@ -1004,10 +1017,12 @@ export class ContextRetrievalService {
           expiresAt: context.expiresAt,
           headSha: context.headSha,
           repoId: context.repoId,
+          closedAt: context.closedAt,
+          supersededAt: context.supersededAt,
         },
         contradictoryEvidence: [],
         currentState:
-          context.expiresAt !== undefined &&
+          context.closedAt !== undefined ? "closed" : context.supersededAt !== undefined ? "superseded" : context.expiresAt !== undefined &&
           Date.parse(context.expiresAt) <= this.#now().getTime()
             ? "expired"
             : "active",
@@ -1019,6 +1034,8 @@ export class ContextRetrievalService {
             context.recentVerificationEvidenceIds,
           sourceEpisodeIds: context.sourceEpisodeIds,
           sourceEventIds: context.sourceEventIds,
+          sourceSessionIds: context.sourceSessionIds,
+          goalSourceEventId: context.goalSourceEventId,
         },
         status: "available",
       };
@@ -1091,6 +1108,8 @@ export class ContextRetrievalService {
           learning: learningProposals.map((proposal) => ({
             proposalId: proposal.proposalId,
             jobId: proposal.jobId,
+            ...(proposal.retention ? { retention: proposal.retention } : {}),
+            ...(proposal.supportingSources ? { supportingSources: proposal.supportingSources.map((source) => ({ ...source, quote: redactPotentialSecrets(source.quote) })) } : {}),
             ...(proposal.userSource ? { userSource: { ...proposal.userSource, quote: redactPotentialSecrets(proposal.userSource.quote) } } : {}),
             ...(proposal.agentSource ? { agentSource: { ...proposal.agentSource, quote: redactPotentialSecrets(proposal.agentSource.quote),
               evidenceSources: proposal.agentSource.evidenceSources.map((source) => ({ ...source, quote: redactPotentialSecrets(source.quote) })),
@@ -1122,6 +1141,7 @@ export class ContextRetrievalService {
               : {
                   episodeId,
                   finishedAt: episode.finishedAt,
+                  lastActivityAt: episode.lastActivityAt,
                   goal: redactPotentialSecrets(episode.goal),
                   startedAt: episode.startedAt,
                 };
@@ -1524,6 +1544,8 @@ export class ContextRetrievalService {
           match: "any",
           now,
           text: terms.join(" "),
+          worktree: request.cwd,
+          ...(request.headSha === undefined ? {} : { headSha: request.headSha }),
           ...(request.toolInvocation === undefined ? {} : { toolInvocation: request.toolInvocation }),
           ...(request.shellInvocation === undefined ? {} : { shellInvocation: request.shellInvocation }),
           ...(request.projectInstructions === undefined ? {} : { projectInstructions: request.projectInstructions }),
@@ -1559,6 +1581,7 @@ export class ContextRetrievalService {
       );
       return {
         candidate: hit.candidate,
+        ...(hit.deliveryMode ? { deliveryMode: hit.deliveryMode, sources: hit.sources } : {}),
         matchedTerms: new Set(
           terms.filter((term) => candidateTokens.has(term)),
         ),

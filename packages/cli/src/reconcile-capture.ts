@@ -238,6 +238,8 @@ export const reconcileCurrentSessionCapture = async (
     if (!within(ownerRoot, dataDirectory) || (await lstat(paths.database)).isSymbolicLink()) {
       return { status: "rejected", reason: "data_root_escape" };
     }
+    store = new CanonicalSqliteStore(paths.database);
+    const resetCutoff = store.getRecordsResetCutoff();
     const observationDirectory = join(dataDirectory, "capture-observations");
     await mkdir(observationDirectory, { recursive: true });
     if (!within(ownerRoot, await realpath(observationDirectory))) {
@@ -258,6 +260,7 @@ export const reconcileCurrentSessionCapture = async (
       if (!missing(error)) throw error;
     }
     const minimumTimestamp = new Date(Math.max(
+      resetCutoff === undefined ? Number.NEGATIVE_INFINITY : Date.parse(resetCutoff) + 1,
       Date.parse(state.updatedAt),
       Date.parse(storedMinimum ?? options.minimumTimestamp ?? observedAt),
       options.minimumTimestamp === undefined ? Number.NEGATIVE_INFINITY : Date.parse(options.minimumTimestamp),
@@ -292,7 +295,6 @@ export const reconcileCurrentSessionCapture = async (
     }
     const queue = new WindowsCaptureQueue(paths.queue);
     await queue.initialize();
-    store = new CanonicalSqliteStore(paths.database);
     const cacheKey = `${ownerRoot}\0${observationKey}`;
     const previous = cache.get(cacheKey);
     if (previous?.replayRequired === true && previous.lastCompleteOffset === sourceSize) cache.delete(cacheKey);

@@ -28,6 +28,7 @@ import {
 import { verifyLearningRecovery, renderLearningPredicate } from "./automatic-learning.js";
 import { sha256 } from "./digest.js";
 import { conflictingShellLearning } from "./shell-learning.js";
+import { learningSourceUse } from "./learning-source-use.js";
 
 export type KnowledgeAdmissionReason =
   | "content_mismatch"
@@ -367,6 +368,11 @@ const evaluateCandidate = (
     reasons.add("unresolved_counterevidence");
   }
   if (candidate.topicKey.startsWith("learning:") || candidate.knowledgeId.startsWith("learning-knowledge-")) {
+    const sourceUse = learningSourceUse(candidate, context.learningProposals, [...context.envelopesById.values()], context.allContextUseRecords);
+    if (sourceUse) {
+      if (candidate.sourceEvidenceIds.some((id) => context.recalledReferences.has(id))) reasons.add("recalled_knowledge_evidence");
+      return decision(candidate, [], reasons);
+    }
     const receipt = context.learningReceipts.find((entry) => context.learningProposals.some((proposal) => proposal.knowledgeId === candidate.knowledgeId && proposal.proposalId === entry.proposalId && proposal.sourceDigests.length === candidate.sourceEvidenceIds.length && proposal.sourceDigests.every((source) => sourceEvidence.has(source.eventId))));
     const proposal = context.learningProposals.find((entry) => entry.knowledgeId === candidate.knowledgeId && entry.proposalId === receipt?.proposalId);
     const checked = proposal && receipt ? verifyLearningRecovery(proposal, [...context.envelopesById.values()], receipt.proves === "invocation_contract" ? [receipt.contract] : [], new Date(receipt.verifiedAt)) : undefined;

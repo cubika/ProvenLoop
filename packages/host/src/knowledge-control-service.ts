@@ -37,6 +37,7 @@ export interface KnowledgeControlStore {
     candidates: readonly KnowledgeCandidate[],
   ): number;
   replaceKnowledgeWithConfirmedRule?(input: {
+    readonly scopeChange?: { readonly previousScope: Scope; readonly previousScopeId?: string; readonly scope: Scope; readonly scopeId?: string };
     readonly previousKnowledgeId: string;
     readonly expectedDigest: string;
     readonly candidate: KnowledgeCandidate;
@@ -203,6 +204,7 @@ export class KnowledgeControlService {
 
   public async resolve(
     input: KnowledgeReviewScope & {
+      readonly replacementScope?: KnowledgeReviewScope;
       readonly knowledgeId: string;
       readonly expectedDigest: string;
       readonly userConfirmed: boolean;
@@ -228,17 +230,19 @@ export class KnowledgeControlService {
         input.nonApplicability ?? previous.nonApplicability,
       );
       const reason = input.reason?.trim();
+      const targetScope = input.replacementScope ?? input;
+      const targetScopeId = validateScope(targetScope.scope, targetScope.scopeId);
       if (
         content.length === 0 ||
         appliesWhen.length === 0 ||
-        [content, ...appliesWhen, ...nonApplicability, reason ?? ""]
+        [content, ...appliesWhen, ...nonApplicability, reason ?? "", targetScopeId ?? ""]
           .some(containsPotentialSecret)
       ) {
         throw new Error("The confirmed rule needs non-empty, secret-free content and applicability.");
       }
       if (
-        input.scope === "workflow" &&
-        this.#workflowScopeId !== input.scopeId
+        targetScope.scope === "workflow" &&
+        this.#workflowScopeId !== targetScopeId
       ) {
         throw new Error("Workflow-scoped Knowledge requires a configured trusted workflow.");
       }
@@ -247,8 +251,8 @@ export class KnowledgeControlService {
         content,
         appliesWhen,
         nonApplicability,
-        scope: input.scope,
-        scopeId: input.scopeId,
+        scope: targetScope.scope,
+        scopeId: targetScopeId,
         previousKnowledgeId: previous.knowledgeId,
         expectedDigest,
         resolvesEvidenceIds,
@@ -256,6 +260,8 @@ export class KnowledgeControlService {
       const knowledgeId = `manual-knowledge-${sha256(identity).slice(0, 24)}`;
       const candidate = knowledgeCandidateSchema.parse({
         ...previous,
+        scope: targetScope.scope,
+        scopeId: targetScopeId,
         content,
         appliesWhen,
         nonApplicability,
@@ -306,6 +312,7 @@ export class KnowledgeControlService {
         throw new Error("Atomic Knowledge resolution is unavailable in this store.");
       }
       const result = this.#store.replaceKnowledgeWithConfirmedRule({
+        ...(input.replacementScope ? { scopeChange: { previousScope: previous.scope, ...(previous.scopeId === undefined ? {} : { previousScopeId: previous.scopeId }), scope: targetScope.scope, ...(targetScopeId === undefined ? {} : { scopeId: targetScopeId }) } } : {}),
         candidate,
         event,
         expectedDigest,

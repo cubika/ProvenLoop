@@ -28,6 +28,7 @@ export {
   type CanonicalEnrichmentResult,
   type CanonicalTimeRange,
   type CanonicalRangePage,
+  type CanonicalRecordsResetCounts,
   type LearningPromptWork,
   type QueueProcessingRecord,
   type SqliteMigration,

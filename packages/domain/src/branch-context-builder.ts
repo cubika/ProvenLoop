@@ -8,11 +8,8 @@ import {
   type WorkEpisode,
 } from "@provenloop/contracts";
 
-import {
-  CommitAncestryIndex,
-  commitAncestryEdgesFromEnvelopes,
-} from "./commit-ancestry.js";
 import { sha256 } from "./digest.js";
+import { isInternalWorkSource } from "./work-source.js";
 import {
   isCreatedCommitEvent,
   isVerificationEvent,
@@ -139,6 +136,18 @@ const hasExplicitContinuationMarker = (
     "unfinished",
   ]).length > 0;
 
+const isUserMessage = (envelope: CaptureEnvelope): boolean =>
+  envelope.event.trust === "user" &&
+  ["prompt.submitted", "user.corrected"].includes(envelope.event.eventType);
+
+const taskGoal = (envelope: CaptureEnvelope): string | undefined => {
+  if (!isUserMessage(envelope)) return undefined;
+  const goal = goalFromMessage(envelope.content?.message);
+  return goal !== undefined && /[\p{L}\p{N}]/u.test(goal) &&
+    !/^(?:ok(?:ay)?|yes|no|thanks?(?: you)?|done|continue|do it|嗯|好(?:的)?|谢谢|是的|继续)[.!。！\s]*$/iu.test(goal)
+    ? goal : undefined;
+};
+
 export class BranchContextBuilder {
   readonly #ttlMs: number;
 
@@ -158,9 +167,6 @@ export class BranchContextBuilder {
     );
     const episodes = inputEpisodes.map((episode) =>
       workEpisodeSchema.parse(episode),
-    );
-    const commitAncestry = new CommitAncestryIndex(
-      commitAncestryEdgesFromEnvelopes(envelopes),
     );
     const groups = new Map<
       string,
@@ -198,6 +204,7 @@ export class BranchContextBuilder {
               envelope.event.sessionId ?? "",
             ) &&
             envelope.event.repoId === group.repoId &&
+            !isInternalWorkSource(envelope.event) &&
             (
               envelope.event.branch === undefined ||
               envelope.event.branch === group.branch
@@ -209,43 +216,26 @@ export class BranchContextBuilder {
               Date.parse(right.event.timestamp) ||
             left.event.eventId.localeCompare(right.event.eventId),
         );
-      const headSha = [...candidateEnvelopes]
+      // A branch snapshot belongs to one captured task. Sharing a branch or
+      // commit does not carry temporary constraints into another session.
+      const sourceSessionId = candidateEnvelopes.findLast((envelope) =>
+        taskGoal(envelope) !== undefined || hasExplicitContinuationMarker(envelope) || isMaterialEvent(envelope),
+      )?.event.sessionId;
+      if (sourceSessionId === undefined) continue;
+      const relevant = candidateEnvelopes.filter((envelope) => envelope.event.sessionId === sourceSessionId);
+      const headSha = [...relevant]
         .reverse()
         .find((envelope) => envelope.event.commitSha !== undefined)
         ?.event.commitSha;
       if (headSha === undefined) {
         continue;
       }
-      const activeSessionIds = new Set(
-        [...candidateSessionIds].filter((sessionId) => {
-        const commits = candidateEnvelopes.flatMap((envelope) =>
-              envelope.event.sessionId === sessionId &&
-            envelope.event.commitSha !== undefined
-              ? [envelope.event.commitSha]
-              : [],
-        );
-        return commits.some(
-            (commit) =>
-              commit === headSha ||
-              commitAncestry.isAncestor({
-                ancestorCommit: commit,
-                descendantCommit: headSha,
-                repoId: group.repoId,
-              }),
-        );
-        }),
-      );
       const activeEpisodes = group.episodes.filter((episode) =>
-        episode.sessionIds.some((sessionId) =>
-          activeSessionIds.has(sessionId),
-        ),
+        episode.sessionIds.includes(sourceSessionId),
       );
       if (activeEpisodes.length === 0) {
         continue;
       }
-      const relevant = candidateEnvelopes.filter((envelope) =>
-        activeSessionIds.has(envelope.event.sessionId ?? ""),
-      );
       const initialMaterialEvents = relevant.filter(
         (envelope) =>
           isMaterialEvent(envelope) ||
@@ -255,14 +245,18 @@ export class BranchContextBuilder {
         continue;
       }
       const updatedAt = latestTimestamp(initialMaterialEvents);
+      const taskAnchor = relevant.findLast((envelope) =>
+        taskGoal(envelope) !== undefined && Date.parse(envelope.event.timestamp) <= Date.parse(updatedAt),
+      );
       const windowStart =
-        Date.parse(updatedAt) - this.#ttlMs;
+        Math.max(Date.parse(updatedAt) - this.#ttlMs,
+          taskAnchor === undefined ? Number.NEGATIVE_INFINITY : Date.parse(taskAnchor.event.timestamp));
       const windowedRelevant = relevant.filter(
         (envelope) =>
           Date.parse(envelope.event.timestamp) >= windowStart,
       );
       const userMessages = windowedRelevant.filter(
-        (envelope) => envelope.event.trust === "user",
+        isUserMessage,
       );
       const acceptedDecisions = sortedUnique(
         userMessages.flatMap((envelope) =>
@@ -333,17 +327,26 @@ export class BranchContextBuilder {
           );
         }
       }
-      const goal = [...associatedGoalMessages.values()]
+      const goalSource = [...associatedGoalMessages.values()]
         .sort(
           (left, right) =>
             Date.parse(right.event.timestamp) -
               Date.parse(left.event.timestamp) ||
             right.event.eventId.localeCompare(left.event.eventId),
         )
-        .map((envelope) =>
-          goalFromMessage(envelope.content?.message),
-        )
-        .find((value) => value !== undefined);
+        .find((envelope) => taskGoal(envelope) !== undefined) ?? taskAnchor;
+      const goal = goalSource === undefined ? undefined : taskGoal(goalSource);
+      const superseding = relevant.find((envelope) =>
+        taskGoal(envelope) !== undefined && Date.parse(envelope.event.timestamp) > Date.parse(updatedAt),
+      );
+      const closure = relevant.findLast((envelope) =>
+        envelope.event.eventType === "session.ended" && ["user", "system"].includes(envelope.event.trust),
+      );
+      const closed = closure !== undefined && !relevant.some((envelope) =>
+        Date.parse(envelope.event.timestamp) > Date.parse(closure.event.timestamp) &&
+        (isUserMessage(envelope) || isMaterialEvent(envelope) ||
+          ["session.started", "agent.message", "tool.started", "tool.completed"].includes(envelope.event.eventType)),
+      );
       const activeWindowSessionIds = new Set(
         windowedRelevant.flatMap((envelope) =>
           envelope.event.sessionId === undefined
@@ -365,16 +368,20 @@ export class BranchContextBuilder {
             branch: group.branch,
             headSha,
             repoId: group.repoId,
+            sourceSessionId,
+            goalSourceEventId: goalSource?.event.eventId,
           }).slice(0, 24)}`,
         expiresAt: new Date(
           Date.parse(updatedAt) + this.#ttlMs,
         ).toISOString(),
         explicitConstraints,
+        ...(closed && closure !== undefined ? { closedAt: closure.event.timestamp, closureSourceEventIds: [closure.event.eventId] } : {}),
         ...(goal === undefined
           ? {}
           : {
               goal,
             }),
+        ...(goalSource === undefined ? {} : { goalSourceEventId: goalSource.event.eventId }),
         headSha,
         implementationState,
         recentVerificationEvidenceIds: sortedUnique(
@@ -391,6 +398,8 @@ export class BranchContextBuilder {
             (envelope) => envelope.event.eventId,
           ),
         ),
+        sourceSessionIds: [sourceSessionId],
+        ...(superseding === undefined ? {} : { supersededAt: superseding.event.timestamp, supersedingSourceEventId: superseding.event.eventId }),
         unfinishedItems,
         updatedAt,
       });

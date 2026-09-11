@@ -6,19 +6,24 @@ import {
 import {
   access,
   link,
+  lstat,
   mkdir,
   open,
   readFile,
   readdir,
   realpath,
   rename,
+  rmdir,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import {
+  dirname,
   join,
+  relative,
   resolve,
+  sep,
 } from "node:path";
 
 import {
@@ -41,6 +46,7 @@ import {
   WindowsNamedPipeLeaseProvider,
   type ProcessLease,
 } from "./process-lease.js";
+import { isRecordsResetPending } from "./record-reset.js";
 
 const queueItemIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 
@@ -324,6 +330,7 @@ export class WindowsCaptureQueue {
         now,
       );
       await this.#assertNoDeletionBarrier();
+      if (await this.#predatesRecordsReset(item.envelope.event.timestamp)) throw new DeletedCaptureSourceError();
       if (
         await this.#identitiesBlocked([
           {
@@ -387,6 +394,7 @@ export class WindowsCaptureQueue {
         now,
       );
       await this.#assertNoDeletionBarrier();
+      if (await this.#predatesRecordsReset(item.envelope.event.timestamp)) return { status: "duplicate" };
       if (
         await this.#identitiesBlocked([
           {
@@ -461,6 +469,86 @@ export class WindowsCaptureQueue {
         ? items
         : items.filter((item) => item.state === state);
     });
+  }
+
+  /** Reset only this owned queue while its capture barrier is held. */
+  public clearAllRecords(cutoff: string): Promise<{ readonly clearedItems: number }> {
+    return this.#runExclusive(async () => {
+      this.#assertInitialized();
+      const timestamp = Date.parse(cutoff);
+      if (!Number.isFinite(timestamp) || timestamp > this.#now().getTime()) {
+        throw new Error("Queue reset cutoff must be a valid time no later than now.");
+      }
+      if (!await this.#deletionBarrierActive()) throw new Error("Queue reset requires an active capture barrier.");
+      const root = await realpath(this.#root);
+      if ((await lstat(this.#root)).isSymbolicLink() || root.toLowerCase() !== this.#root.toLowerCase()) {
+        throw new Error("Queue reset refuses indirect queue roots.");
+      }
+      const previous = await this.#recordsResetCutoff();
+      if (previous !== undefined && timestamp < previous) throw new Error("Queue reset cutoff cannot move backwards.");
+      const protectedPaths = new Set([
+        join(this.#root, ".deletion", "active"),
+        join(this.#root, ".records-reset-cutoff"),
+      ]);
+      const files: string[] = [];
+      const directories: string[] = [];
+      let clearedItems = 0;
+      const collect = async (directory: string): Promise<void> => {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const path = join(directory, entry.name);
+          const within = relative(this.#root, path);
+          if (within === "" || within === ".." || within.startsWith(".." + sep)) throw new Error("Queue reset path escaped its root.");
+          const info = await lstat(path);
+          if (info.isSymbolicLink()) throw new Error("Queue reset refuses indirect child paths.");
+          if (protectedPaths.has(path)) {
+            if (!info.isFile()) throw new Error("Queue reset marker must be a regular file.");
+            continue;
+          }
+          if (info.isDirectory()) {
+            await collect(path);
+            if (path !== join(this.#root, ".deletion")) directories.push(path);
+          } else if (info.isFile()) {
+            files.push(path);
+            if (directory === this.#root && entry.name.endsWith(".json")) clearedItems += 1;
+          } else throw new Error("Queue reset encountered an unsupported filesystem entry.");
+        }
+      };
+      // Inventory before changing records. File contents may be corrupt and are
+      // deliberately not parsed; recursive filesystem links are never followed.
+      await collect(this.#root);
+      const marker = join(this.#root, ".records-reset-cutoff");
+      const pending = marker + "." + randomUUID() + ".tmp";
+      try {
+        const handle = await open(pending, "wx");
+        try { await handle.writeFile(new Date(timestamp).toISOString() + "\n", "utf8"); await handle.sync(); }
+        finally { await handle.close(); }
+        await rename(pending, marker);
+      } finally { await unlink(pending).catch((error: unknown) => { if (!this.#isMissing(error)) throw error; }); }
+      for (const path of files) await unlink(path).catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+      for (const path of directories) await rmdir(path).catch((error: unknown) => { if (!this.#isMissing(error)) throw error; });
+      await mkdir(join(this.#root, ".active"), { recursive: true });
+      await mkdir(join(this.#root, ".acknowledged"), { recursive: true });
+      await writeFile(join(this.#root, ".indexes-v2"), "2\n", "utf8");
+      this.#claimCandidates = [];
+      this.#claimCandidateIndex = 0;
+      return { clearedItems };
+    });
+  }
+
+  async #recordsResetCutoff(): Promise<number | undefined> {
+    const path = join(this.#root, ".records-reset-cutoff");
+    try {
+      const info = await lstat(path);
+      if (info.isSymbolicLink() || !info.isFile() || info.size > 128) throw new Error("Invalid queue reset cutoff marker.");
+      const timestamp = Date.parse((await readFile(path, "utf8")).trim());
+      if (!Number.isFinite(timestamp)) throw new Error("Invalid queue reset cutoff marker.");
+      return timestamp;
+    } catch (error) { if (this.#isMissing(error)) return undefined; throw error; }
+  }
+
+  async #predatesRecordsReset(timestamp: string): Promise<boolean> {
+    const cutoff = await this.#recordsResetCutoff();
+    return cutoff !== undefined && Date.parse(timestamp) <= cutoff;
   }
 
   public get(queueItemId: string): Promise<CaptureQueueItem> {
@@ -1165,7 +1253,7 @@ export class WindowsCaptureQueue {
   }
 
   async #assertNoDeletionBarrier(): Promise<void> {
-    if (await this.#deletionBarrierActive()) {
+    if (await this.#deletionBarrierActive() || await isRecordsResetPending(dirname(this.#root))) {
       throw new CaptureQueueDeletionInProgressError();
     }
   }

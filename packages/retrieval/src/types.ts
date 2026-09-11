@@ -128,6 +128,8 @@ extends CanonicalKnowledgeAdmissionStore {
 }
 
 export interface KnowledgeRetrievalQuery {
+  readonly worktree?: string;
+  readonly headSha?: string;
   readonly shellInvocation?: TrustedShellInvocation;
   readonly toolInvocation?: TrustedToolInvocation;
   readonly projectInstructions?: readonly string[];
@@ -143,9 +145,12 @@ export interface KnowledgeRetrievalQuery {
 export interface RetrievedKnowledge {
   readonly candidate: KnowledgeCandidate;
   readonly score: number;
+  readonly deliveryMode?: "convention" | "reference";
+  readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
 }
 
 export interface ContextRequest {
+  readonly continuationEpisodeId?: string;
   readonly shellInvocation?: TrustedShellInvocation;
   readonly toolInvocation?: TrustedToolInvocation;
   readonly projectInstructions?: readonly string[];
@@ -187,6 +192,8 @@ export interface TrustedWorkspaceIdentity {
 export type ContextItemKind = "branch_context" | "knowledge";
 
 export interface ContextItem {
+  readonly deliveryMode?: "convention" | "reference";
+  readonly sources?: readonly { eventId: string; quote: string; role: "user" | "tool" }[];
   readonly applicabilitySummary: string;
   readonly evidenceTier?: EvidenceTier;
   readonly explanationRef: string;

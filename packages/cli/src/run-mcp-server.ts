@@ -252,14 +252,17 @@ const parseContextRequest = (
       "fileHints",
       "prompt",
       "tokenBudget",
+      "continuationEpisodeId",
     ])
   ) {
     return undefined;
   }
   const prompt = nonEmptyString(input.prompt);
   const fileHints = stringList(input.fileHints);
+  const continuationEpisodeId = input.continuationEpisodeId === undefined ? undefined : nonEmptyString(input.continuationEpisodeId);
   if (
     prompt === undefined ||
+    (input.continuationEpisodeId !== undefined && (continuationEpisodeId === undefined || continuationEpisodeId.length > 256)) ||
     typeof input.tokenBudget !== "number" ||
     !Number.isInteger(input.tokenBudget) ||
     input.tokenBudget <= 0 ||
@@ -273,6 +276,7 @@ const parseContextRequest = (
   }
   return {
     cwd: trusted.cwd,
+    ...(continuationEpisodeId === undefined ? {} : { continuationEpisodeId }),
     ...(fileHints === undefined
       ? {}
       : {
@@ -442,6 +446,7 @@ const tools = [
     inputSchema: {
       additionalProperties: false,
       properties: {
+        continuationEpisodeId: { type: "string", maxLength: 256, description: "The known episode ID only when explicitly continuing that work. Other tasks do not receive its temporary constraints." },
         fileHints: {
           items: {
             type: "string",

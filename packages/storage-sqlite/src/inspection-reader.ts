@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { SQLInputValue } from "node:sqlite";
 import {
   captureEnvelopeSchema, contextUseRecordSchema, deletionOperationSchema, feedbackEventSchema,
   knowledgeCandidateSchema, learningJobSchema, learningRecoveryReceiptSchema,
   ruleProposalSchema, workEpisodeSchema,
 } from "@provenloop/contracts";
-import { deletionIdentityDigest, sha256 } from "@provenloop/domain";
+import { capturedRepositoryAliases, deletionIdentityDigest, directKnowledgeCounterevidence, knowledgeEvidenceState, learningSourceUse, sha256, suggestKnowledgeDuplicates } from "@provenloop/domain";
 import { DEFAULT_SQLITE_MIGRATIONS } from "./canonical-store.js";
 import { DatabaseSync } from "./node-sqlite.js";
 
@@ -46,6 +47,9 @@ export const readInspection = <T>(path: string, read: (reader: InspectionReader)
   const key = optionalText(`${path}.deletion.key`);
   if (!key || !/^[a-f0-9]{64}$/u.test(key)) throw new Error("The storage identity key is missing or malformed. Run provenloop doctor before browsing.");
   const guard = (): void => {
+    if (existsSync(resolve(dirname(path), "records-reset.pending.json"))) {
+      throw new Error("Evidence is unavailable while record reset is pending. Complete record reset, then refresh.");
+    }
     if (existsSync(`${path}.restore.lock`) || generation !== optionalText(`${path}.restore.generation`) ||
       key !== optionalText(`${path}.deletion.key`)) {
       throw new Error("Storage is being restored or replaced. Refresh after maintenance finishes.");
@@ -83,7 +87,7 @@ export const readInspection = <T>(path: string, read: (reader: InspectionReader)
 export class InspectionReader {
   public constructor(private readonly database: DatabaseSync) {}
 
-  public summary() {
+  public summary(now = new Date()) {
     const counts = Object.fromEntries(Object.entries(collections).map(([name, { table }]) =>
       [name, Number(this.database.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.n)]));
     const states = this.database.prepare("SELECT json_extract(body_json, '$.state') AS state, count(*) AS count FROM knowledge_candidates GROUP BY state").all();
@@ -92,7 +96,17 @@ export class InspectionReader {
       sum(CASE WHEN json_array_length(body_json, '$.returnedKnowledgeIds') > 0 THEN 1 ELSE 0 END) AS provided,
       sum(CASE WHEN json_array_length(body_json, '$.appliedKnowledgeIds') > 0 THEN 1 ELSE 0 END) AS adopted
       FROM context_use_records`).get();
-    return { counts, states, latest: latest ?? null, usage };
+    const distribution = (column: "event_type" | "session_id" | "trust" | "adapter_version" | "parse_status", limit = 20) =>
+      this.database.prepare(`SELECT coalesce(${column}, 'Unknown') AS label, count(*) AS count FROM raw_events GROUP BY ${column} ORDER BY count DESC, label LIMIT ?`).all(limit);
+    const growth = this.database.prepare(`SELECT
+      sum(CASE WHEN first_seen_at >= ? AND first_seen_at <= ? THEN 1 ELSE 0 END) AS lastDay,
+      sum(CASE WHEN first_seen_at >= ? AND first_seen_at <= ? THEN 1 ELSE 0 END) AS lastWeek,
+      count(DISTINCT session_id) AS sessions, sum(delivery_count) AS deliveries
+      FROM raw_events`).get(new Date(now.getTime() - 86_400_000).toISOString(), now.toISOString(), new Date(now.getTime() - 604_800_000).toISOString(), now.toISOString());
+    const jobs = this.database.prepare("SELECT state AS label, count(*) AS count FROM learning_jobs GROUP BY state ORDER BY count DESC, state").all();
+    return { counts, states, latest: latest ?? null, usage, growth, jobs,
+      eventTypes: distribution("event_type"), sessions: distribution("session_id", 10),
+      trust: distribution("trust"), adapterVersions: distribution("adapter_version"), parseStatuses: distribution("parse_status") };
   }
 
   public list(collection: InspectionCollection, filter: InspectionFilter = {}) {
@@ -105,7 +119,10 @@ export class InspectionReader {
       predicates.push(`instr(lower(${definition.search}), lower(?)) > 0`);
       values.push(filter.query.slice(0, 256));
     }
-    if (filter.state && (collection === "knowledge" || collection === "jobs")) {
+    if (collection === "knowledge" && !filter.state) {
+      predicates.push("json_extract(body_json, '$.state') NOT IN ('archived', 'superseded')");
+    }
+    if (filter.state && filter.state !== "all" && (collection === "knowledge" || collection === "jobs")) {
       predicates.push("json_extract(body_json, '$.state') = ?"); values.push(filter.state);
     }
     if (filter.scope && collection === "knowledge") {
@@ -138,7 +155,55 @@ export class InspectionReader {
       EXISTS (SELECT 1 FROM json_each(body_json, '$.appliedKnowledgeIds') WHERE value IN (?, ?))
       ORDER BY created_at DESC LIMIT 101`).all(id, `knowledge:${id}`, id, `knowledge:${id}`)
       .map((item) => contextUseRecordSchema.parse(JSON.parse(String(item.body_json))));
-    return { candidate, proposals, feedback, usage };
+    const sourceIds = candidate.sourceEvidenceIds.map((source) => /^[a-f0-9]{64}$/u.test(source) ? `event-${source}` : source);
+    const sourceRows = sourceIds.flatMap((source) => this.database.prepare(
+      "SELECT event_id, session_id FROM raw_events WHERE event_id = ? AND parse_status = 'supported'",
+    ).all(source));
+    const sessions = [...new Set(sourceRows.map((source) => source.session_id).filter((session): session is string => typeof session === "string"))];
+    const envelopes = new Map<string, ReturnType<typeof captureEnvelopeSchema.parse>>();
+    for (const source of sourceIds) {
+      const event = this.event(source); if (event?.parseStatus === "supported") envelopes.set(event.envelope.event.eventId, event.envelope);
+    }
+    for (const session of sessions) {
+      for (const source of this.database.prepare(`SELECT raw_events.safe_envelope_json,
+        raw_event_enrichments.original_digest, raw_event_enrichments.safe_envelope_json AS enriched_json
+        FROM raw_events LEFT JOIN raw_event_enrichments USING (deduplication_key)
+        WHERE session_id = ? AND parse_status = 'supported'`).all(session)) {
+        const original = captureEnvelopeSchema.parse(JSON.parse(String(source.safe_envelope_json)));
+        if (source.enriched_json !== null && source.original_digest !== sha256(original)) throw new Error("Event enrichment does not match its source.");
+        const envelope = source.enriched_json === null ? original : captureEnvelopeSchema.parse(JSON.parse(String(source.enriched_json)));
+        envelopes.set(envelope.event.eventId, envelope);
+      }
+    }
+    const allFeedback = this.database.prepare("SELECT body_json FROM feedback_events WHERE json_extract(body_json, '$.targetId') = ?").all(id)
+      .map((entry) => feedbackEventSchema.parse(JSON.parse(String(entry.body_json))));
+    const evidence = knowledgeEvidenceState({
+      counters: directKnowledgeCounterevidence([...envelopes.values()], new Set(sourceIds), candidate.createdAt),
+      createdAt: candidate.createdAt, feedbackEvents: allFeedback, knowledgeId: id,
+    });
+    const sessionUses = sessions.flatMap((session) => this.database.prepare("SELECT body_json FROM context_use_records WHERE session_id = ?").all(session))
+      .map((entry) => contextUseRecordSchema.parse(JSON.parse(String(entry.body_json))));
+    const sourceUse = evidence.unresolvedEvidenceIds.length === 0 && candidate.conflictsWith.length === 0 &&
+      (!candidate.expiresAt || Date.parse(candidate.expiresAt) > Date.now())
+      ? learningSourceUse(candidate, proposals.map((entry) => entry.proposal), [...envelopes.values()], sessionUses) : undefined;
+    const repositoryAliases = candidate.scope === "repository" && candidate.scopeId ? capturedRepositoryAliases(candidate.scopeId, [...envelopes.values()]) : [];
+    const matchingScopes = JSON.stringify([candidate.scopeId ?? null, ...repositoryAliases]);
+    const peers = this.database.prepare(`SELECT body_json FROM knowledge_candidates
+      WHERE json_extract(body_json, '$.scope') = ? AND EXISTS (SELECT 1 FROM json_each(?) WHERE value IS json_extract(body_json, '$.scopeId'))
+      AND json_extract(body_json, '$.state') NOT IN ('archived', 'superseded')
+      ORDER BY updated_at DESC LIMIT 200`).all(candidate.scope, matchingScopes)
+      .map((entry) => knowledgeCandidateSchema.parse(JSON.parse(String(entry.body_json))));
+    const peerProposals = this.database.prepare(`SELECT learning_proposals.body_json FROM learning_proposals
+      JOIN knowledge_candidates ON knowledge_candidates.knowledge_id = learning_proposals.knowledge_id
+      WHERE json_extract(knowledge_candidates.body_json, '$.scope') = ?
+      AND EXISTS (SELECT 1 FROM json_each(?) WHERE value IS json_extract(knowledge_candidates.body_json, '$.scopeId'))
+      ORDER BY json_extract(learning_proposals.body_json, '$.createdAt') DESC LIMIT 400`).all(candidate.scope, matchingScopes)
+      .map((entry) => ruleProposalSchema.parse(JSON.parse(String(entry.body_json))));
+    return { candidate, proposals, feedback, usage, expectedDigest: sha256(candidate),
+      similar: suggestKnowledgeDuplicates(candidate, peers, peerProposals, repositoryAliases),
+      ...(sourceUse ? { availableAs: { mode: sourceUse.mode, worktree: sourceUse.worktree, commitSha: sourceUse.commitSha } } : {}),
+      unresolvedEvidenceIds: evidence.unresolvedEvidenceIds,
+      missingEvidenceIds: sourceIds.filter((source) => !envelopes.has(source)) };
   }
 
   public proposals(column: "knowledge_id" | "job_id", id: string) {

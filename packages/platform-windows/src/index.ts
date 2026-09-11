@@ -54,3 +54,4 @@ export {
   type WindowsProvenLoopPaths,
 } from "./operational-paths.js";
 export { beginUpgradeMaintenance, isUpgradeMaintenanceActive, waitForMaintenanceLease } from "./upgrade-maintenance.js";
+export { isRecordsResetPending, recordsResetPendingPath } from "./record-reset.js";

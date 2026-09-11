@@ -26,6 +26,7 @@ const branchContinuationScenarioSchema = z.enum([
   "missing_branch",
   "missing_head",
   "missing_repo",
+  "new_task",
   "no_context",
   "repository_mismatch",
   "token_budget_exceeded",
@@ -298,8 +299,9 @@ const contextForCase = (
       testCase.scenario === "repository_mismatch"
         ? `${identity.repoId}-other`
         : identity.repoId,
-    sourceEpisodeIds: [],
+    sourceEpisodeIds: ["episode-" + testCase.caseId],
     sourceEventIds: [],
+    sourceSessionIds: ["previous-session-" + testCase.caseId],
     unfinishedItems: [
       `Finish ${testCase.goal}.`,
     ],
@@ -425,6 +427,10 @@ export const evaluateBranchContinuationDataset = async (
           ? 20
           : testCase.tokenBudget ?? parsed.tokenBudget;
       const response = await service.context({
+        // These synthetic pairs model an explicit resume from a previous
+        // session. Authorization is independent of the relevance label so a
+        // mislabeled positive still exposes a wrong injection in evaluation.
+        ...(testCase.scenario === "new_task" ? {} : { continuationEpisodeId: "episode-" + testCase.caseId }),
         ...(testCase.scenario === "missing_branch"
           ? {}
           : {

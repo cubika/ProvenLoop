@@ -125,6 +125,7 @@ describe("deletion propagation", () => {
         repoId: "repo-1",
         sessionId: "session-1",
         sourceEventId: "session-survivor",
+        content: { message: "Source deletion retains unrelated work in this session." },
         timestamp: "2026-08-30T00:07:00.000Z",
         trust: "model",
       });
@@ -567,6 +568,7 @@ describe("deletion propagation", () => {
       repoId: "repo-1",
       sessionId: "session-resume",
       sourceEventId: "source-resume",
+      content: { message: "Implement retryable episode deletion." },
       timestamp: "2026-08-30T00:00:00.000Z",
       trust: "user",
     });
@@ -745,6 +747,7 @@ describe("deletion propagation", () => {
       repoId: "repo-1",
       sessionId: "session-episode-scope",
       sourceEventId: "episode-supported-source",
+      content: { message: "Investigate episode deletion scope." },
       timestamp: "2026-08-30T00:00:00.000Z",
       trust: "user",
     });
@@ -882,6 +885,7 @@ describe("deletion propagation", () => {
       repoId: "repo-1",
       sessionId: "session-episode-parent",
       sourceEventId: "episode-parent-source",
+      content: { message: "Inspect dependencies without expanding deletion scope." },
       timestamp: "2026-08-30T00:00:00.000Z",
       trust: "user",
     });

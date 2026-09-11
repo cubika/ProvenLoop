@@ -3,6 +3,17 @@ import { captureEnvelopeSchema } from "./capture.js";
 import { identifierSchema, isoTimestampSchema, sha256DigestSchema } from "./common.js";
 
 const text = z.string().trim().min(1).max(2048);
+export const learningSupportingSourceSchema = z.object({
+  eventId: identifierSchema, quote: text,
+}).strict();
+export const learningRetentionSchema = z.object({
+  kind: z.enum(["convention", "reference", "recovery"]),
+  lifetime: z.enum(["durable", "task"]),
+  rationale: text, futureUse: text,
+  targetRepository: z.object({
+    status: z.enum(["captured", "unresolved"]), repoId: identifierSchema.optional(),
+  }).strict(),
+}).strict();
 export const agentLearningSourceSchema = z.object({
   kind: z.enum(["research", "recovery"]), eventId: identifierSchema, quote: text,
   evidenceSources: z.array(z.object({ eventId: identifierSchema, quote: text }).strict()).min(1).max(8),
@@ -32,6 +43,9 @@ export const shellLearningPredicateSchema = z.object({
 }).strict();
 export const ruleProposalInputSchema = z.object({
   rule: text, trigger: text, exclusions: z.array(text).min(1).max(8),
+  retention: learningRetentionSchema.optional(),
+  supportingSources: z.array(learningSupportingSourceSchema).min(1).max(8).optional(),
+  canonicalKey: z.string().trim().min(1).max(256).optional(),
   userSource: z.object({ eventId: identifierSchema, quote: text }).strict().optional(),
   agentSource: agentLearningSourceSchema.optional(),
   failedOperationEventId: identifierSchema.optional(), retryOperationEventId: identifierSchema.optional(),
@@ -101,6 +115,7 @@ export const shellRecoveryReceiptSchema = z.object({
 });
 export const learningRecoveryReceiptSchema = z.discriminatedUnion("proves", [mcpRecoveryReceiptSchema, shellRecoveryReceiptSchema]);
 export type LearningWindow = z.infer<typeof learningWindowSchema>;
+export type LearningRetention = z.infer<typeof learningRetentionSchema>;
 export type LearningJob = z.infer<typeof learningJobSchema>;
 export type LearningPredicate = z.infer<typeof learningPredicateSchema>;
 export type LearningToolContract = z.infer<typeof learningToolContractSchema>;

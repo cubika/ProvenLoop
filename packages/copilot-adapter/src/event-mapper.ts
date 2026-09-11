@@ -1397,8 +1397,9 @@ export class CopilotEventMapper {
     const sameWorktree = worktree !== undefined && this.#workspace.worktree !== undefined &&
       comparable(worktree) === comparable(this.#workspace.worktree);
     const explicitlyOutside = context.gitRoot === null && context.repository === null;
-    const repoId = optionalString(context, "repository") ??
-      (sameWorktree && !explicitlyOutside ? this.#workspace.repoId : undefined);
+    const repoId = explicitlyOutside ? undefined
+      : (sameWorktree ? this.#workspace.repoId : undefined) ??
+        optionalString(context, "repository");
     const branch = optionalString(context, "branch");
     const commitSha = optionalString(context, "headCommit");
     const workflowScopeId = context.workflowScopeId === null ? undefined

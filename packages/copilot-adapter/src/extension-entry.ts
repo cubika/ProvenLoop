@@ -37,7 +37,7 @@ import { recoverPermissionBridges } from "./permission-bridge-recovery.js";
 import { homedir } from "node:os";
 import type { LearningToolContract } from "@provenloop/contracts";
 import type { CopilotSessionEvent, CopilotWorkspaceSnapshot } from "./event-mapper.js";
-import { readCopilotAdapterState } from "./operational-state.js";
+import { readCopilotAdapterState, resolveAutomaticLearning } from "./operational-state.js";
 import { startCopilotExtensionCapture, type CaptureTerminationSignalSource } from "./start-extension.js";
 import {
   TrustedSessionContextPublisher,
@@ -289,10 +289,11 @@ export const runInstalledCopilotExtension = async (
       };
     }
     const queue = new WindowsCaptureQueue(paths.queue, { onDiagnostic: diagnostic });
-    const hooksEnabled = state.automaticLearning?.enabled === true &&
+    const learning = resolveAutomaticLearning(state);
+    const hooksEnabled = learning.enabled &&
       await hasCopilotLearningHookApproval(options.copilotHome ?? environment.COPILOT_HOME ?? join(homedir(), ".copilot"),
         identity.worktreePath ?? process.cwd(), adapterVersion);
-    if (state.automaticLearning?.enabled && !hooksEnabled) diagnostic("Automatic retrieval paused: grant Copilot repository-scoped ProvenLoop hook access, then restart this session. Capture and bounded extraction remain enabled.");
+    if (learning.enabled && !hooksEnabled) diagnostic("Automatic retrieval paused: grant Copilot repository-scoped ProvenLoop hook access, then restart this session. Capture and bounded extraction remain enabled.");
     let queueReady: Promise<void> | undefined;
     const initializeQueue = (): Promise<void> => {
       queueReady ??= queue.initialize().catch((error: unknown) => {

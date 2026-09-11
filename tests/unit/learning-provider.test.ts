@@ -83,6 +83,29 @@ describe("Copilot provider error boundaries (injected runner, not native accepta
     await expect(invalid.infer(window(), { signal: new AbortController().signal })).rejects.toThrow("bounded JSON");
     expect(await readdir(temporaryRoot)).toEqual([]);
   });
+  it("requires retention metadata from the production extractor and filters task-only output", async () => {
+    const temporaryRoot = await root();
+    const input = window();
+    const event = input.events[0];
+    if (!event?.content?.message) throw new Error("Expected fixture source.");
+    const base = { rule: "Supply path.", trigger: "Reading repository files", exclusions: ["Other tools"],
+      userSource: { eventId: event.event.eventId, quote: event.content.message } };
+    const provider = (proposal: unknown) => new CopilotLearningProvider({ temporaryRoot, enabled: async () => true,
+      runner: { run: async (_executable, args) => {
+        const prompt = args[args.indexOf("--prompt") + 1] ?? "";
+        expect(prompt).toContain("supportingSources");
+        expect(prompt).toContain("targetRepository");
+        expect(prompt).toContain("canonicalKey");
+        return { ...success, stdout: JSON.stringify({ schemaVersion: 1, proposals: [proposal] }) };
+      } } });
+    await expect(provider(base).infer(input, { signal: new AbortController().signal })).rejects.toThrow("bounded JSON");
+    const task = { ...base, retention: { kind: "convention", lifetime: "task", rationale: "This is the current task only.",
+      futureUse: "No use after completing this task.", targetRepository: { status: "captured", repoId: input.repoId } },
+      supportingSources: [base.userSource], canonicalKey: "path argument for current task" };
+    expect(await provider(task).infer(input, { signal: new AbortController().signal })).toEqual({ schemaVersion: 1, proposals: [] });
+    expect(await readdir(temporaryRoot)).toEqual([]);
+  });
+
   it("enforces the documented 16 KiB response budget even for schema-valid output", async () => {
     const temporaryRoot = await root();
     const proposal = { rule: "r".repeat(2048), trigger: "t".repeat(2048), exclusions: Array.from({ length: 6 }, () => "x".repeat(2048)),

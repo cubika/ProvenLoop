@@ -2,6 +2,36 @@
 
 All notable changes to ProvenLoop are documented here.
 
+## Unreleased
+
+## [0.1.0-alpha.0.15] - 2026-09-11
+
+- Add `records clear` and an Overview action to clear all records while preserving
+  installation and configuration. Reset drains active work, survives interruption,
+  and prevents old event replay. Schema 16 stores the reset cutoff.
+
+- Filter temporary instructions and completed setup edits before learning; finish
+  ordinary analysis without an indefinite evidence wait. Retain source quotations
+  for separate convention and reference delivery, with scope and revision checks.
+- Exclude empty and known internal work from episodes, separate activity from
+  closure, and isolate temporary Branch Context by session and task goal.
+- Add local knowledge adoption, editing, scope correction, archiving, and deletion
+  forms, with stale-review and same-origin checks. Suggest same-scope duplicates.
+- Show capture growth, distributions, storage size, and queue depth. Add an
+  explicit retention plan and selected-session cleanup command.
+- Advance canonical storage to schema 16 for provenance fields and the reset cutoff.
+
+- Start background learning by default when installation, capture, worker, and
+  correction learning are enabled. Preserve explicit disable and notification
+  preferences without fabricating historical consent.
+- Show effective learning eligibility and blockers in CLI status, Doctor, and
+  the local viewer. Disclose excerpt transmission and Copilot usage in installer
+  output, and apply an existing installation's opt-out before restarting it.
+- Keep repository hook approval and persistent Knowledge feedback approval separate.
+
+See the [0.15 release notes](docs/releases/0.1.0-alpha.0.15.md) for compatibility
+and the remaining limits of experience extraction.
+
 ## [0.1.0-alpha.0.14] - 2026-09-09
 
 Windows Design Partner Preview with a local read-only graphical viewer through

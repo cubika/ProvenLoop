@@ -25,6 +25,9 @@ const event = (
     readonly repoId?: string;
   } = {},
 ): CaptureEnvelope => {
+  const message = options.message ??
+    (options.eventType === undefined || options.eventType === "prompt.submitted"
+      ? `Investigate-${sourceEventId}` : undefined);
   const input = {
     adapter: "copilot-cli",
     adapterVersion: "1.0.82-0",
@@ -43,11 +46,11 @@ const event = (
       : {
           completionStatus: options.completionStatus,
         }),
-    ...(options.message === undefined
+    ...(message === undefined
       ? {}
       : {
           content: {
-            message: options.message,
+            message,
           },
         }),
     eventType: options.eventType ?? "prompt.submitted",
@@ -913,7 +916,7 @@ describe("WorkEpisodeBuilder", () => {
     ]);
 
     expect(result.episodes[0]).toMatchObject({
-      finishedAt: "2026-08-30T01:00:00.000Z",
+      lastActivityAt: "2026-08-30T01:00:00.000Z",
       outcome: "failure",
     });
   });

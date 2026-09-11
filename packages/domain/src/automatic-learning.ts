@@ -9,6 +9,8 @@ import { validCapturedParent } from "./parent-bridge.js";
 import { supportedLearningTestCommand, verifyShellRecovery } from "./shell-learning.js";
 import { containsPotentialSecret } from "./redaction.js";
 import { validAgentLearningSource } from "./agent-learning-source.js";
+import { assessLearningRetention } from "./learning-retention.js";
+import { isInternalWorkSource } from "./work-source.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value)
@@ -19,7 +21,7 @@ export const buildLearningWindows = (events: readonly CaptureEnvelope[], now: Da
   const bridgedSources = new Set(events.flatMap((entry) => entry.event.parentBridge?.map((bridge) => bridge.sourceEventId) ?? []));
   const compare = (a: CaptureEnvelope, b: CaptureEnvelope): number =>
     Date.parse(a.event.timestamp) - Date.parse(b.event.timestamp) || a.event.eventId.localeCompare(b.event.eventId);
-  const ordered = [...events].filter((entry) => entry.event.actorId !== "provenloop-internal" && !bridgedSources.has(entry.sourceEventId))
+  const ordered = [...events].filter((entry) => !isInternalWorkSource(entry.event) && !bridgedSources.has(entry.sourceEventId))
     .sort(compare);
   const groups = new Map<string, CaptureEnvelope[]>();
   for (const entry of ordered) {
@@ -182,7 +184,7 @@ export const validateLearningResponse = (window: LearningWindow, output: unknown
       }
     }
   }
-  return parsed;
+  return { ...parsed, proposals: parsed.proposals.filter((proposal) => assessLearningRetention(proposal, window.events, window).retain) };
 };
 
 export const renderLearningPredicate = (proposal: RuleProposal): string | undefined => {

@@ -1,5 +1,5 @@
 import { learningProposalSource, type LearningWindow, type LearningJob, type LearningToolContract, type RuleProposal, type LearningRecoveryReceipt } from "@provenloop/contracts";
-import { buildLearningWindows, validateLearningResponse, verifyLearningRecovery, learningKnowledgeCandidate, sha256, sanitizeDiagnostic } from "@provenloop/domain";
+import { buildLearningWindows, validateLearningResponse, verifyLearningRecovery, learningKnowledgeCandidate, learningRecoveryMayGainEvidence, sha256, sanitizeDiagnostic } from "@provenloop/domain";
 import type { CanonicalSqliteStore } from "@provenloop/storage-sqlite";
 import type { ProcessLeaseProvider } from "@provenloop/platform-windows";
 
@@ -54,6 +54,7 @@ export class LearningCoordinator {
           continue;
         }
         const proposals = store.learningProposalsForJob(job.jobId).filter((entry) =>
+          (entry.predicate !== undefined || entry.shellPredicate !== undefined) &&
           store.knowledgeCandidates([entry.knowledgeId])[0]?.state === "candidate");
         if (proposals.length === 0) {
           store.transitionLearningJob({ ...job, state: "evaluated", updatedAt: time.toISOString() }, "waiting_evidence");
@@ -64,13 +65,18 @@ export class LearningCoordinator {
           return receipt ? [receipt] : [];
         });
         if (receipts.length === 0) {
+          if (!proposals.some((proposal) => learningRecoveryMayGainEvidence(proposal, window.events, this.options.contracts?.() ?? []))) {
+            store.transitionLearningJob({ ...job, state: "evaluated", updatedAt: time.toISOString() }, "waiting_evidence");
+            continue;
+          }
           // Round-robin waiting candidates so one unprovable page cannot starve later evidence.
           store.transitionLearningJob({ ...job, updatedAt: time.toISOString() }, "waiting_evidence");
           continue;
         }
         const qualified = proposals.filter((proposal) => receipts.some((receipt) => receipt.proposalId === proposal.proposalId));
         if (this.options.signal?.aborted || !await this.options.enabled()) return { status: "disabled" };
-        const updated: LearningJob = { ...job, state: qualified.length === proposals.length ? "evaluated" : "waiting_evidence", updatedAt: time.toISOString(), result: "qualified" };
+        const waiting = proposals.some((proposal) => !qualified.includes(proposal) && learningRecoveryMayGainEvidence(proposal, window.events, this.options.contracts?.() ?? []));
+        const updated: LearningJob = { ...job, state: waiting ? "waiting_evidence" : "evaluated", updatedAt: time.toISOString(), result: "qualified" };
         try {
           if (store.commitLearningResult({ job: updated, proposals: qualified, receipts, reevaluation: true,
             candidates: qualified.map((proposal) => learningKnowledgeCandidate(window, proposal, receipts.find((receipt) => receipt.proposalId === proposal.proposalId))),
@@ -154,7 +160,9 @@ export class LearningCoordinator {
           return receipt ? [receipt] : [];
         });
         const candidates = proposals.map((proposal) => learningKnowledgeCandidate(window, proposal, receipts.find((entry) => entry.proposalId === proposal.proposalId)));
-        const updated: LearningJob = { ...running, state: proposals.length > receipts.length ? "waiting_evidence" : "evaluated", updatedAt: now().toISOString(),
+        const waiting = proposals.some((proposal) => !receipts.some((receipt) => receipt.proposalId === proposal.proposalId) &&
+          learningRecoveryMayGainEvidence(proposal, window.events, this.options.contracts?.() ?? []));
+        const updated: LearningJob = { ...running, state: waiting ? "waiting_evidence" : "evaluated", updatedAt: now().toISOString(),
           result: proposals.length === 0 ? "no_rule" : receipts.length > 0 ? "qualified" : "candidate" };
         const committed = store.commitLearningResult({ job: updated, proposals, receipts, candidates });
         return committed ? { status: "evaluated", jobId: running.jobId, proposals: proposals.length + (evidenceResult?.proposals ?? 0), qualified: receipts.length + (evidenceResult?.qualified ?? 0) } : evidenceResult ?? { status: "cancelled", jobId: running.jobId };

@@ -18,7 +18,8 @@ const fixture = async (enabled = true, notificationsEnabled = true) => {
   const paths = resolveWindowsProvenLoopPaths(root);
   const now = new Date();
   const state = setPersistedCapability(createDefaultCopilotAdapterState(now), "correction_learning", { enabled: true }, now);
-  await writeCopilotAdapterState(paths.adapterState, { ...state, automaticLearning: {
+  await writeCopilotAdapterState(paths.adapterState, { ...state, installed: true,
+    capabilities: { ...state.capabilities, capture: { enabled: true }, worker: { enabled: true } }, automaticLearning: {
     consentedAt: now.toISOString(), disclosureVersion: 1, enabled, notificationsEnabled,
   } });
   return { root, paths };

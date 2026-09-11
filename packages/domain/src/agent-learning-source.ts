@@ -1,4 +1,5 @@
 import type { CaptureEnvelope, RuleProposalInput } from "@provenloop/contracts";
+import { isInternalWorkSource } from "./work-source.js";
 
 const complete = (entry: CaptureEnvelope): boolean =>
   entry.redaction.redactedPaths.length === 0 && entry.redaction.droppedPaths.length === 0 && entry.redaction.truncatedPaths.length === 0 &&
@@ -7,7 +8,7 @@ const complete = (entry: CaptureEnvelope): boolean =>
 /** Match captured text values, never an invented serialization, object key, URL fetch or model paraphrase. */
 export const capturedToolQuote = (entry: CaptureEnvelope, quote: string): boolean => {
   if (typeof quote !== "string" || quote.trim().length === 0 || entry.event.trust !== "tool" ||
-      !["tool.completed", "tool.failed"].includes(entry.event.eventType) || entry.event.actorId === "provenloop-internal") return false;
+      !["tool.completed", "tool.failed"].includes(entry.event.eventType) || isInternalWorkSource(entry.event)) return false;
   const pending: unknown[] = [entry.content?.toolResult, entry.content?.message, entry.content?.safeError];
   const seen = new Set<object>();
   let visited = 0;

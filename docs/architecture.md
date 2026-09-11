@@ -465,11 +465,16 @@ interface InferenceProvider {
 Installation performs the one-time Copilot integration. Subsequent supported
 background calls reuse the user's existing Copilot sign-in without copying or
 persisting credentials, without an additional API key, and without per-call
-authentication prompts. Enabling automatic extraction requires a one-time
-disclosure and consent for bounded redacted snippets and model usage; capture-only
-consent in an older installation is not sufficient. It authorizes the bounded
-extraction/persistence consumer, not fabricated user confirmations, unrestricted
-Knowledge activation, scope changes, destructive controls, or Playbook execution.
+authentication prompts. The unreleased automatic-default policy derives learning
+eligibility from installation, capture, worker, and correction-learning state.
+Explicit disable takes precedence; missing legacy preferences use the default.
+Installer output discloses bounded excerpt transmission and model usage. Historical
+consent metadata is preserved without creating a new acknowledgement. The shared
+resolver is used by scheduling, notifications, hook eligibility, CLI status, Doctor,
+and the viewer; it never writes state during a read. Repository hook permissions,
+Knowledge activation, persistent feedback approval, scope changes, destructive
+controls, and Playbook execution retain their own checks. Published 0.14 used
+separate learning consent.
 F0 must verify authentication reuse through a
 supported integration path for the declared Copilot version.
 
@@ -680,6 +685,14 @@ is not a correctness shortcut: excess work remains visibly pending/paused rather
 than silently lost, and the user can raise the configured daily limit.
 
 #### 3.6.2 Provenance and recoverable state
+
+Development update (schema 15): proposals may carry retention kind, lifetime,
+target scope assessment, supporting quotations, and a concept key. Existing
+records remain readable. Source references and user conventions retain inferred
+evidence, and admission rechecks their sources before retrieval. References use
+captured tool excerpts at a matching worktree/revision. Job completion is separate
+from rule verification. Episode and Branch Context records distinguish last
+activity, explicit closure, source session, and the current task's goal anchor.
 
 A `LearningWindow` identifies the actual Session/repository/worktree, exact source
 event IDs and digests, source order, capture completeness, and window revision.

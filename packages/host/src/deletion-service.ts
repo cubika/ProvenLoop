@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   DeletionOperation,
   DeletionTargetType,
@@ -212,6 +213,7 @@ export class DeletionService {
 
   public async delete(input: {
     readonly deletionId?: string;
+    readonly preflight?: () => Promise<void>;
     readonly targetId: string;
     readonly targetType: DeletionTargetType;
   }): Promise<DeletionExecutionResult> {
@@ -228,18 +230,49 @@ export class DeletionService {
         barrierOperation === undefined ||
         barrierOperation.status === "completed"
       ) {
-        await this.#queue.endDeletionBarrier(activeBarrier);
+        // A preflight may own the barrier before any canonical operation exists.
+        // Recover it only after the owning operation lease is no longer live.
+        if (barrierOperation === undefined) {
+          const barrierLease = await new WindowsNamedPipeLeaseProvider("deletion-" + activeBarrier).tryAcquire();
+          if (barrierLease === undefined) throw new Error("This deletion operation is already executing.");
+          try { await this.#queue.endDeletionBarrier(activeBarrier); }
+          finally { await barrierLease.release(); }
+        } else {
+          await this.#queue.endDeletionBarrier(activeBarrier);
+        }
       }
     }
-    const operation = this.#store.beginDeletion(
-      target,
-      input.deletionId,
-    );
     let operationLease: Awaited<
       ReturnType<WindowsNamedPipeLeaseProvider["tryAcquire"]>
-    >;
+    > = undefined;
+    let operation: DeletionOperation;
+    if (input.preflight !== undefined) {
+      const deletionId = input.deletionId ?? randomUUID();
+      operationLease = await new WindowsNamedPipeLeaseProvider("deletion-" + deletionId).tryAcquire();
+      if (operationLease === undefined) throw new Error("This deletion operation is already executing.");
+      let barrierStarted = false;
+      try {
+        await this.#queue.beginDeletionBarrier(deletionId);
+        barrierStarted = true;
+        await input.preflight();
+        operation = this.#store.beginDeletion(target, deletionId);
+        if (operation.deletionId !== deletionId) {
+          // The store may resolve an already completed deletion of this target.
+          await this.#queue.endDeletionBarrier(deletionId);
+          barrierStarted = false;
+          await operationLease.release();
+          operationLease = undefined;
+        }
+      } catch (error) {
+        try { if (barrierStarted) await this.#queue.endDeletionBarrier(deletionId); }
+        finally { await operationLease?.release(); }
+        throw error;
+      }
+    } else {
+      operation = this.#store.beginDeletion(target, input.deletionId);
+    }
     try {
-      operationLease = await new WindowsNamedPipeLeaseProvider(
+      operationLease ??= await new WindowsNamedPipeLeaseProvider(
         `deletion-${operation.deletionId}`,
       ).tryAcquire();
     } catch (error) {

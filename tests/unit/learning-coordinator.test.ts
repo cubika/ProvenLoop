@@ -229,10 +229,24 @@ describe("automatic learning coordinator", () => {
     try {
       const before = f.store.rawEvents();
       expect(await new LearningCoordinator(f.options).run()).toMatchObject({ status: "evaluated", proposals: 1, qualified: 0 });
-      expect(f.store.learningJobs()[0]?.state).toBe("waiting_evidence");
+      expect(f.store.learningJobs()[0]?.state).toBe("evaluated");
       expect(f.store.knowledgeCandidates()[0]).toMatchObject({ state: "candidate", evidenceTier: "inferred" });
       expect(f.store.rawEvents()).toEqual(before);
       expect(await new LearningCoordinator(f.options).run()).toMatchObject({ status: "idle" });
+      expect(f.calls()).toBe(1);
+    } finally { f.store.close(); }
+  });
+
+  it("finishes legacy waiting jobs with no typed verification to wait for", async () => {
+    const f = fixture();
+    try {
+      await new LearningCoordinator(f.options).run();
+      const job = f.store.learningJobs()[0];
+      if (!job) throw new Error("Expected a persisted job.");
+      f.store.transitionLearningJob({ ...job, state: "waiting_evidence" }, job.state);
+      expect((await new LearningCoordinator(f.options).run()).status).toBe("idle");
+      expect(f.store.learningJobs()[0]?.state).toBe("evaluated");
+      expect(f.store.knowledgeCandidates()[0]?.state).toBe("candidate");
       expect(f.calls()).toBe(1);
     } finally { f.store.close(); }
   });

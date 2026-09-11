@@ -15,6 +15,7 @@ import {
   join,
   resolve,
 } from "node:path";
+import { isRecordsResetPending } from "./record-reset.js";
 
 import {
   WindowsNamedPipeLeaseProvider,
@@ -241,7 +242,8 @@ const activeMarkers = async (
 export const isExtensionShutdownRequested = (
   dataRoot: string,
 ): Promise<boolean> =>
-  pathExists(shutdownRequestPath(dataRoot));
+  Promise.all([pathExists(shutdownRequestPath(dataRoot)), isRecordsResetPending(dataRoot)])
+    .then(([shutdown, reset]) => shutdown || reset);
 
 export const registerActiveExtension = async (
   dataRoot: string,

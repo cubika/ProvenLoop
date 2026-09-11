@@ -6,13 +6,7 @@ import { createDefaultCopilotAdapterState, readCopilotAdapterState, writeCopilot
   clearExperimentalSettingState, setPersistedCapability } from "../../packages/copilot-adapter/src/operational-state.js";
 import { runCli } from "../../packages/cli/src/run-cli.js";
 
-describe("automatic learning consent", () => {
-  it("requires a separate disclosure acknowledgement before touching installation state", async () => {
-    const messages: string[] = [];
-    expect(await runCli(["learning", "enable"], { log: (m) => messages.push(m), error: (m) => messages.push(m) })).toBe(2);
-    expect(messages.join(" ")).toContain("conversation and tool excerpts");
-    expect(messages.join(" ")).toContain("--confirm");
-  });
+describe("automatic learning preferences and host approval", () => {
   it("requires explicit scoped approval before granting native host hooks", async () => {
     const messages: string[] = [];
     expect(await runCli(["learning", "approve-hooks", "--cwd", process.cwd()],
@@ -20,7 +14,7 @@ describe("automatic learning consent", () => {
     expect(messages.join(" ")).toContain("access to Copilot session hooks");
     expect(messages.join(" ")).toContain("--confirm");
   });
-  it("does not infer consent from legacy correction learning and preserves explicit state", async () => {
+  it("preserves historical acknowledgements without fabricating consent for legacy state", async () => {
     const root = await mkdtemp(join(tmpdir(), "provenloop-consent-"));
     const path = join(root, "state.json");
     const now = new Date("2026-09-07T00:00:00Z");

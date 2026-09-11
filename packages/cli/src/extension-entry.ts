@@ -14,7 +14,7 @@ import { collectLocalObservations } from "./collect-observations.js";
 import { reconcileCurrentSessionCapture } from "./reconcile-capture.js";
 import { LocalMcpToolHandlers } from "./run-mcp-server.js";
 import { runLearningOnce, notifyLearningActivation } from "./run-learning.js";
-import { readCopilotAdapterState } from "@provenloop/copilot-adapter";
+import { readCopilotAdapterState, resolveAutomaticLearning } from "@provenloop/copilot-adapter";
 import { resolveWindowsProvenLoopPaths } from "@provenloop/platform-windows";
 
 export type {
@@ -40,7 +40,8 @@ export const runProvenLoopCopilotExtension = async (
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
   const notificationsEnabled = async (): Promise<boolean> => {
     const state = await readCopilotAdapterState(paths.adapterState, new Date());
-    return state.automaticLearning?.enabled === true && state.automaticLearning.notificationsEnabled && state.capabilities.retrieval.enabled;
+    const learning = resolveAutomaticLearning(state);
+    return learning.enabled && learning.notificationsEnabled && state.capabilities.retrieval.enabled;
   };
   const stopScheduling = (): void => {
     stopped = true;

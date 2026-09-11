@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
+import { AUTOMATIC_LEARNING_DISCLOSURE } from "@provenloop/copilot-adapter";
 
 import {
   runCli,
@@ -149,7 +150,9 @@ describe("operational CLI", () => {
     expect(adapter.upgrade).toHaveBeenCalledOnce();
     expect(adapter.disable).toHaveBeenCalledWith("capture");
     expect(harness.logs).toEqual([
+      AUTOMATIC_LEARNING_DISCLOSURE,
       "installed",
+      AUTOMATIC_LEARNING_DISCLOSURE,
       "upgraded",
       "capture disabled",
     ]);

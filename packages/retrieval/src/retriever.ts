@@ -4,7 +4,10 @@ import type {
 import {
   KnowledgeAdmissionPolicy,
   sha256,
+  learningSourceUse,
+  type LearningSourceUse,
 } from "@provenloop/domain";
+import { posix, win32 } from "node:path";
 
 import {
   AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS,
@@ -20,16 +23,30 @@ const eligible = (
   candidate: KnowledgeCandidate,
   query: KnowledgeRetrievalQuery,
   now: Date,
+  sourceUse?: LearningSourceUse,
 ): boolean =>
-  candidate.state === "active" &&
+  ((candidate.state === "candidate" && sourceUse !== undefined) || (candidate.state === "active" &&
   AUTOMATIC_RETRIEVAL_EVIDENCE_TIERS.has(
     candidate.evidenceTier,
-  ) &&
+  ))) &&
   (
     candidate.expiresAt === undefined ||
     Date.parse(candidate.expiresAt) > now.getTime()
   ) &&
   scopeMatches(candidate.scope, candidate.scopeId, query);
+
+const sameWorktree = (left: string, right: string): boolean => {
+  const windows = /^[a-z]:[\\/]|^[\\/]{2}/iu.test(left);
+  const normalize = (path: string): string => windows
+    ? win32.normalize(path).replace(/[\\/]+$/u, "").toLowerCase()
+    : posix.normalize(path).replace(/\/+$/u, "");
+  const root = normalize(left);
+  const target = normalize(right);
+  const api = windows ? win32 : posix;
+  if (!api.isAbsolute(right)) return false;
+  const relative = api.relative(root, target);
+  return relative === "" || (!relative.startsWith(`..${api.sep}`) && relative !== ".." && !api.isAbsolute(relative));
+};
 
 export class CanonicalKnowledgeRetriever {
   readonly #admissionPolicy: KnowledgeAdmissionPolicy;
@@ -75,6 +92,7 @@ export class CanonicalKnowledgeRetriever {
       ReturnType<KnowledgeAdmissionPolicy["evaluate"]>
     >();
     const applicableById = new Map<string, boolean>();
+    const sourceUseById = new Map<string, LearningSourceUse>();
     const learningApplicabilityById = new Map<string, readonly string[]>();
     const deadline =
       options.timeoutMs === undefined
@@ -131,7 +149,17 @@ export class CanonicalKnowledgeRetriever {
           unevaluatedCandidates,
         );
         for (const candidate of unevaluatedCandidates) {
-          applicableById.set(candidate.knowledgeId, learningApplicable(
+          const sourceUse = learningSourceUse(candidate, evidence.learningProposals ?? [], evidence.envelopes, evidence.contextUseRecords);
+          if (sourceUse) sourceUseById.set(candidate.knowledgeId, sourceUse);
+          const sourceApplicable = sourceUse !== undefined && query.worktree !== undefined &&
+            sameWorktree(sourceUse.worktree, query.worktree) &&
+            !(query.projectInstructions ?? []).some((instruction) => {
+              const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+              const existing = normalize(instruction);
+              return existing.includes(normalize(candidate.content)) || sourceUse.sources.some((source) => existing.includes(normalize(source.quote)));
+            }) &&
+            (sourceUse.mode !== "reference" || (query.headSha !== undefined && query.headSha === sourceUse.commitSha));
+          applicableById.set(candidate.knowledgeId, sourceUse ? sourceApplicable : learningApplicable(
             candidate, evidence.learningProposals ?? [], query, evidence.learningReceipts ?? [],
           ));
           const proposal = evidence.learningProposals?.find((entry) =>
@@ -160,14 +188,16 @@ export class CanonicalKnowledgeRetriever {
         if (
           candidate === undefined ||
           deleted.has(candidate.knowledgeId) ||
-          !eligible(candidate, query, now) ||
+          !eligible(candidate, query, now, sourceUseById.get(candidate.knowledgeId)) ||
           applicableById.get(candidate.knowledgeId) !== true ||
           admissionById.get(candidate.knowledgeId)?.admitted !== true ||
           hit.sourceDigest !== sha256(candidate)
         ) {
           continue;
         }
+        const sourceUse = sourceUseById.get(candidate.knowledgeId);
         retrieved.push({
+          ...(sourceUse ? { deliveryMode: sourceUse.mode, sources: sourceUse.sources } : {}),
           candidate: learningApplicabilityById.has(candidate.knowledgeId)
             ? { ...candidate, appliesWhen: [...learningApplicabilityById.get(candidate.knowledgeId) ?? []] } : candidate,
           score: hit.score,

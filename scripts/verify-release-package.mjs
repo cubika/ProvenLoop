@@ -436,6 +436,23 @@ public static class Program
     ]),
     "installed CLI install",
   );
+  requireSuccess(await runInstalledCli(["enable", "correction_learning"]), "installed learning prerequisite");
+  const automaticStatus = await runInstalledCli(["learning", "status"]);
+  requireSuccess(automaticStatus, "installed automatic learning status");
+  const automatic = JSON.parse(automaticStatus.stdout).automaticLearning;
+  if (automatic.enabled !== true || automatic.mode !== "automatic" || automatic.consentedAt !== undefined) {
+    throw new Error("Installed learning defaults are not effective or fabricate consent.");
+  }
+  requireSuccess(await runInstalledCli(["learning", "disable"]), "installed learning opt-out");
+  requireSuccess(await runInstalledCli(["disable", "correction_learning"]), "installed prerequisite pause");
+  requireSuccess(await runInstalledCli(["enable", "correction_learning"]), "installed prerequisite resume");
+  const disabledStatus = await runInstalledCli(["learning", "status"]);
+  requireSuccess(disabledStatus, "installed learning opt-out status");
+  const disabledLearning = JSON.parse(disabledStatus.stdout).automaticLearning;
+  if (disabledLearning.enabled !== false || disabledLearning.mode !== "disabled") {
+    throw new Error("A capability toggle overrode explicit learning opt-out.");
+  }
+  requireSuccess(await runInstalledCli(["disable", "correction_learning"]), "restore installed smoke capability");
   const uiProcess = spawn(process.execPath, [binaryPath, "ui", "--no-open", "--port", "0", "--data-root", dataRoot], {
     cwd: temporaryRoot, env: smokeEnvironment, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
   });

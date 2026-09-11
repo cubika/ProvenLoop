@@ -1,4 +1,4 @@
-import { CopilotLearningProvider, readCopilotAdapterState } from "@provenloop/copilot-adapter";
+import { CopilotLearningProvider, readCopilotAdapterState, resolveAutomaticLearning } from "@provenloop/copilot-adapter";
 import type { LearningToolContract } from "@provenloop/contracts";
 import { LearningCoordinator } from "@provenloop/host";
 import { isUpgradeMaintenanceActive, isExtensionShutdownRequested, resolveWindowsProvenLoopPaths, resolveWindowsProvenLoopLeaseName, WindowsNamedPipeLeaseProvider } from "@provenloop/platform-windows";
@@ -11,8 +11,7 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
   const paths = resolveWindowsProvenLoopPaths(options.dataRoot);
   const enabled = async (): Promise<boolean> => {
     const state = await readCopilotAdapterState(paths.adapterState, new Date());
-    return !options.signal?.aborted && !await isExtensionShutdownRequested(paths.root) && !await isUpgradeMaintenanceActive(paths.root) && state.installed && state.automaticLearning?.enabled === true && state.capabilities.capture.enabled
-      && state.capabilities.worker.enabled && state.capabilities.correction_learning.enabled;
+    return !options.signal?.aborted && !await isExtensionShutdownRequested(paths.root) && !await isUpgradeMaintenanceActive(paths.root) && resolveAutomaticLearning(state).enabled;
   };
   if (!await enabled()) return { status: "disabled" as const };
   // Maintenance excludes the complete database lifetime, including post-inference projection.
@@ -28,7 +27,7 @@ export async function runLearningOnce(options: { readonly dataRoot: string; read
       lease: { tryAcquire: async () => ({ release: async () => undefined }) },
       contracts: () => options.contracts,
     }).run();
-    if (result.status === "evaluated" && (result.qualified ?? 0) > 0) {
+    if (result.status === "evaluated" && (result.proposals ?? 0) > 0) {
       await writeFile(paths.projectionDirty, JSON.stringify({ schemaVersion: 1, markedAt: new Date().toISOString() }) + "\n", "utf8");
       const projectionLease = await new WindowsNamedPipeLeaseProvider(
         await resolveWindowsProvenLoopLeaseName(paths.root, "knowledge-projection"),
@@ -64,7 +63,8 @@ export async function notifyLearningActivation(dataRoot: string, ids: readonly s
     if (await isUpgradeMaintenanceActive(paths.root)) return false;
     store = new CanonicalSqliteStore(paths.database);
     const state = await readCopilotAdapterState(paths.adapterState, new Date());
-    if (!state.automaticLearning?.enabled || !state.automaticLearning.notificationsEnabled || !state.capabilities.correction_learning.enabled || store.hasActiveDeletion()) return false;
+    const learning = resolveAutomaticLearning(state);
+    if (!learning.enabled || !learning.notificationsEnabled || store.hasActiveDeletion()) return false;
     for (const id of ids) {
       if (store.claimLearningActivationNotice(id)) claimed.push(id);
       if (claimed.length >= 3) break;

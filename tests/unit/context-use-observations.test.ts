@@ -95,6 +95,7 @@ describe("honest context usage observations", () => {
         acceptedDecisions: [],
         branch: "main",
         branchContextId: "branch-one",
+        sourceSessionIds: ["session-one"],
         explicitConstraints: [],
         goal: "Continue the parser.",
         headSha: "abc123",

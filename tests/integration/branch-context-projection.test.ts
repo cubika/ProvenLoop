@@ -37,6 +37,48 @@ afterEach(async () => {
 });
 
 describe("Branch Context projection", () => {
+  it("replaces the current branch snapshot without merging two tasks at one HEAD", async () => {
+    const root = await createTemporaryDirectory();
+    let sequence = 0;
+    const queue = new WindowsCaptureQueue(join(root, "queue"), { idGenerator: () => String(++sequence) });
+    await queue.initialize();
+    const store = new CanonicalSqliteStore(join(root, "canonical.db"));
+    try {
+      const common = { adapter: "copilot-cli", adapterVersion: "1.0.82-0", branch: "main", commitSha: "a".repeat(40), repoId: "repo-1" };
+      const first = await queue.enqueue({
+        ...common, sourceEventId: "first-task", sessionId: "task-first", eventType: "prompt.submitted", trust: "user",
+        timestamp: "2026-09-10T00:00:00.000Z", content: { message: "Inspect the identity.\nConstraint: Select resource A." },
+      });
+      store.ingestQueueItem(first);
+      new WorkEpisodeProjector({ store }).rebuild();
+      const previous = new BranchContextProjector({ store }).rebuild().contexts[0];
+      const second = await queue.enqueue({
+        ...common, sourceEventId: "second-task", sessionId: "task-second", eventType: "prompt.submitted", trust: "user",
+        timestamp: "2026-09-10T00:05:00.000Z", content: { message: "Inspect the deployment.\nConstraint: Select resource B." },
+      });
+      store.ingestQueueItem(second);
+      new WorkEpisodeProjector({ store }).rebuild();
+      const current = new BranchContextProjector({ store }).rebuild().contexts[0];
+
+      expect(store.branchContexts()).toHaveLength(1);
+      expect(current).toMatchObject({ sourceSessionIds: ["task-second"], goalSourceEventId: second.envelope.event.eventId, explicitConstraints: ["Select resource B."] });
+      expect(current?.branchContextId).not.toBe(previous?.branchContextId);
+      expect(current?.sourceEventIds).not.toContain(first.envelope.event.eventId);
+      expect(store.episodeSourceEnvelopes()).toHaveLength(2);
+
+      const ended = await queue.enqueue({
+        ...common, sourceEventId: "task-ended", sessionId: "task-second", eventType: "session.ended", trust: "system",
+        timestamp: "2026-09-10T00:10:00.000Z",
+      });
+      store.ingestQueueItem(ended);
+      new WorkEpisodeProjector({ store }).rebuild();
+      new BranchContextProjector({ store }).rebuild();
+      expect(store.branchContexts()[0]).toMatchObject({ closedAt: ended.envelope.event.timestamp, closureSourceEventIds: [ended.envelope.event.eventId] });
+    } finally {
+      store.close();
+    }
+  });
+
   it("builds explicit continuation state and validates retrieval scope", async () => {
     const root = await createTemporaryDirectory();
     let sequence = 0;

@@ -91,7 +91,7 @@ describe("agent-experience authored evaluation", () => {
     for (const id of ["EXP-05-confounded-changes", "EXP-05-ambiguous-retries", "EXP-12-transient-retry"]) {
       const item = corpus.cases.find((entry) => entry.id === id); if (!item) throw new Error("Missing boundary fixture.");
       const input = proposed(item);
-      expect(validateLearningResponse(item.window, { schemaVersion: 1, proposals: [input] }).proposals).toHaveLength(1);
+      expect(validateLearningResponse(item.window, { schemaVersion: 1, proposals: [input] }).proposals).toHaveLength(id === "EXP-05-confounded-changes" ? 0 : 1);
       expect(verifyLearningRecovery(retained(item, input), item.window.events, item.contracts, new Date("2026-09-08T00:01:00Z"))).toBeUndefined();
     }
     const research = corpus.cases[0]; if (!research) throw new Error("Missing research fixture.");

@@ -6,8 +6,11 @@ import {
 import {
   closeSync,
   existsSync,
+  fsyncSync,
   openSync,
   readFileSync,
+  renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -42,6 +45,7 @@ import {
   episodeGroupingCorrectionSchema,
   feedbackEventSchema,
   knowledgeCandidateSchema,
+  isoTimestampSchema,
   workEpisodeSchema,
   type BranchContext,
   type CaptureEnvelope,
@@ -80,10 +84,12 @@ export interface SqliteMigration {
 }
 
 export interface CanonicalSqliteStoreOptions {
+  /** Reserved for the reset coordinator while it owns the maintenance barriers. */
+  readonly allowRecordsReset?: boolean;
   readonly allowSchemaMigration?: boolean;
   readonly busyTimeoutMs?: number;
   readonly faultInjector?: (
-    stage: "after_raw_event_insert" | "after_restore_key_install",
+    stage: "after_raw_event_insert" | "after_restore_key_install" | "before_reset_generation_publish",
   ) => void;
   readonly migrations?: readonly SqliteMigration[];
   readonly now?: () => Date;
@@ -130,6 +136,15 @@ export interface CanonicalRangePage<T> {
 export interface CanonicalEnrichmentResult {
   readonly status: "enriched" | "duplicate" | "rejected";
   readonly reason?: string;
+}
+
+export interface CanonicalRecordsResetCounts {
+  readonly events: number;
+  readonly knowledge: number;
+  readonly episodes: number;
+  readonly jobs: number;
+  readonly usage: number;
+  readonly records: number;
 }
 
 export interface LearningPromptWork {
@@ -675,7 +690,27 @@ export const DEFAULT_SQLITE_MIGRATIONS = [
           AND session_id IS NOT NULL AND repo_id IS NOT NULL AND worktree IS NOT NULL;
     `,
   },
+  {
+    version: 15,
+    // Retention metadata, quoted reference delivery, and episode closure need the current reader.
+    sql: `CREATE INDEX learning_proposal_concepts ON learning_proposals(json_extract(body_json, '$.canonicalKey'));`,
+  },
+  {
+    version: 16,
+    sql: `CREATE TABLE record_reset (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), cutoff TEXT NOT NULL) STRICT;`,
+  },
 ] as const satisfies readonly SqliteMigration[];
+
+// Dependent rows precede their source tables; reset retains only schema and replay protection.
+const RECORD_RESET_TABLES = [
+  "learning_sources", "learning_proposals", "learning_notices", "learning_notice_work",
+  "learning_event_changes", "learning_prompt_work", "raw_event_enrichments",
+  "correction_key_sources", "correction_opportunities", "context_use_records",
+  "session_mutes", "feedback_events", "evidence_links", "process_claims", "queue_processing",
+  "identities", "learning_jobs", "learning_attempts", "learning_suppressions",
+  "knowledge_candidates", "branch_contexts", "work_episodes", "correction_keys",
+  "parser_errors", "raw_events", "deletion_operations", "metrics", "evaluation_runs",
+] as const;
 
 export class UnsupportedDatabaseVersionError extends Error {
   public override readonly name = "UnsupportedDatabaseVersionError";
@@ -2011,9 +2046,10 @@ const RUNTIME_SCHEMA_INDEXES = {
 
 export class CanonicalSqliteStore {
   readonly #database: DatabaseSync;
+  readonly #allowRecordsReset: boolean;
   readonly #allowSchemaMigration: boolean;
   readonly #deletionIdentityKey: string;
-  readonly #generation: string | undefined;
+  #generation: string | undefined;
   readonly #faultInjector:
     | CanonicalSqliteStoreOptions["faultInjector"]
     | undefined;
@@ -2026,6 +2062,10 @@ export class CanonicalSqliteStore {
   ) {
     this.#path = path === ":memory:" ? path : resolve(path);
     path = this.#path;
+    this.#allowRecordsReset = options.allowRecordsReset ?? false;
+    if (path !== ":memory:" && !this.#allowRecordsReset && existsSync(resolve(dirname(path), "records-reset.pending.json"))) {
+      throw new Error("Canonical storage is blocked while record reset is pending. Complete record reset before continuing.");
+    }
     if (path !== ":memory:" && existsSync(`${path}.restore.lock`)) {
       throw new Error("Canonical storage is under maintenance; recover the interrupted restore or retry after maintenance.");
     }
@@ -2060,12 +2100,54 @@ export class CanonicalSqliteStore {
     this.#database.close();
   }
 
+  public getRecordsResetCutoff(): string | undefined {
+    this.#assertNoRestoreBarrier();
+    const exists = this.#database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='record_reset'").get();
+    if (!exists) return undefined;
+    const row = this.#database.prepare("SELECT cutoff FROM record_reset WHERE singleton=1").get();
+    return row ? isoTimestampSchema.parse(String(row.cutoff)) : undefined;
+  }
+
+  public previewRecordsReset(): CanonicalRecordsResetCounts {
+    this.#assertNoRestoreBarrier();
+    const tables = new Set(this.#database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map((row) => String(row.name)));
+    const counts = new Map(RECORD_RESET_TABLES.map((table) => [table, tables.has(table)
+      ? Number(this.#database.prepare(`SELECT count(*) AS count FROM ${sqliteIdentifier(table)}`).get()?.count ?? 0) : 0]));
+    return { events: counts.get("raw_events") ?? 0, knowledge: counts.get("knowledge_candidates") ?? 0,
+      episodes: counts.get("work_episodes") ?? 0, jobs: counts.get("learning_jobs") ?? 0,
+      usage: counts.get("context_use_records") ?? 0, records: [...counts.values()].reduce((total, count) => total + count, 0) };
+  }
+
+  /** Caller holds installation maintenance leases and resets queue/projections under the same cutoff. */
+  public clearAllRecords(cutoff: string): CanonicalRecordsResetCounts {
+    this.#assertNoRestoreBarrier();
+    const timestamp = new Date(isoTimestampSchema.parse(cutoff)).toISOString();
+    if (!this.#database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='record_reset'").get()) {
+      throw new Error("Record reset requires the current database schema. Upgrade before clearing records.");
+    }
+    this.#database.exec("BEGIN IMMEDIATE;");
+    try {
+      const previous = this.getRecordsResetCutoff();
+      if (previous && Date.parse(timestamp) < Date.parse(previous)) throw new Error("Record reset cutoff cannot move backwards.");
+      const counts = this.previewRecordsReset();
+      this.#database.prepare("INSERT INTO record_reset(singleton,cutoff) VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET cutoff=excluded.cutoff").run(timestamp);
+      for (const table of RECORD_RESET_TABLES) this.#database.exec(`DELETE FROM ${sqliteIdentifier(table)};`);
+      // Invalidate cached handles before the new empty state becomes visible. A failed commit
+      // can leave an advanced generation, which safely requires callers to reopen and retry.
+      this.#advanceRecordsResetGeneration();
+      this.#database.exec("COMMIT;");
+      return counts;
+    } catch (error) { this.#database.exec("ROLLBACK;"); throw error; }
+  }
+
   public learningJobs(): readonly LearningJob[] {
+    this.#assertNoRestoreBarrier();
     return this.#database.prepare("SELECT body_json FROM learning_jobs ORDER BY created_at, job_id").all()
       .map((row) => learningJobSchema.parse(JSON.parse(String(row.body_json))));
   }
 
   public learningJobsDue(now: Date, kind: "maintenance" | "evidence" | "inference", limit = 32): readonly LearningJob[] {
+    this.#assertNoRestoreBarrier();
     if (!Number.isInteger(limit) || limit < 1 || limit > 128) throw new RangeError("Invalid learning job page size.");
     const timestamp = now.toISOString();
     const expiry = "json_extract(body_json, '$.expiresAt')";
@@ -2081,11 +2163,13 @@ export class CanonicalSqliteStore {
   }
 
   public learningProposalsForJob(jobId: string): readonly RuleProposal[] {
+    this.#assertNoRestoreBarrier();
     return this.#database.prepare("SELECT body_json FROM learning_proposals WHERE job_id=?").all(jobId)
       .map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))));
   }
 
   public pendingLearningActivationIds(): readonly string[] {
+    this.#assertNoRestoreBarrier();
     return this.#database.prepare("SELECT knowledge_id FROM learning_notice_work ORDER BY rowid LIMIT 32").all()
       .map((row) => String(row.knowledge_id));
   }
@@ -2267,17 +2351,20 @@ export class CanonicalSqliteStore {
   }
 
   public learningWindow(jobId: string): LearningWindow | undefined {
+    this.#assertNoRestoreBarrier();
     const row = this.#database.prepare("SELECT window_json FROM learning_jobs WHERE job_id=?").get(jobId);
     return row ? learningWindowSchema.parse(JSON.parse(String(row.window_json))) : undefined;
   }
 
   public learningProposals(knowledgeIds?: readonly string[]): readonly RuleProposal[] {
+    this.#assertNoRestoreBarrier();
     const rows = knowledgeIds === undefined ? this.#database.prepare("SELECT body_json FROM learning_proposals ORDER BY proposal_id").all()
       : [...new Set(knowledgeIds)].flatMap((id) => this.#database.prepare("SELECT body_json FROM learning_proposals WHERE knowledge_id=? ORDER BY proposal_id").all(id));
     return rows.map((row) => ruleProposalSchema.parse(JSON.parse(String(row.body_json))));
   }
 
   public learningReceipts(knowledgeIds?: readonly string[]): readonly LearningRecoveryReceipt[] {
+    this.#assertNoRestoreBarrier();
     const rows = knowledgeIds === undefined ? this.#database.prepare("SELECT receipt_json FROM learning_proposals WHERE receipt_json IS NOT NULL ORDER BY proposal_id").all()
       : [...new Set(knowledgeIds)].flatMap((id) => this.#database.prepare("SELECT receipt_json FROM learning_proposals WHERE knowledge_id=? AND receipt_json IS NOT NULL ORDER BY proposal_id").all(id));
     return rows.map((row) => learningRecoveryReceiptSchema.parse(JSON.parse(String(row.receipt_json))));
@@ -2327,9 +2414,9 @@ export class CanonicalSqliteStore {
       ? saved.filter((proposal) => {
         const candidate = this.knowledgeCandidates([proposal.knowledgeId])[0];
         if (candidate?.state !== "candidate" || this.feedbackEvents(proposal.knowledgeId).some((entry) => entry.source === "user")) return false;
-        const { rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate } = proposal;
+        const { rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate, retention, supportingSources, canonicalKey } = proposal;
         try {
-          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate }] });
+          validateLearningResponse(window, { schemaVersion: 1, proposals: [{ rule, trigger, exclusions, userSource, agentSource, failedOperationEventId, retryOperationEventId, completionEventId, predicate, shellPredicate, retention, supportingSources, canonicalKey }] });
           return true;
         } catch { return false; }
       }).map((proposal) => ruleProposalSchema.parse({ ...proposal, jobId, proposalId: `learning-proposal-${sha256([jobId, proposal.proposalId]).slice(0, 24)}`, sourceDigests: window.sources })) : [];
@@ -2352,6 +2439,7 @@ export class CanonicalSqliteStore {
   }
 
   public learningSourcesCurrent(window: LearningWindow): boolean {
+    this.#assertNoRestoreBarrier();
     return window.sources.every((source) => {
       const row = this.#database.prepare("SELECT safe_envelope_json FROM raw_events WHERE event_id=?").get(source.eventId);
       return row !== undefined && sha256(this.#effectiveEnvelope(captureEnvelopeSchema.parse(JSON.parse(String(row.safe_envelope_json))))) === source.digest;
@@ -2359,10 +2447,12 @@ export class CanonicalSqliteStore {
   }
 
   public learningSourcesExist(window: LearningWindow): boolean {
+    this.#assertNoRestoreBarrier();
     return window.sources.every((source) => this.#database.prepare("SELECT 1 FROM raw_events WHERE event_id=?").get(source.eventId) !== undefined);
   }
 
   public learningAttemptCount(window: LearningWindow, fallback: number): number {
+    this.#assertNoRestoreBarrier();
     const task = window.origin === "agent" ? window.events.find((entry) => entry.event.trust === "user" && entry.event.eventType === "prompt.submitted") : undefined;
     if (!task) return fallback;
     return Math.max(fallback, Number(this.#database.prepare(`SELECT coalesce(max(json_extract(job.body_json, '$.attempts')),0) AS attempts
@@ -2371,6 +2461,7 @@ export class CanonicalSqliteStore {
   }
 
   public learningProposalWasRecalled(proposal: RuleProposal, window: LearningWindow): boolean {
+    this.#assertNoRestoreBarrier();
     if (!proposal.agentSource) return false;
     const summary = window.events.find((entry) => entry.event.eventId === proposal.agentSource?.eventId);
     if (!summary) return false;
@@ -2663,6 +2754,7 @@ export class CanonicalSqliteStore {
     const requiredLearningSuppressions = new Set<string>();
     const requiredUserFeedback = new Map<string, string>();
     const requiredLifecycleStates = new Map<string, string>();
+    let requiredResetCutoff: string | undefined;
     let installedIncompleteDeletion = false;
     let requiredDeletionKey: string | undefined;
     const restoreId = randomUUID();
@@ -2693,6 +2785,10 @@ export class CanonicalSqliteStore {
       try {
         current = new DatabaseSync(targetPath);
         current.exec("BEGIN EXCLUSIVE;");
+        if (asNumber(current.prepare("PRAGMA user_version").get()?.user_version) >= 16) {
+          const reset = current.prepare("SELECT cutoff FROM record_reset WHERE singleton=1").get();
+          if (reset) requiredResetCutoff = isoTimestampSchema.parse(String(reset.cutoff));
+        }
         for (const row of current.prepare("SELECT feedback_id,body_json FROM feedback_events WHERE json_extract(body_json, '$.source')='user'").all()) {
           requiredUserFeedback.set(String(row.feedback_id), sha256(JSON.parse(String(row.body_json))));
         }
@@ -2781,6 +2877,13 @@ export class CanonicalSqliteStore {
           source,
           options.migrations ?? DEFAULT_SQLITE_MIGRATIONS,
         );
+        if (requiredResetCutoff !== undefined) {
+          const reset = asNumber(source.prepare("PRAGMA user_version").get()?.user_version) >= 16
+            ? source.prepare("SELECT cutoff FROM record_reset WHERE singleton=1").get() : undefined;
+          if (!reset || Date.parse(isoTimestampSchema.parse(String(reset.cutoff))) < Date.parse(requiredResetCutoff)) {
+            throw new InvalidCanonicalSchemaError("Backup predates the installed record reset.");
+          }
+        }
         const backupOperationRows = source
           .prepare(
             `SELECT body_json
@@ -4617,6 +4720,10 @@ export class CanonicalSqliteStore {
     this.#assertNoRestoreBarrier();
     const item = captureQueueItemSchema.parse(input);
     const parsedEnvelope = normalizedCaptureReferences(item.envelope);
+    const resetCutoff = this.getRecordsResetCutoff();
+    if (resetCutoff !== undefined && Date.parse(parsedEnvelope.event.timestamp) <= Date.parse(resetCutoff)) {
+      return { deduplicationKey: parsedEnvelope.deduplicationKey, status: "duplicate" };
+    }
     if (this.hasActiveDeletion()) {
       throw new Error(
         "Canonical ingestion is blocked by an active deletion.",
@@ -4741,6 +4848,11 @@ export class CanonicalSqliteStore {
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
       this.#assertNoRestoreBarrier();
+      const currentResetCutoff = this.getRecordsResetCutoff();
+      if (currentResetCutoff !== undefined && Date.parse(parsedEnvelope.event.timestamp) <= Date.parse(currentResetCutoff)) {
+        this.#database.exec("ROLLBACK;");
+        return { deduplicationKey: parsedEnvelope.deduplicationKey, status: "duplicate" };
+      }
       if (this.hasActiveDeletion()) {
         throw new Error(
           "Canonical ingestion is blocked by an active deletion.",
@@ -4965,6 +5077,7 @@ export class CanonicalSqliteStore {
                 adapter_version,
                 deduplication_key,
                 delivery_count,
+                last_seen_at,
                 event_id,
                 event_type,
                 parse_status,
@@ -4980,6 +5093,7 @@ export class CanonicalSqliteStore {
       adapterVersion: String(row.adapter_version),
       deduplicationKey: String(row.deduplication_key),
       deliveryCount: asNumber(row.delivery_count),
+      lastSeenAt: String(row.last_seen_at),
       envelope: captureEnvelopeSchema.parse(
         JSON.parse(String(row.safe_envelope_json)) as unknown,
       ),
@@ -5396,7 +5510,7 @@ export class CanonicalSqliteStore {
           JSON.stringify(episode),
           sha256(episode),
           episode.startedAt,
-          episode.finishedAt ?? episode.startedAt,
+          episode.lastActivityAt ?? episode.finishedAt ?? episode.startedAt,
         );
       }
       const episodeWindowsBySession = new Map<
@@ -6798,6 +6912,7 @@ export class CanonicalSqliteStore {
   }
 
   public replaceKnowledgeWithConfirmedRule(input: {
+    readonly scopeChange?: { readonly previousScope: KnowledgeCandidate["scope"]; readonly previousScopeId?: string; readonly scope: KnowledgeCandidate["scope"]; readonly scopeId?: string };
     readonly previousKnowledgeId: string;
     readonly expectedDigest: string;
     readonly candidate: KnowledgeCandidate;
@@ -6835,6 +6950,7 @@ export class CanonicalSqliteStore {
       replacementKnowledgeId: candidate.knowledgeId,
       expectedDigest: input.expectedDigest,
       candidateIntentDigest: confirmedRuleIntentDigest(candidate),
+      ...(input.scopeChange ? { scopeChange: input.scopeChange } : {}),
     };
     this.#database.exec("BEGIN IMMEDIATE;");
     try {
@@ -6856,8 +6972,11 @@ export class CanonicalSqliteStore {
         throw new Error("Knowledge replacement target does not exist.");
       }
       const previous = knowledgeCandidateSchema.parse(JSON.parse(String(previousRow.body_json)));
+      const scopeReviewed = input.scopeChange !== undefined && input.scopeChange.previousScope === previous.scope &&
+        input.scopeChange.previousScopeId === previous.scopeId && input.scopeChange.scope === candidate.scope &&
+        input.scopeChange.scopeId === candidate.scopeId;
       if (
-        previous.scope !== candidate.scope || previous.scopeId !== candidate.scopeId ||
+        ((!scopeReviewed) && (previous.scope !== candidate.scope || previous.scopeId !== candidate.scopeId)) ||
         (candidate.scope === "personal"
           ? candidate.scopeId !== undefined
           : candidate.scopeId === undefined || candidate.scopeId.trim().length === 0)
@@ -7329,9 +7448,32 @@ export class CanonicalSqliteStore {
     );
   }
 
+  #advanceRecordsResetGeneration(): void {
+    if (this.#path === ":memory:") return;
+    const generation = randomUUID();
+    const target = `${this.#path}.restore.generation`;
+    const temporary = `${target}.${generation}.pending`;
+    let handle: number | undefined;
+    try {
+      handle = openSync(temporary, "wx");
+      writeFileSync(handle, generation, "utf8");
+      fsyncSync(handle);
+      closeSync(handle); handle = undefined;
+      this.#faultInjector?.("before_reset_generation_publish");
+      renameSync(temporary, target);
+      this.#generation = generation;
+    } finally {
+      if (handle !== undefined) closeSync(handle);
+      try { unlinkSync(temporary); } catch { /* A failed pre-publication file is covered by the caller's reset recovery. */ }
+    }
+  }
+
   #assertNoRestoreBarrier(): void {
     if (this.#path === ":memory:") {
       return;
+    }
+    if (!this.#allowRecordsReset && existsSync(resolve(dirname(this.#path), "records-reset.pending.json"))) {
+      throw new Error("Canonical storage is blocked while record reset is pending. Complete record reset before continuing.");
     }
     if (existsSync(`${this.#path}.restore.lock`)) {
       throw new Error(
@@ -7614,6 +7756,7 @@ export class CanonicalSqliteStore {
       }
 
       const requiredTables = [
+        ...(expectedVersion >= 16 ? ["record_reset"] : []),
         ...(expectedVersion >= 8 ? ["raw_event_enrichments"] : []),
         ...(expectedVersion >= 2 ? ["branch_contexts"] : []),
         ...(expectedVersion >= 3 ? ["knowledge_candidates"] : []),

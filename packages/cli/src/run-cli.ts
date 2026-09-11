@@ -17,6 +17,7 @@ import {
   CopilotCliAdapter,
   cancelLearningScratch,
   AUTOMATIC_LEARNING_DISCLOSURE,
+  resolveAutomaticLearning,
   approveCopilotLearningHooks,
   getCopilotAutomaticLearningHostCapability,
   readCopilotAdapterState,
@@ -43,6 +44,8 @@ import {
   DeletionPropagationGateError,
   DeletionService,
   KnowledgeControlService,
+  planCaptureRetention,
+  applyCaptureRetention,
   type CaptureWorkerRunResult,
 } from "@provenloop/host";
 import {
@@ -83,6 +86,7 @@ import {
 } from "./observation-summary.js";
 import { invalidateLocalObservationProjection } from "./collect-observations.js";
 import { runUi } from "./run-ui.js";
+import { previewRecordsReset, resetAllRecords } from "./reset-records.js";
 
 export interface CliIo {
   readonly error: (message: string) => void;
@@ -137,6 +141,7 @@ const option = (
 };
 
 const usage = `Usage:
+  provenloop records clear [--confirm] [--data-root <directory>]
   provenloop ui [--port <0-65535>] [--no-open] [--data-root <directory>]
   provenloop install [--no-auto-collect] [--data-root <directory>]
   provenloop version
@@ -161,6 +166,8 @@ const usage = `Usage:
   provenloop forget <knowledge-or-playbook> [--data-root <directory>]
   provenloop delete (--source <event-or-dedup-id> | --session <id> | --episode <id> | --knowledge <id>) [--data-root <directory>]
   provenloop worker run [--batch-size <count>] [--data-root <directory>]
+  provenloop capture retention plan [--older-than <ISO-time>] [--data-root <directory>]
+  provenloop capture retention apply --older-than <ISO-time> --expect <digest> --sessions <id,id> --confirm [--data-root <directory>]
   provenloop uninstall [--purge] [--data-root <directory>]
   provenloop purge [--data-root <directory>]
   provenloop acceptance start [--session-root <directory>] [--data-root <directory>]
@@ -241,7 +248,7 @@ const LEASE_RETRY_DELAY_MS = 25;
 
 const acquireMaintenanceLease = async (
   root: string,
-  purpose: "knowledge-projection" | "observations" | "adapter-state",
+  purpose: "knowledge-projection" | "observations" | "adapter-state" | "capture-worker",
 ) => {
   const leaseName = await resolveWindowsProvenLoopLeaseName(
     root,
@@ -743,6 +750,7 @@ const deletionTarget = (
 const runDeletionCommand = async (
   args: readonly string[],
   io: CliIo,
+  beforeDelete?: (store: CanonicalSqliteStore, queue: WindowsCaptureQueue) => Promise<void>,
 ): Promise<number> => {
   const target = deletionTarget(args);
   if (
@@ -860,6 +868,7 @@ const runDeletionCommand = async (
       store,
     }).delete({
       deletionId,
+      ...(beforeDelete ? { preflight: async () => { if (!store) throw new Error("Retention store is unavailable."); await beforeDelete(store, queue); } } : {}),
       ...target,
     });
     await invalidateLocalObservationProjection(paths.root);
@@ -1249,6 +1258,7 @@ const runCollectionCommand = async (
   }
   try {
     const adapter = dependencies.createAdapter(dataRoot(args));
+    if (args[1] === "enable") io.log(AUTOMATIC_LEARNING_DISCLOSURE);
     const operation = args[1] === "enable"
       ? adapter.enable.bind(adapter)
       : adapter.disable.bind(adapter);
@@ -1295,10 +1305,6 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
   }
   if (action === "enable") {
     io.log(AUTOMATIC_LEARNING_DISCLOSURE);
-    if (!args.includes("--confirm")) {
-      io.error("Enabling background inference requires accepting this disclosure with --confirm.");
-      return 2;
-    }
   }
   try {
     const paths = resolveWindowsProvenLoopPaths(dataRoot(args));
@@ -1319,31 +1325,26 @@ const runLearningCommand = async (args: readonly string[], io: CliIo): Promise<n
           }));
         } finally { store.close(); }
         io.log(JSON.stringify({
-          automaticLearning: state.automaticLearning ?? { enabled: false, consentRequired: true },
-          prerequisites: { installed: state.installed,
-            capture: state.capabilities.capture.enabled, worker: state.capabilities.worker.enabled,
-            correctionLearning: state.capabilities.correction_learning.enabled },
+          automaticLearning: resolveAutomaticLearning(state),
+          prerequisites: resolveAutomaticLearning(state).prerequisites,
           disclosure: AUTOMATIC_LEARNING_DISCLOSURE,
           hostHooks: { ...getCopilotAutomaticLearningHostCapability(state.detectedCopilotVersion),
             permission: "extension-permission-access", extension: "plugin:provenloop:event-capture",
-            detail: "Copilot must approve this extension in each repository before automatic retrieval hooks can start. Consent alone does not grant host permissions." },
+            detail: "Copilot must approve this extension in each repository before automatic retrieval hooks can start. Background learning does not grant host permissions." },
           jobs,
         }, null, 2));
         return 0;
       }
-      if (action !== "enable" && state.automaticLearning === undefined) {
-        io.log("Automatic learning has no consent and remains disabled."); return 0;
-      }
       const previous = state.automaticLearning ?? {
-        consentedAt: now.toISOString(), disclosureVersion: 1 as const,
-        enabled: false, notificationsEnabled: true,
+        notificationsEnabled: true,
       };
       const automaticLearning = { ...previous,
-        enabled: action === "enable" ? true : action === "disable" ? false : previous.enabled,
+        ...(action === "enable" ? { enabled: true } : action === "disable" ? { enabled: false } : {}),
         notificationsEnabled: action === "mute" ? false : action === "unmute" ? true : previous.notificationsEnabled,
       };
-      await writeCopilotAdapterState(paths.adapterState, { ...state, automaticLearning, updatedAt: now.toISOString() });
-      io.log(JSON.stringify({ automaticLearning }, null, 2));
+      const next = { ...state, automaticLearning, updatedAt: now.toISOString() };
+      await writeCopilotAdapterState(paths.adapterState, next);
+      io.log(JSON.stringify({ automaticLearning: resolveAutomaticLearning(next) }, null, 2));
       if (action === "enable") io.log("Copilot also requires repository-scoped hook approval. Run provenloop learning approve-hooks --cwd <repository-directory> --confirm, then restart the Copilot session. Automatic reuse is unavailable until the host grants this permission.");
       return 0;
     } finally { await lease.release(); }
@@ -1357,6 +1358,59 @@ export const runCli = async (
   io: CliIo = defaultIo,
   dependencies: CliDependencies = defaultDependencies,
 ): Promise<number> => {
+  if (args[0] === "records") {
+    if (args[1] !== "clear" || !hasOnlyOptions(args, 2, { values: ["--data-root"], flags: ["--confirm"] })) { io.error(usage); return 2; }
+    try {
+      const root = dataRoot(args);
+      if (!args.includes("--confirm")) {
+        io.log(JSON.stringify(await previewRecordsReset(root), null, 2));
+        io.log("Clears all recorded activity, knowledge, episodes, learning jobs, usage, queues and local record artifacts. Installation and configuration are retained. Run again with --confirm to clear; restart Copilot afterward.");
+        return 0;
+      }
+      io.log(JSON.stringify(await resetAllRecords({ dataRoot: root, confirmed: true }), null, 2));
+      io.log("All records cleared. Installation and configuration were preserved. Restart Copilot to resume collection; old captured history will not be imported again.");
+      return 0;
+    } catch (error) { io.error(error instanceof Error ? error.message : String(error)); return 3; }
+  }
+  if (args[0] === "capture" && args[1] === "retention") {
+    const action = args[2];
+    const apply = action === "apply";
+    if (!["plan", "apply"].includes(action ?? "") || !hasOnlyOptions(args, 3, {
+      values: ["--data-root", "--older-than", ...(apply ? ["--expect", "--sessions"] : [])], flags: apply ? ["--confirm"] : [],
+    })) { io.error(usage); return 2; }
+    const cutoff = option(args, "--older-than");
+    if ((cutoff !== undefined && !Number.isFinite(Date.parse(cutoff))) || (apply && (!cutoff || !args.includes("--confirm")))) {
+      io.error("Apply requires the reviewed cutoff, digest, selected session IDs, and --confirm."); return 2;
+    }
+    const root = dataRoot(args);
+    const paths = resolveWindowsProvenLoopPaths(root);
+    let store: CanonicalSqliteStore | undefined;
+    let captureLease: Awaited<ReturnType<typeof acquireMaintenanceLease>> | undefined;
+    try {
+      await access(paths.rootMarker); await access(paths.database);
+      if (apply) captureLease = await acquireMaintenanceLease(root, "capture-worker");
+      store = new CanonicalSqliteStore(paths.database);
+      const olderThan = cutoff ? new Date(cutoff) : undefined;
+      if (!apply) {
+        io.log(JSON.stringify(planCaptureRetention(store, olderThan ? { olderThan } : {}), null, 2)); return 0;
+      }
+      const checkedCutoff = new Date(cutoff ?? "");
+      const result = await applyCaptureRetention(store, { olderThan: checkedCutoff, expectedDigest: option(args, "--expect") ?? "",
+        sessionIds: (option(args, "--sessions") ?? "").split(",").map((id) => id.trim()).filter(Boolean), userConfirmed: true }, async (sessionId) => {
+        const code = await runDeletionCommand(["delete", "--session", sessionId, "--data-root", root], io, async (current, queue) => {
+          if ((await queue.list()).some((item) => item.envelope.event.sessionId === sessionId && item.state !== "acknowledged")) {
+            throw new Error("Session has pending or failed capture work. Drain and review it before retention cleanup.");
+          }
+          if (!planCaptureRetention(current, { olderThan: checkedCutoff }).candidates.some((entry) => entry.sessionId === sessionId)) {
+            throw new Error("Session acquired new activity or dependencies after review. Create a new retention plan.");
+          }
+        });
+        if (code !== 0) throw new Error("Session cleanup did not complete; inspect deletion status before retrying.");
+      });
+      io.log(JSON.stringify(result, null, 2)); return 0;
+    } catch (error) { io.error(error instanceof Error ? error.message : String(error)); return 3; }
+    finally { store?.close(); await captureLease?.release(); }
+  }
   if (args[0] === "learning") return runLearningCommand(args, io);
   if (args[0] === "ui") {
     const port = option(args, "--port");
@@ -1511,6 +1565,7 @@ export const runCli = async (
     const adapter = dependencies.createAdapter(dataRoot(args));
     switch (args[0]) {
       case "install": {
+        io.log(AUTOMATIC_LEARNING_DISCLOSURE);
         const result = await adapter.install(
           args.includes("--no-auto-collect")
             ? {
@@ -1522,6 +1577,7 @@ export const runCli = async (
         return operationExitCode(result);
       }
       case "upgrade": {
+        io.log(AUTOMATIC_LEARNING_DISCLOSURE);
         const result = await adapter.upgrade();
         io.log(result.message);
         return operationExitCode(result);
@@ -1549,6 +1605,7 @@ export const runCli = async (
           io.error(usage);
           return 2;
         }
+        if (args[0] === "enable" && ["capture", "worker", "correction_learning"].includes(capability.data)) io.log(AUTOMATIC_LEARNING_DISCLOSURE);
         const result =
           args[0] === "enable"
             ? await adapter.enable(capability.data)

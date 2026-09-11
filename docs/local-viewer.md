@@ -1,5 +1,10 @@
 # Local learning viewer
 
+The viewer in `0.1.0-alpha.0.15` includes knowledge management and record cleanup.
+It requires canonical schema 16. Use `provenloop upgrade` before opening an older
+database. See the [release notes](releases/0.1.0-alpha.0.15.md) for this preview
+and its validation limits.
+
 Run the viewer from the existing CLI:
 
 ```powershell
@@ -27,8 +32,8 @@ node packages/cli/dist/bin.js ui
 
 | Page | Contents |
 |---|---|
-| Overview | Record counts, stored knowledge states, guidance use, viewer version, data location, and capability settings |
-| Knowledge | Searchable rule text, state and scope filters, applicability, source quotations, verification receipts, conflicts, feedback, and recent use |
+| Overview | Cumulative counts, additions over one and seven days, event distributions, queue depth, database size, knowledge states, usage, and selected data location |
+| Knowledge | Searchable rules, applicability, sources, evidence, possible duplicates, and review actions to adopt, edit scope or content, archive, and delete |
 | Activity | Event metadata filtered by text or session, with retained content and capture limits on the detail page |
 | Work episodes | Goals, recorded outcomes, source events, and outcome evidence references |
 | Learning | Job state, attempts, pause reasons, results, proposals, and source references |
@@ -39,6 +44,37 @@ Use the Usage page for older context requests. Search matches substrings in the
 fields described on each page; Activity search does not scan event content.
 Refresh the page to read a new snapshot. All timestamps use UTC.
 
+Episode pages separate last activity from recorded closure. Empty runtime-only
+sessions are excluded when episodes are rebuilt. Repository display names use
+worktree paths where available; stored canonical IDs remain visible in details.
+
+## Reviewing knowledge
+
+Open a knowledge item to inspect its exact sources and current evidence. Adopt
+creates a user-confirmed rule; editing may also correct its scope. Both actions
+preserve the old record through a supersession link. They do not label a user
+decision as external verification. Review listed counterevidence explicitly
+before adopting an item that has contrary evidence.
+
+Archive stops use while preserving history. Delete uses the existing deletion
+service and its dependency handling. Each form requires an explicit action and
+the current review digest; stale forms must be refreshed. Candidate, active,
+and disputed records appear in the default list, with archived and superseded
+history available through state filters. Similar-item links are review hints;
+the viewer does not merge rules or evidence automatically.
+
+New proposals that pass retention and source checks can be delivered as quoted
+user conventions or source references while retaining their `inferred` evidence
+label. References include the original tool excerpts and require the captured
+worktree and revision. They preserve source findings without establishing a
+broader reusable lesson. Task-local constraints remain in their originating
+session. The viewer explains this eligibility separately from
+stored state. Ordinary legacy candidates remain review-only.
+
+The viewer shows effective automatic-learning eligibility and reasons
+it is off. All prerequisites enable it by default; an explicit disable takes
+precedence across upgrades and restarts.
+
 The viewer is an explicit local administration surface across the selected data
 root. It does not run task retrieval or authorize guidance for another scope.
 Knowledge state and evidence tier are shown as stored. Actual delivery still
@@ -48,19 +84,81 @@ as unavailable. Usage counts do not establish task success or productivity benef
 
 ## Local operation
 
-The viewer uses the canonical database through a read-only SQLite connection.
-It does not initialize data, migrate schemas, rebuild search indexes, run
-learning, or edit knowledge. SQLite may create WAL/shared-memory coordination
-files when opening an existing database. Database handles and maintenance
-leases are released after each page request. An upgrade, restore, or incomplete
-deletion temporarily makes records unavailable.
+Page reads use a read-only SQLite connection. Explicit knowledge forms use
+the existing control services and rebuild the knowledge projection. Browsing
+does not initialize installations, migrate schemas, or run learning. SQLite may
+create WAL/shared-memory coordination files when opening an existing database.
+Database handles and maintenance leases are released after each request. An
+upgrade, restore, or incomplete deletion temporarily makes records unavailable.
+
+## Captured-event retention
+
+### Clear all records
+
+To start with an empty record set while keeping the installation and its
+configuration, open Overview, expand **Clear all records**, type `CLEAR`, and
+select the confirmation checkbox. This removes all events, knowledge, episodes,
+learning jobs, usage, queues, indexes, and local record artifacts in the displayed
+data root. It also removes ProvenLoop's pre-upgrade database snapshots because
+they contain the old records. Plugin/configuration backups are retained.
+
+The Copilot integration, capability settings, project files, and Copilot's own
+conversation history remain in place. The same action is available in the CLI:
+
+```powershell
+# Preview the selected location and record counts
+provenloop records clear
+
+# Clear the records and keep installation/configuration
+provenloop records clear --confirm
+```
+
+Use `--data-root <directory>` when the viewer uses a custom location. The reset
+stops ProvenLoop extension activity and waits for storage users to finish.
+Restart Copilot afterward to resume collection with the same settings. A
+persistent cutoff prevents old events from being imported again, while new
+events remain eligible. A small reset marker is retained for this purpose.
+
+If the process is interrupted after cleanup starts, capture remains paused.
+Repeat the same clear action to finish it. The UI offers this retry even while
+other records are unavailable. A reset cannot be undone through the viewer.
+Logical deletion does not guarantee immediate reduction of SQLite file size.
+
+### Review old sessions
+
+Captured events is a cumulative record count. It includes tool starts, results,
+messages, and supported derived evidence. Recent additions use ingestion time.
+The database size includes SQLite WAL and shared-memory files; the queue count
+is separate from cumulative capture. These metrics do not establish learning
+quality or confirm that every captured session contains useful work.
+
+Create a review plan for old, closed sessions:
+
+```powershell
+provenloop capture retention plan
+```
+
+The suggested cutoff is 90 days ago. The plan protects sessions with knowledge
+or Branch Context dependencies, unfinished learning, incomplete capture, or
+recent activity. It changes no records. To remove eligible sessions, use the
+exact cutoff and digest from that plan and select the session IDs explicitly:
+
+```powershell
+provenloop capture retention apply --older-than <ISO-time> --expect <digest> --sessions <id,id> --confirm
+```
+
+Both commands support `--data-root`. Cleanup uses the existing session-deletion
+flow and rechecks eligibility. No background raw-event deletion is enabled. The
+plan estimates serialized event bytes; SQLite file size may not shrink after
+logical deletion.
 
 The server listens only on `127.0.0.1`. Each launch has a random access path;
 use the full printed URL. Treat that URL as local access to the selected data.
-Pages reject foreign hosts, cross-origin requests, and write methods. They use
-no external assets or browser scripts, disable caching, escape captured content,
-and redact recognized secret values for display. The existing CLI commands
-remain the entry point for confirming, replacing, revoking, and deleting rules.
+Pages reject foreign hosts and cross-origin requests. Writes are accepted only
+through the knowledge and reset POST routes with valid form tokens and explicit
+confirmation. Pages use no external assets or browser scripts, disable caching,
+escape captured content, and redact recognized secret values for display. The
+CLI also provides the corresponding review and cleanup commands.
 
 If the data cannot be read, the page shows an error with the selected location.
 Check `provenloop version`, `provenloop status`, and `provenloop doctor`. A schema

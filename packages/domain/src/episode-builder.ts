@@ -14,6 +14,7 @@ import {
 } from "@provenloop/contracts";
 
 import { sha256 } from "./digest.js";
+import { isInternalWorkSource } from "./work-source.js";
 import {
   isCreatedCommitEvent,
   isVerificationEvent,
@@ -34,6 +35,11 @@ export interface WorkEpisodeBuilderOptions {
 export interface WorkEpisodeBuildResult {
   readonly associations: readonly EpisodeAssociation[];
   readonly episodes: readonly WorkEpisode[];
+  readonly excludedSessions: readonly {
+    readonly reason: "internal_work" | "no_substantive_work";
+    readonly sessionId: string;
+    readonly sourceEventIds: readonly string[];
+  }[];
   readonly ignoredEventIds: readonly string[];
 }
 
@@ -172,6 +178,9 @@ const referenceIds = (
   envelope: CaptureEnvelope,
   kind: "issue" | "pull_request",
 ): string[] => {
+  if (envelope.event.eventType === "prompt.submitted" && !isUserGoal(envelope)) {
+    return [];
+  }
   const keySet =
     kind === "issue"
       ? new Set([
@@ -271,6 +280,75 @@ const taskTokens = (prompts: readonly string[]): ReadonlySet<string> =>
     ),
   );
 
+const meaningfulText = (value: string | undefined): boolean =>
+  value !== undefined &&
+  /[\p{L}\p{N}]/u.test(value) &&
+  !/^(?:ok(?:ay)?|yes|no|thanks?(?: you)?|done|hello|hi|嗯|好(?:的)?|谢谢|是的|继续)[.!。！\s]*$/iu.test(value.trim());
+
+const isUserMessage = (envelope: CaptureEnvelope): boolean =>
+  envelope.event.trust === "user" &&
+  ["prompt.submitted", "user.corrected"].includes(envelope.event.eventType) &&
+  Boolean(envelope.content?.message?.trim());
+
+const isUserGoal = (envelope: CaptureEnvelope): boolean =>
+  isUserMessage(envelope) && meaningfulText(envelope.content?.message);
+
+const isSubstantiveWork = (envelope: CaptureEnvelope): boolean => {
+  if (isInternalWorkSource(envelope.event)) return false;
+  if (isUserGoal(envelope)) return true;
+  const { event } = envelope;
+  if (event.eventType === "agent.message") {
+    return event.trust === "model" && meaningfulText(envelope.content?.message);
+  }
+  if (!trustedExecution(envelope)) return false;
+  if (isCreatedCommitEvent(envelope) && event.commitSha !== undefined) return true;
+  if (isVerificationEvent(envelope)) return true;
+  if (event.eventType === "file.changed") {
+    return fileNames(envelope).length > 0 ||
+      (event.evidence?.targetPaths?.length ?? 0) > 0;
+  }
+  if (["tool.started", "tool.completed", "tool.failed"].includes(event.eventType)) {
+    return event.toolName !== undefined || event.redactedArguments !== undefined ||
+      envelope.content?.toolResult !== undefined;
+  }
+  return ["issue.linked", "pull_request.updated", "review.received", "change.reverted"].includes(event.eventType) &&
+    (eventStrings(envelope).some(meaningfulText) || event.redactedArguments !== undefined);
+};
+
+const compactGoal = (value: string): string => {
+  const text = value.replace(/\s+/gu, " ").trim();
+  const characters = Array.from(text);
+  if (characters.length <= 180) return text;
+  const prefix = characters.slice(0, 179).join("");
+  const sentence = prefix.match(/^(.{40,}[.!?。！？])(?:\s|$)/u)?.[1];
+  if (sentence !== undefined) return `${sentence}…`;
+  const wordBoundary = prefix.lastIndexOf(" ");
+  return `${wordBoundary >= 120 ? prefix.slice(0, wordBoundary) : prefix}…`;
+};
+
+const activityGoal = (envelope: CaptureEnvelope): string => {
+  const { event } = envelope;
+  if (event.eventType === "agent.message") {
+    return compactGoal(`Recorded assistant response: ${envelope.content?.message ?? ""}`);
+  }
+  if (event.eventType === "file.changed") {
+    const files = event.evidence?.targetPaths ?? fileNames(envelope);
+    return compactGoal(`Changes recorded in ${files.join(", ")}`);
+  }
+  if (event.eventType === "git.commit") return compactGoal(`Commit recorded: ${event.commitSha ?? ""}`);
+  if (isVerificationEvent(envelope)) {
+    return compactGoal(`Recorded ${event.eventType.split(".")[0]} result${event.toolName === undefined ? "" : ` from ${event.toolName}`}`);
+  }
+  if (event.eventType.startsWith("tool.")) {
+    return compactGoal(`Captured tool activity${event.toolName === undefined ? "" : `: ${event.toolName}`}`);
+  }
+  return compactGoal(`Recorded ${event.eventType.replaceAll(".", " ")}: ${envelope.content?.message ?? "work activity"}`);
+};
+
+const sourceWasTruncated = (envelope: CaptureEnvelope): boolean =>
+  [...envelope.redaction.truncatedPaths, ...(envelope.event.captureQuality?.truncatedFields ?? [])]
+    .some((path) => path === "message" || path === "content" || path.endsWith(".message") || path.endsWith(".content"));
+
 const sessionSummary = (
   sessionId: string,
   events: readonly CaptureEnvelope[],
@@ -281,14 +359,14 @@ const sessionSummary = (
   const repoIds = sorted(
     ordered.flatMap((envelope) => {
       const identity =
-        envelope.event.repoId ?? envelope.event.worktree;
+        envelope.event.repoId ??
+        (envelope.event.repositoryState === "known_repo" ? envelope.event.worktree : undefined);
       return identity === undefined ? [] : [identity];
     }),
   );
   const repoId = repoIds.length === 1 ? repoIds[0] : undefined;
   const prompts = ordered.flatMap((envelope) =>
-    envelope.event.eventType === "prompt.submitted" &&
-    envelope.content?.message !== undefined
+    isUserGoal(envelope) && envelope.content?.message !== undefined
       ? [envelope.content.message]
       : [],
   );
@@ -724,10 +802,10 @@ const pairAssociation = (
         `Task-token overlap: ${semanticOverlap.intersection.join(", ")}.`,
         [
           ...left.events
-            .filter((item) => item.event.eventType === "prompt.submitted")
+            .filter(isUserGoal)
             .map((item) => item.event.eventId),
           ...right.events
-            .filter((item) => item.event.eventType === "prompt.submitted")
+            .filter(isUserGoal)
             .map((item) => item.event.eventId),
         ],
       ),
@@ -1011,15 +1089,35 @@ const episodeFromCluster = (
       )
       .map((correction) => correction.correctionId),
   );
-  const prompt = events.find(
-    (event) =>
-      event.event.eventType === "prompt.submitted" &&
-      event.content?.message?.trim(),
-  )?.content?.message;
+  const prompt = events.find(isUserGoal);
+  const goalSource = prompt ?? events.find(isSubstantiveWork);
+  if (goalSource === undefined) {
+    throw new Error("An Episode requires substantive work evidence.");
+  }
   const startedAt =
     events[0]?.event.timestamp ??
     "1970-01-01T00:00:00.000Z";
-  const finishedAt = events.at(-1)?.event.timestamp ?? startedAt;
+  const lastActivityAt = events.at(-1)?.event.timestamp ?? startedAt;
+  const closures = sessionIds.flatMap((sessionId) => {
+    const sessionEvents = summaries.get(sessionId)?.events ?? [];
+    const closure = sessionEvents.findLast((envelope) =>
+      envelope.event.eventType === "session.ended" &&
+      ["system", "user"].includes(envelope.event.trust),
+    );
+    if (closure === undefined || sessionEvents.some((envelope) =>
+      Date.parse(envelope.event.timestamp) > Date.parse(closure.event.timestamp) &&
+      (isSubstantiveWork(envelope) || envelope.event.eventType === "session.started"),
+    )) return [];
+    return [closure];
+  });
+  const finishedAt = closures.length === sessionIds.length
+    ? [...closures].sort(byTimestampAndId).at(-1)?.event.timestamp
+    : undefined;
+  const substantiveEvents = events.filter(isSubstantiveWork);
+  const repositoryState = repoIds.length === 1 ? "known_repo"
+    : repoIds.length === 0 && substantiveEvents.every((envelope) =>
+      envelope.event.repositoryState === "known_outside_repo",
+    ) ? "known_outside_repo" : "unknown";
   const outcomeState = outcome(events, observationWindowMs);
   return workEpisodeSchema.parse({
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -1051,6 +1149,7 @@ const episodeFromCluster = (
           : [event.event.commitSha],
       ),
     ),
+    closureSourceEventIds: finishedAt === undefined ? [] : closures.map((envelope) => envelope.event.eventId),
     correctionEventIds: sorted([
       ...events
         .filter(
@@ -1063,10 +1162,13 @@ const episodeFromCluster = (
       `episode-${sha256({
         sessionIds,
       }).slice(0, 24)}`,
-    finishedAt,
-    goal:
-      prompt?.trim() ||
-      `Work in ${repoIds[0] ?? sessionIds[0] ?? "unknown context"}`,
+    ...(finishedAt === undefined ? {} : { finishedAt }),
+    goal: prompt === undefined
+      ? activityGoal(goalSource)
+      : compactGoal(prompt.content?.message ?? ""),
+    goalSource: prompt === undefined ? "activity_summary" : "user_prompt",
+    goalSourceEventIds: [goalSource.event.eventId],
+    goalSourceTruncated: sourceWasTruncated(goalSource),
     issueIds: sorted(
       sessionIds.flatMap(
         (sessionId) => [
@@ -1074,6 +1176,7 @@ const episodeFromCluster = (
         ],
       ),
     ),
+    lastActivityAt,
     ...outcomeState,
     pullRequestIds: sorted(
       sessionIds.flatMap(
@@ -1087,9 +1190,13 @@ const episodeFromCluster = (
           repoId: repoIds[0],
         }
       : {}),
+    repositoryState,
     sessionIds,
     sourceEventIds: events.map((event) => event.event.eventId),
     startedAt,
+    worktrees: sorted(events.flatMap((envelope) =>
+      envelope.event.worktree === undefined ? [] : [envelope.event.worktree],
+    )),
   });
 };
 
@@ -1157,6 +1264,7 @@ export class WorkEpisodeBuilder {
     );
     const bySession = new Map<string, CaptureEnvelope[]>();
     const ignoredEventIds: string[] = [];
+    const excludedSessions: WorkEpisodeBuildResult["excludedSessions"][number][] = [];
     for (const envelope of envelopes) {
       const sessionId = envelope.event.sessionId;
       if (sessionId === undefined) {
@@ -1166,6 +1274,26 @@ export class WorkEpisodeBuilder {
       const events = bySession.get(sessionId) ?? [];
       events.push(envelope);
       bySession.set(sessionId, events);
+    }
+    for (const [sessionId, events] of bySession) {
+      const internalWork = !events.some(isUserMessage) &&
+        events.some((envelope) => isInternalWorkSource(envelope.event));
+      if (internalWork || !events.some(isSubstantiveWork)) {
+        const sourceEventIds = sorted(events.map((envelope) => envelope.event.eventId));
+        excludedSessions.push({
+          reason: internalWork ? "internal_work" : "no_substantive_work",
+          sessionId,
+          sourceEventIds,
+        });
+        ignoredEventIds.push(...sourceEventIds);
+        bySession.delete(sessionId);
+      } else {
+        bySession.set(sessionId, events.filter((envelope) => {
+          if (!isInternalWorkSource(envelope.event)) return true;
+          ignoredEventIds.push(envelope.event.eventId);
+          return false;
+        }));
+      }
     }
     const summaries = new Map(
       [...bySession.entries()]
@@ -1234,6 +1362,7 @@ export class WorkEpisodeBuilder {
     return {
       associations,
       episodes,
+      excludedSessions: excludedSessions.sort((left, right) => left.sessionId.localeCompare(right.sessionId)),
       ignoredEventIds: sorted(ignoredEventIds),
     };
   }

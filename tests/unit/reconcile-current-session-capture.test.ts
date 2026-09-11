@@ -64,6 +64,18 @@ afterEach(async () => {
 });
 
 describe("current trusted Session reconciliation", () => {
+  it("starts strictly after a records-reset cutoff without changing capture preferences", async () => {
+    const environment = await fixture([header(), message("old", 1), message("after-reset", 7)]);
+    const before = await readFile(environment.paths.adapterState, "utf8");
+    const store = new CanonicalSqliteStore(environment.paths.database);
+    try { store.clearAllRecords(instant(5)); } finally { store.close(); }
+    const result = await reconcileCurrentSessionCapture(environment.options);
+    expect(result).toMatchObject({ status: "reconciled", minimumTimestamp: new Date(Date.parse(instant(5)) + 1).toISOString(),
+      reconciliation: { queuedEvents: 1, outsideObservationEvents: 2 } });
+    const queue = new WindowsCaptureQueue(environment.paths.queue); await queue.initialize();
+    expect((await queue.list()).map((item) => item.envelope.sourceEventId)).toEqual(["after-reset"]);
+    expect(await readFile(environment.paths.adapterState, "utf8")).toBe(before);
+  });
   it("queues only the requested Session inside its observed interval", async () => {
     const environment = await fixture([header(), message("old", 1), message("current", 7)]);
     await mkdir(join(environment.sessionStateRoot, "another-session"));

@@ -148,7 +148,7 @@ const sessionEvents = (
       readonly commitSha?: string;
       readonly message?: string;
       readonly toolArguments?: Readonly<Record<string, string>>;
-      readonly trust?: "system" | "tool" | "user";
+      readonly trust?: "system" | "tool" | "user" | "model";
     } = {},
   ): CaptureEnvelope => {
     const sourceEventId = `${caseId}-${side}-${sequence += 1}`;
@@ -249,8 +249,13 @@ const sessionEvents = (
       }),
     );
   }
-  if (events.length === 0) {
-    events.push(next("session.started"));
+  if (fixture.goal === undefined) {
+    // This fixture isolates association signals. Synthetic assistant activity
+    // satisfies the work gate without adding user-goal tokens or real evidence.
+    events.push(next("agent.message", {
+      message: "Synthetic work activity for the association-only fixture.",
+      trust: "model",
+    }));
   }
   return events;
 };

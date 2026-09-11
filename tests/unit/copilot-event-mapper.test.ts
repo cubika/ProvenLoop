@@ -511,6 +511,44 @@ describe("Copilot event mapping", () => {
     });
   });
 
+  it("retains a canonical Git identity when host context names the same worktree", () => {
+    const mapper = new CopilotEventMapper({
+      adapterVersion: "1.0.82-0",
+      copyLimits: { maxStringChars: 1024 },
+      sessionId: "session-1",
+      workspace: {
+        repoId: "C:/repos/DirExchangeMgmtApi/.git",
+        repositoryState: "known_repo",
+        worktree: "C:/repos/DirExchangeMgmtApi",
+      },
+    });
+    mapper.map(event("session.context_changed", {
+      cwd: "C:/repos/DirExchangeMgmtApi/src",
+      gitRoot: "c:/repos/DirExchangeMgmtApi/",
+      repository: "DefaultCollection/O365 Core/DirExchangeMgmtApi",
+    }));
+    const next = mapper.map(event("user.message", { content: "Inspect the review configuration." }));
+
+    expect(next).toMatchObject({
+      status: "mapped",
+      value: { repoId: "C:/repos/DirExchangeMgmtApi/.git", repositoryState: "known_repo" },
+    });
+  });
+
+  it("clears canonical identity when host context explicitly leaves the repository", () => {
+    const mapper = new CopilotEventMapper({
+      adapterVersion: "1.0.82-0",
+      copyLimits: { maxStringChars: 1024 },
+      sessionId: "session-1",
+      workspace: { repoId: "C:/repo/.git", worktree: "C:/repo", repositoryState: "known_repo" },
+    });
+    mapper.map(event("session.context_changed", { cwd: "C:/repo", gitRoot: null, repository: null }));
+    const next = mapper.map(event("user.message", { content: "Inspect tenant access." }));
+
+    expect(next).toMatchObject({ status: "mapped", value: { repositoryState: "known_outside_repo" } });
+    if (next.status === "mapped") expect(next.value.repoId).toBeUndefined();
+  });
+
   it("ignores ephemeral streaming content", () => {
     const result = createMapper().map({
       ...event("assistant.message_delta", {

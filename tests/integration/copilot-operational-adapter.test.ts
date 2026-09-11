@@ -1028,7 +1028,7 @@ describe("Copilot operational adapter", () => {
     expect(runner.pluginInstalled).toBe(true);
   });
 
-  it("clears stale recovery errors only after a verified retry without enabling capabilities or inference", async () => {
+  it.each([false, true])("preserves learning opt-out through recovery, with legacy acknowledgement: %s", async (legacyAcknowledgement) => {
     const root = await createTemporaryDirectory();
     const dataRoot = join(root, "data-root");
     const runner = new FakeCommandRunner();
@@ -1046,7 +1046,7 @@ describe("Copilot operational adapter", () => {
     state = {
       ...state,
       automaticLearning: {
-        consentedAt: now.toISOString(), disclosureVersion: 1,
+        ...(legacyAcknowledgement ? { consentedAt: now.toISOString(), disclosureVersion: 1 as const } : {}),
         enabled: false, notificationsEnabled: false,
       },
     };
@@ -2033,11 +2033,21 @@ describe("Copilot operational adapter", () => {
           status: "pass",
         }),
         expect.objectContaining({
+          id: "learning.automatic",
+          status: "warn",
+          message: expect.stringContaining("correctionLearning"),
+        }),
+        expect.objectContaining({
           id: "copilot.provider",
           status: "warn",
         }),
       ]),
     );
+    await adapter.enable("correction_learning");
+    const enabledHealth = await adapter.doctor();
+    expect(enabledHealth.checks).toContainEqual(expect.objectContaining({
+      id: "learning.automatic", status: "pass", message: expect.stringContaining("enabled (automatic)"),
+    }));
   });
 
   it("classifies opt-in online provider degradation without persisting output", async () => {

@@ -110,6 +110,20 @@ describe("Branch Continuation evaluation", () => {
     expect(report.metrics.wrongInjectionRate).toBeGreaterThan(0.02);
   });
 
+  it("does not treat matching branch and HEAD as permission to continue a new task", async () => {
+    const dataset = await loadBranchContinuationDataset();
+    const report = await evaluateBranchContinuationDataset({
+      ...dataset,
+      cases: dataset.cases.map((testCase, index) => index === 0 ? {
+        ...testCase, scenario: "new_task" as const, expectedRelevant: false,
+      } : testCase),
+    }, { databasePath: await createDatabasePath() });
+
+    expect(report.status).toBe("pass");
+    expect(report.cases[0]).toMatchObject({ scenario: "new_task", returnedContextIds: [], matched: true });
+    expect(report.metrics.wrongInjections).toBe(0);
+  });
+
   it("fails when product benefit or Outcome Success regresses", async () => {
     const dataset = await loadBranchContinuationDataset();
     const failing = {

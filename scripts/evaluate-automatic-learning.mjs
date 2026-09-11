@@ -2,7 +2,7 @@ import { resolve, join } from "node:path";
 import { prepareFrozenLearningEvaluation, createGeneralLearningCorpus, createAgentExperienceCorpus, runFrozenLearningEvaluation, reviewFrozenLearningEvaluation,
   exportInstalledLearningCorpus, importInstalledLearningAcceptance, resolveLearningEvaluationCodeVersion,
   resolveLearningEvaluationExecutableDigest } from "../packages/evaluation/dist/index.js";
-import { CopilotLearningProvider, readCopilotAdapterState } from "../packages/copilot-adapter/dist/index.js";
+import { CopilotLearningProvider, readCopilotAdapterState, resolveAutomaticLearning } from "../packages/copilot-adapter/dist/index.js";
 import { resolveWindowsProvenLoopPaths, resolveWindowsProvenLoopLeaseName, WindowsNamedPipeLeaseProvider } from "../packages/platform-windows/dist/index.js";
 import { CanonicalSqliteStore } from "../packages/storage-sqlite/dist/index.js";
 
@@ -30,8 +30,8 @@ try {
   } else if (command === "run") {
     const paths = resolveWindowsProvenLoopPaths(resolve(required("--data-root")));
     const enabled = async () => { const state = await readCopilotAdapterState(paths.adapterState, new Date());
-      return state.installed && state.automaticLearning?.enabled === true && state.capabilities.correction_learning.enabled; };
-    if (!await enabled()) throw new Error("Actual provider evaluation requires existing automatic-learning consent in the selected data root.");
+      return resolveAutomaticLearning(state).enabled; };
+    if (!await enabled()) throw new Error("Actual provider evaluation requires enabled automatic learning and its prerequisites in the selected data root.");
     const before = await executableDigest(); const version = await codeVersion();
     const outputDirectory = resolve(required("--out"));
     const labels = [option("--labels-a"), option("--labels-b")].filter((value) => value !== undefined);

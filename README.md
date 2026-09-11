@@ -61,12 +61,13 @@ command or an additional model API key for ordinary deterministic operation.
 Installed capabilities and retained field evidence are separate: installation
 does not itself constitute release approval or proof of learning benefit.
 
-**Version boundary (2026-09-09):** `0.1.0-alpha.0.14` is the Windows
-Design Partner Preview with a local read-only viewer. Run `provenloop ui` to
-browse knowledge, captured evidence, work episodes, learning jobs, and usage
-through the existing CLI. It retains 0.13's Windows upgrade recovery and
-0.12's opt-in learning. See the
-[release notes](docs/releases/0.1.0-alpha.0.14.md) and
+**Version boundary (2026-09-11):** `0.1.0-alpha.0.15` is the Windows
+Design Partner Preview with source-qualified learning, clearer work episodes,
+and local knowledge management. Run `provenloop ui` to review rules and their
+evidence, change scope, archive items, or clear records while keeping settings.
+The release uses schema 16 and enables background learning when its prerequisites
+are met, while preserving explicit opt-outs. See the
+[release notes](docs/releases/0.1.0-alpha.0.15.md) and
 [First useful workflow](#first-useful-workflow).
 This is not M0/MVP approval; `0.1.0-alpha.1` remains an unapproved quality-release
 target. Automatic reconciliation requires matching SDK Session/workspace
@@ -79,10 +80,12 @@ M3-M5 targets; the diagram above is the long-term learning loop.
 must automatically produce source-backed proposals, qualify supported low-risk
 rules, and enable later-task reuse without manual remember/retrieve instructions.
 Bounded extraction and supported native/MCP recovery qualification were introduced
-in 0.12 and are retained in 0.13. Research and unsupported semantic findings remain
-candidates. Installed-host acceptance and controlled benefit remain open; see the
+in 0.12. This preview can also return qualified conventions and captured source
+references without marking them externally verified. It does not establish that
+the model can reliably derive broader reusable principles. Installed-host acceptance
+and controlled benefit remain open; see the
 [validation record](docs/general-learning-validation.md) and [agent experience checks](docs/agent-experience-validation.md).
-Those records describe the earlier experiments, not new 0.13 acceptance results.
+Those records describe earlier experiments, not new 0.15 acceptance results.
 
 ## Repository structure
 
@@ -155,7 +158,7 @@ GitHub Release tarball rather than resolving the package through an npm
 registry:
 
 ```powershell
-irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.14/install.ps1 | iex
+irm https://raw.githubusercontent.com/cubika/ProvenLoop/v0.1.0-alpha.0.15/install.ps1 | iex
 ```
 
 The installer downloads and verifies the exact GitHub Release tarball, then
@@ -168,8 +171,9 @@ Upgrading does not require closing every foreground Copilot session. ProvenLoop
 drains participating processes and targets only verified remaining plugin helpers.
 Old tools may disconnect: start a new session or use a host-supported reload to
 load the updated integration; hot reconnection is not guaranteed. Keep the prior
-runtime and recovery snapshots. Schema 14 is unchanged from 0.12; 0.11 used schema
-10. See [plugin process recovery](docs/plugin-process-recovery.md) for ownership,
+runtime and recovery snapshots. This release migrates to schema 16; 0.12 through
+0.14 used schema 14, and 0.11 used schema 10. Older readers cannot open the new
+schema. See [plugin process recovery](docs/plugin-process-recovery.md) for ownership,
 locked-directory recovery and the historical 0.12 repair record.
 
 Run a built-in evaluation fixture:
@@ -269,11 +273,18 @@ is not sufficient.
 
 ## First useful workflow
 
-Automatic learning requires its own disclosure acknowledgement. With Copilot
-CLI `1.0.84-1`, run from the repository root:
+Background learning starts when installation, capture, worker, and correction
+learning are enabled, unless explicitly disabled.
+It sends bounded, redacted excerpts to GitHub Copilot using the existing sign-in
+and service quota. Existing explicit opt-outs remain in effect after upgrade.
+The CLI reports effective eligibility with `provenloop learning status`;
+use `provenloop learning disable` to opt out or `provenloop learning enable` to resume.
+
+Automatic retrieval hooks retain their separate repository permission. With
+Copilot CLI `1.0.84-1`, run from the repository root:
 
 ```powershell
-provenloop learning enable --confirm
+provenloop learning status
 provenloop learning approve-hooks --cwd (Get-Location).Path --confirm
 ```
 
@@ -281,6 +292,14 @@ Restart the Copilot session after hook approval. Ordinary user corrections and
 captured agent findings can then produce source-backed candidates. Only supported,
 fully verified recovery predicates become active guidance. Use `provenloop learning
 status` to inspect job state and `provenloop learning disable` to stop extraction.
+
+The learner filters temporary instructions and completed setup edits
+before retention. New source-supported conventions and references have separate
+delivery modes; references return captured excerpts at the matching revision.
+These excerpts preserve source findings without establishing a broader lesson.
+Task-local constraints stay within their originating session. Untyped analysis
+completes without an indefinite evidence wait. See the
+[feedback implementation record](docs/feedback.md) for scope and validation.
 
 The manual path below checks rule storage, retrieval and user controls.
 
@@ -300,11 +319,18 @@ Enable retrieval with `provenloop enable retrieval` if it is disabled. Open a
 for the returned item. Inspect the rule, scope, applicability, and source.
 
 For a local graphical view of knowledge, source evidence, learning jobs, and
-usage records, run `provenloop ui`. The browser viewer is read only and uses the
-same local data as the CLI. See [Local learning viewer](docs/local-viewer.md)
-for filters, runtime options, and development usage.
+usage records, run `provenloop ui`. The viewer supports explicit knowledge review,
+scope and content edits, archiving, and deletion. It uses the same local
+data as the CLI. See [Local learning viewer](docs/local-viewer.md)
+for filters and runtime options.
 
 Inspect and maintain rules explicitly:
+
+To clear every local record while keeping the installation and configuration,
+use `provenloop records clear` to preview, then `provenloop records clear --confirm`.
+The UI provides the same action on Overview. Specify `--data-root`
+for a custom location and restart Copilot after clearing. See
+[record cleanup](docs/local-viewer.md#clear-all-records) for the deletion scope.
 
 ```powershell
 provenloop knowledge list --scope repository
@@ -393,8 +419,9 @@ are regression evidence, not measurements of a user's actual productivity.
 
 | Area | Current boundary |
 |---|---|
-| Preview candidate | `0.1.0-alpha.0.14`, with a local read-only viewer; not M0/MVP approval |
-| Local viewer | `provenloop ui`: searchable knowledge, evidence details, work episodes, learning jobs, and usage |
+| Preview candidate | `0.1.0-alpha.0.15`, schema 16; M0/MVP remain No-Go |
+| Local viewer | `provenloop ui`: evidence review, knowledge management, capture metrics, and explicit record cleanup |
+| Learning quality | Source qualification and isolation are regression-tested; actual model quality remains unvalidated because a working model host was unavailable |
 | 0.14 release validation | Windows Node.js 22/24 CI and release workflow passed 928 unit and 270 integration tests, installed-tarball UI checks, and installer dry run; downloaded assets verified |
 | M0 implementation | Bounded SDK capture and current-session recovery, two-pass persistence redaction, leased worker, canonical SQLite, deterministic Episodes, deletion gates |
 | M1 implementation | Branch Context, English/Chinese retrieval with canonical rechecks, at most three items/1,200 rendered tokens, Explain and explicitly approved feedback |

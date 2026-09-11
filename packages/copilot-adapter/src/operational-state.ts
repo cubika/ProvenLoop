@@ -38,7 +38,7 @@ export interface PersistedCapabilityState {
 }
 
 export interface PersistedCopilotAdapterState {
-  readonly automaticLearning?: AutomaticLearningConsent;
+  readonly automaticLearning?: AutomaticLearningPreferences;
   readonly capabilities: Readonly<
     Record<ProvenLoopCapability, PersistedCapabilityState>
   >;
@@ -52,25 +52,50 @@ export interface PersistedCopilotAdapterState {
   readonly updatedAt: string;
 }
 
-export interface AutomaticLearningConsent {
-  readonly consentedAt: string;
-  readonly disclosureVersion: 1;
-  readonly enabled: boolean;
+export interface AutomaticLearningPreferences {
+  // Preserve historical acknowledgements without inventing one for automatic defaults.
+  readonly consentedAt?: string;
+  readonly disclosureVersion?: 1;
+  readonly enabled?: boolean;
   readonly notificationsEnabled: boolean;
 }
+export type AutomaticLearningConsent = AutomaticLearningPreferences;
 
 export const AUTOMATIC_LEARNING_DISCLOSURE =
-  "Automatic learning processes user corrections and captured agent research/recovery summaries. It sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in. It uses isolated background requests with tools disabled; Copilot service usage and retention policies apply. Unverified candidates stay isolated from ordinary Context. You can disable learning, mute notices, revoke rules, or delete their sources.";
+  "Automatic learning runs when installation, capture, worker, and correction learning are enabled, unless you explicitly disable it. It processes user corrections and captured agent research/recovery summaries, sending bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in and service quota. It uses isolated background requests with tools disabled; Copilot service usage and retention policies apply. Unreviewed candidates are excluded from guidance. Source-checked conventions and references may return original quotations in separate delivery modes without being marked verified. Use provenloop learning disable to opt out. You can also mute notices, revoke rules, or delete their sources.";
 
-const parseAutomaticLearning = (input: unknown, path: string): AutomaticLearningConsent | undefined => {
+export const resolveAutomaticLearning = (state: PersistedCopilotAdapterState) => {
+  const prerequisites = {
+    installed: state.installed,
+    capture: state.capabilities.capture.enabled,
+    worker: state.capabilities.worker.enabled,
+    correctionLearning: state.capabilities.correction_learning.enabled,
+  };
+  const blockedBy = Object.entries(prerequisites).filter(([, enabled]) => !enabled).map(([name]) => name);
+  const mode = state.automaticLearning?.enabled === false ? "disabled" as const
+    : state.automaticLearning?.enabled === true ? "enabled" as const : "automatic" as const;
+  if (mode === "disabled") blockedBy.unshift("explicitly_disabled");
+  return {
+    ...state.automaticLearning,
+    enabled: blockedBy.length === 0,
+    mode, prerequisites, blockedBy, consentRequired: false,
+    notificationsEnabled: state.automaticLearning?.notificationsEnabled ?? true,
+  };
+};
+
+const parseAutomaticLearning = (input: unknown, path: string): AutomaticLearningPreferences | undefined => {
   if (input === undefined) return undefined;
-  if (!isRecord(input) || input.disclosureVersion !== 1 ||
-      typeof input.consentedAt !== "string" || !Number.isFinite(Date.parse(input.consentedAt)) ||
-      typeof input.enabled !== "boolean" || typeof input.notificationsEnabled !== "boolean") {
+  if (!isRecord(input) ||
+      ((input.consentedAt !== undefined || input.disclosureVersion !== undefined) &&
+        (input.disclosureVersion !== 1 || typeof input.consentedAt !== "string" || !Number.isFinite(Date.parse(input.consentedAt)))) ||
+      (input.enabled !== undefined && typeof input.enabled !== "boolean") || typeof input.notificationsEnabled !== "boolean") {
     throw new InvalidCopilotAdapterStateError(path);
   }
-  return { consentedAt: input.consentedAt, disclosureVersion: 1,
-    enabled: input.enabled, notificationsEnabled: input.notificationsEnabled };
+  return {
+    ...(typeof input.consentedAt === "string" ? { consentedAt: input.consentedAt, disclosureVersion: 1 as const } : {}),
+    ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+    notificationsEnabled: input.notificationsEnabled,
+  };
 };
 
 export class InvalidCopilotAdapterStateError extends Error {

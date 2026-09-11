@@ -9,6 +9,7 @@ import { KnowledgeControlService } from "@provenloop/host";
 import { CanonicalSqliteStore, DatabaseSync, readInspection } from "@provenloop/storage-sqlite";
 import { beginUpgradeMaintenance, resolveWindowsProvenLoopPaths } from "@provenloop/platform-windows";
 import { runCli } from "@provenloop/cli";
+import { createDefaultCopilotAdapterState, writeCopilotAdapterState } from "@provenloop/copilot-adapter";
 import { startUiServer, type UiServer } from "../../packages/cli/src/run-ui.js";
 
 const directories: string[] = [];
@@ -132,6 +133,16 @@ describe("local read-only learning explorer", () => {
       const page = await getText(server.url + route); expect(page.status).toBe(200);
       expect(page.body).not.toContain(secret); expect(page.body).toContain("[REDACTED]");
     }
+  });
+
+  it("shows effective learning defaults and explicit opt-out rather than a missing consent flag", async () => {
+    const data = await fixture(); const initial = createDefaultCopilotAdapterState(new Date());
+    const state = { ...initial, installed: true, capabilities: { ...initial.capabilities, capture: { enabled: true }, worker: { enabled: true }, correction_learning: { enabled: true } } };
+    await writeCopilotAdapterState(data.paths.adapterState, state);
+    const server = await serve(data.root);
+    expect((await getText(server.url)).body).toContain("automatic learning: on (automatic)");
+    await writeCopilotAdapterState(data.paths.adapterState, { ...state, automaticLearning: { enabled: false, notificationsEnabled: true } });
+    expect((await getText(server.url)).body).toContain("automatic learning: off (explicitly_disabled)");
   });
 
   it("rejects unauthenticated, cross-origin, and mutating requests", async () => {

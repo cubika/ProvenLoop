@@ -130,7 +130,7 @@ describe("agent learning incremental lifecycle", () => {
     const old = new CanonicalSqliteStore(path, { migrations: DEFAULT_SQLITE_MIGRATIONS.filter((entry) => entry.version < 14) }); fixture().events.forEach((entry) => add(old, entry)); old.close();
     expect(() => new CanonicalSqliteStore(path)).toThrow("maintenance upgrade");
     const store = new CanonicalSqliteStore(path, { allowSchemaMigration: true });
-    try { expect(store.health().userVersion).toBe(14); expect(store.learningPromptWork(now, 128).some((entry) => entry.origin === "agent")).toBe(true); } finally { store.close(); }
+    try { expect(store.health().userVersion).toBe(DEFAULT_SQLITE_MIGRATIONS.at(-1)?.version); expect(store.learningPromptWork(now, 128).some((entry) => entry.origin === "agent")).toBe(true); } finally { store.close(); }
   });
 
   it("retains no independent proposal for exact recalled agent guidance", async () => {

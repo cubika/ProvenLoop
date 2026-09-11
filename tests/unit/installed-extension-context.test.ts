@@ -17,7 +17,7 @@ const fixtures = vi.hoisted(() => {
   return {
     state: {
       installed: true,
-      capabilities: { capture: { enabled: false }, retrieval: { enabled: true } },
+      capabilities: { capture: { enabled: false }, retrieval: { enabled: true }, worker: { enabled: true }, correction_learning: { enabled: true } },
     },
     release,
     publisherStart,
@@ -44,6 +44,7 @@ const fixtures = vi.hoisted(() => {
     enqueue: vi.fn(async () => undefined),
     enqueueIfSourceAbsent: vi.fn(async () => ({ status: "enqueued" })),
     writeFile: vi.fn(async () => undefined),
+    hooksApproved: vi.fn(async () => false),
   };
 });
 
@@ -72,8 +73,12 @@ vi.mock("../../packages/copilot-adapter/src/copilot-cli-adapter.js", () => ({
     resolveSession = fixtures.resolveSession;
   },
 }));
-vi.mock("../../packages/copilot-adapter/src/operational-state.js", () => ({
+vi.mock("../../packages/copilot-adapter/src/operational-state.js", async (original) => ({
+  ...await original<typeof import("../../packages/copilot-adapter/src/operational-state.js")>(),
   readCopilotAdapterState: fixtures.readState,
+}));
+vi.mock("../../packages/copilot-adapter/src/automatic-host-capability.js", () => ({
+  hasCopilotLearningHookApproval: fixtures.hooksApproved,
 }));
 vi.mock("../../packages/copilot-adapter/src/trusted-session-context.js", () => ({
   TrustedSessionContextPublisher: function (options: (typeof fixtures.publishers)[number]["options"]) {
@@ -140,6 +145,7 @@ beforeEach(() => {
   fixtures.state.installed = true;
   fixtures.state.capabilities.capture.enabled = false;
   fixtures.state.capabilities.retrieval.enabled = true;
+  fixtures.hooksApproved.mockReset().mockResolvedValue(false);
   fixtures.publisherStart.mockReset().mockResolvedValue(undefined);
   fixtures.readState.mockReset().mockImplementation(async () => fixtures.state);
   fixtures.shutdownRequested.mockReset().mockResolvedValue(false);
@@ -164,6 +170,17 @@ afterEach(async () => {
 });
 
 describe("installed extension trusted context wiring", () => {
+  it.each([false, true])("automatic default registers hooks only with repository approval: %s", async (approved) => {
+    fixtures.state.capabilities.capture.enabled = true;
+    fixtures.hooksApproved.mockResolvedValue(approved);
+    const runtime = start();
+    expect(await runtime.result).toMatchObject({ status: "started" });
+    expect(fixtures.hooksApproved).toHaveBeenCalledOnce();
+    expect(runtime.joinSession.mock.calls[0]).toEqual([approved ? { hooks: {
+      onUserPromptSubmitted: expect.any(Function), onPreToolUse: expect.any(Function),
+      onPostToolUse: expect.any(Function), onPostToolUseFailure: expect.any(Function),
+    } } : undefined]);
+  });
   it("passes only the joined SDK Session workspace and observation boundary to background reconciliation", async () => {
     const sdk = { ...session(), workspacePath: "C:\\sdk-state\\sdk-session" };
     const running = start(sdk);

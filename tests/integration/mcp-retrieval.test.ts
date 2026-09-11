@@ -179,6 +179,7 @@ describe("M1 context retrieval", () => {
             ],
             branch: "feat/mcp",
             branchContextId: "branch-context-mcp",
+            sourceSessionIds: ["session-1"],
             explicitConstraints: [
               "Fail closed on degradation.",
             ],
@@ -288,7 +289,6 @@ describe("M1 context retrieval", () => {
           response.items.map((item) => item.id),
         ),
       ).toEqual([
-        "branch-context-mcp",
         "package-validation",
       ]);
 
@@ -439,6 +439,7 @@ describe("M1 context retrieval", () => {
             acceptedDecisions: [],
             branch,
             branchContextId: "branch-context-secret",
+            sourceSessionIds: ["session-secret-branch"],
             explicitConstraints: [],
             headSha: "abc123",
             implementationState: [
@@ -650,6 +651,7 @@ describe("M1 context retrieval", () => {
             acceptedDecisions: [],
             branch: "feat/collision",
             branchContextId: "collision",
+            sourceSessionIds: ["session-collision"],
             explicitConstraints: [],
             headSha: "abc123",
             implementationState: [

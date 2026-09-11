@@ -38,6 +38,46 @@ afterEach(async () => {
 });
 
 describe("Work Episode projection", () => {
+  it("removes legacy noise on rebuild without deleting captured events", async () => {
+    const root = await createTemporaryDirectory();
+    let sequence = 0;
+    const queue = new WindowsCaptureQueue(join(root, "queue"), { idGenerator: () => String(++sequence) });
+    await queue.initialize();
+    const store = new CanonicalSqliteStore(join(root, "canonical.db"));
+    try {
+      for (const input of [
+        { sourceEventId: "lifecycle", sessionId: "noise", eventType: "session.started", trust: "system" as const },
+        { sourceEventId: "internal", sessionId: "summary", eventType: "prompt.submitted", actorId: "session-summary", trust: "system" as const, content: { message: "Summarize the session file." } },
+        { sourceEventId: "real-work", sessionId: "investigation", eventType: "prompt.submitted", trust: "user" as const, content: { message: "Investigate the NPE tenant access requirements." } },
+      ]) {
+        store.ingestQueueItem(await queue.enqueue({
+          adapter: "copilot-cli", adapterVersion: "1.0.82-0", timestamp: "2026-09-10T00:00:00.000Z", ...input,
+        }));
+      }
+      const projector = new WorkEpisodeProjector({ store });
+      const first = projector.rebuild();
+      const kept = first.episodes[0];
+      if (kept === undefined) throw new Error("Expected the investigation Episode.");
+      store.replaceWorkEpisodeProjection({
+        associations: [], corrections: [], episodes: [kept, {
+          ...kept, episodeId: "legacy-noise", sessionIds: ["noise"], sourceEventIds: [],
+          goal: "Work in C:/repo/.git", finishedAt: kept.startedAt,
+        }],
+      });
+      expect(store.workEpisodes()).toHaveLength(2);
+
+      const rebuilt = projector.rebuild();
+      expect(rebuilt.persistedEpisodes).toBe(1);
+      expect(rebuilt.excludedSessions.map((item) => item.reason).sort()).toEqual(["internal_work", "no_substantive_work"]);
+      expect(store.workEpisodes()).toEqual(first.episodes);
+      expect(store.episodeSourceEnvelopes()).toHaveLength(3);
+      expect(rebuilt.episodes[0]?.finishedAt).toBeUndefined();
+      expect(rebuilt.episodes[0]?.lastActivityAt).toBe("2026-09-10T00:00:00.000Z");
+    } finally {
+      store.close();
+    }
+  });
+
   it("rebuilds deterministically from canonical capture evidence", async () => {
     const root = await createTemporaryDirectory();
     let sequence = 0;
@@ -232,6 +272,7 @@ describe("Work Episode projection", () => {
           adapterVersion: "1.0.82-0",
           eventType: "prompt.submitted",
           repoId: "repo-early",
+          content: { message: "Investigate the earlier task" },
           sessionId: "session-early",
           sourceEventId: "source-early",
           timestamp: "2026-08-30T02:00:00.000+02:00",
@@ -242,6 +283,7 @@ describe("Work Episode projection", () => {
           adapterVersion: "1.0.82-0",
           eventType: "prompt.submitted",
           repoId: "repo-late",
+          content: { message: "Investigate the later task" },
           sessionId: "session-late",
           sourceEventId: "source-late",
           timestamp: "2026-08-30T01:00:00.000Z",

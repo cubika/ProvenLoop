@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { PROVENLOOP_VERSION } from "@provenloop/contracts";
 import { describe, expect, it } from "vitest";
 
-const installer = await readFile("install.ps1", "utf8");
+const installer = (await readFile("install.ps1", "utf8")).replaceAll("\r\n", "\n");
 const start = installer.indexOf('    Write-Step "Checking the target runtime integration state"');
 const end = installer.indexOf("    Ensure-UserPath $installPrefix", start);
 if (start < 0 || end < 0) throw new Error("Installer integration boundaries are missing.");
@@ -16,6 +16,7 @@ interface IntegrationFixture {
   readonly source?: string;
   readonly inheritedInstallation?: boolean;
   readonly noAutoCollect?: boolean;
+  readonly noLearning?: boolean;
   readonly statusExitCode?: number;
 }
 
@@ -37,9 +38,11 @@ const runIntegration = (fixture: IntegrationFixture): {
     $Version = ${quoted(PROVENLOOP_VERSION)}
     $existingInstallation = $${fixture.inheritedInstallation === true}
     $NoAutoCollect = $${fixture.noAutoCollect === true}
+    $NoLearning = $${fixture.noLearning === true}
     $provenLoopCommand = 'Invoke-TestProvenLoop'
     $global:integrationCalls = [Collections.Generic.List[string]]::new()
     function Write-Step {}
+    function Write-Host {}
     function Require-Success([string]$Operation) {
       if ($LASTEXITCODE -ne 0) { throw "$Operation failed with exit code $LASTEXITCODE." }
     }
@@ -79,6 +82,22 @@ const runIntegration = (fixture: IntegrationFixture): {
 };
 
 describe.skipIf(process.platform !== "win32")("installer integration recovery", () => {
+  it.each([
+    { enabled: false, consentRequired: true },
+    { enabled: false, mode: "disabled", blockedBy: ["explicitly_disabled"] },
+    { enabled: true, mode: "automatic", blockedBy: [] },
+  ])("prints learning status from old and new runtimes under StrictMode: %j", (automaticLearning) => {
+    const summaryStart = installer.indexOf('    Write-Host (\n        "Automatic learning: "');
+    const summaryEnd = installer.indexOf('    Write-Host ""', summaryStart);
+    expect(summaryStart).toBeGreaterThan(0); expect(summaryEnd).toBeGreaterThan(summaryStart);
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+      $ErrorActionPreference = 'Stop'
+      Set-StrictMode -Version Latest
+      $automaticLearningStatus = ${quoted(JSON.stringify({ automaticLearning }))} | ConvertFrom-Json
+      ${installer.slice(summaryStart, summaryEnd)}
+    `], { encoding: "utf8", timeout: 15_000, windowsHide: true });
+    expect(output).toContain(`Automatic learning: ${automaticLearning.enabled ? "enabled" : "disabled"}`);
+  });
   it("discovers an older installed integration even when inherited PATH misses its command", () => {
     expect(runIntegration({ installed: true, version: "0.1.0-alpha.0.10" }))
       .toMatchObject({ status: "pass", calls: ["status", "upgrade"], existingInstallation: true });
@@ -96,8 +115,8 @@ describe.skipIf(process.platform !== "win32")("installer integration recovery", 
 
   it.each([
     [{ installed: false }, ["status", "install --no-auto-collect"]],
-    [{ installed: true }, ["status", "install --no-auto-collect"]],
-    [{ installed: true, version: "0.1.0-alpha.0.10" }, ["status", "upgrade", "collection disable"]],
+    [{ installed: true }, ["status", "collection disable", "install --no-auto-collect"]],
+    [{ installed: true, version: "0.1.0-alpha.0.10" }, ["status", "collection disable", "upgrade"]],
   ] as const)("honors disabled automatic collection for %j", (fixture, calls) => {
     expect(runIntegration({ ...fixture, noAutoCollect: true })).toMatchObject({ status: "pass", calls });
   });
@@ -107,6 +126,15 @@ describe.skipIf(process.platform !== "win32")("installer integration recovery", 
       status: "fail",
       calls: ["status"],
       message: "Target integration status failed with exit code 3.",
+    });
+  });
+
+  it.each([
+    [{ installed: true }, "install"],
+    [{ installed: true, version: "0.1.0-alpha.0.10" }, "upgrade"],
+  ] as const)("persists NoLearning before starting the new integration for %j", (fixture, operation) => {
+    expect(runIntegration({ ...fixture, noLearning: true })).toMatchObject({
+      status: "pass", calls: ["status", "disable correction_learning", "disable retrieval", "learning disable", operation],
     });
   });
 });

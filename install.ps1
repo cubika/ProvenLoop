@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0-alpha.0.14",
+    [string]$Version = "0.1.0-alpha.0.15",
     [switch]$NoAutoCollect,
     [switch]$NoLearning,
     [switch]$OnlineDoctor,
@@ -357,6 +357,25 @@ try {
     $targetStatus = (& $provenLoopCommand status | Out-String) | ConvertFrom-Json
     Require-Success "Target integration status"
     $existingInstallation = $existingInstallation -or ($targetStatus.installed -eq $true)
+    if ($NoAutoCollect -and $existingInstallation) {
+        Write-Step "Disabling automatic collection before integration changes"
+        & $provenLoopCommand collection disable | Out-Null
+        Require-Success "Collection disable before upgrade"
+    }
+    if ($NoLearning -and $existingInstallation) {
+        Write-Step "Disabling learning before integration changes"
+        & $provenLoopCommand disable correction_learning | Out-Null
+        Require-Success "Correction learning disable before upgrade"
+        & $provenLoopCommand disable retrieval | Out-Null
+        Require-Success "Retrieval disable before upgrade"
+        & $provenLoopCommand learning disable | Out-Null
+        Require-Success "Automatic learning opt-out before upgrade"
+    }
+    if (-not $NoLearning) {
+        Write-Host "The installed runtime reports automatic-learning eligibility with provenloop learning status."
+        Write-Host "It sends bounded, redacted conversation and tool excerpts to GitHub Copilot using your existing sign-in and service quota."
+        Write-Host "Copilot service usage and retention policies apply. Use -NoLearning or provenloop learning disable to opt out."
+    }
     $alreadyCurrent = (
         $targetStatus.installed -eq $true -and
         $targetStatus.pluginInstalled -eq $true -and
@@ -375,11 +394,6 @@ try {
         Write-Step "Upgrading the Copilot integration"
         & $provenLoopCommand upgrade
         Require-Success "ProvenLoop integration upgrade"
-        if ($NoAutoCollect) {
-            Write-Step "Disabling automatic collection"
-            & $provenLoopCommand collection disable | Out-Null
-            Require-Success "Collection disable"
-        }
     } else {
         Write-Step "Registering the Copilot integration"
         $installArguments = @("install")
@@ -405,6 +419,8 @@ try {
 
     if ($NoLearning) {
         Write-Step "Keeping retrieval and correction learning disabled"
+        & $provenLoopCommand learning disable | Out-Null
+        Require-Success "Automatic learning opt-out"
         & $provenLoopCommand disable retrieval | Out-Null
         Require-Success "Retrieval disable"
         & $provenLoopCommand disable correction_learning | Out-Null
@@ -418,6 +434,8 @@ try {
     } else {
         Write-Step "Preserving existing learning capability settings"
     }
+    $automaticLearningStatus = (& $provenLoopCommand learning status | Out-String) | ConvertFrom-Json
+    Require-Success "Automatic learning status"
 
     Write-Step "Running passive Doctor"
     & $provenLoopCommand doctor
@@ -460,6 +478,14 @@ try {
         "Retrieval and correction learning: " +
         $(if ($learningEnabled) { "enabled" } else { "disabled" })
     )
+    Write-Host (
+        "Automatic learning: " +
+        $(if ($automaticLearningStatus.automaticLearning.enabled) { "enabled" } else { "disabled" })
+    )
+    if (-not $automaticLearningStatus.automaticLearning.enabled -and
+        $null -ne $automaticLearningStatus.automaticLearning.PSObject.Properties['blockedBy']) {
+        Write-Host ("Learning blocked by: " + ($automaticLearningStatus.automaticLearning.blockedBy -join ", "))
+    }
     Write-Host ""
     Write-Host "Start an evidence window with:"
     Write-Host "  provenloop acceptance start"

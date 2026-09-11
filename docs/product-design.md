@@ -649,6 +649,16 @@ The model must distinguish corrections from ordinary questions, quotations, hypo
 
 Automatic activation has three cases:
 
+Development policy update (2026-09-10, schema 15): retention precedes delivery.
+Temporary task instructions, completed setup edits, and unsupported scope are
+filtered before persistent knowledge is formed. New proposals carry exact
+supporting sources and a lasting-value rationale. A stated convention can be
+returned using the user's original words, and a research reference can return
+captured tool excerpts at the matching worktree and revision. Both keep their
+`inferred` label and explicit delivery mode. They do not become verified recovery
+guidance. Existing candidates without this source assessment remain review-only.
+This refines the initial candidate exclusion described below.
+
 - **Checkable supporting evidence:** Within an exact repository/tool scope, low-risk rules may automatically become Externally-verified Guidance without another user confirmation.
 - **Only inference or incomplete traces:** Save the rule automatically as a Candidate and wait for new evidence or optional human review. A model's "high confidence" output does not make it eligible for ordinary retrieval.
 - **Permissions, security, deletion, credentials, promotion across repositories, or valid counterevidence:** Do not automatically expand permissions or clear disputes. Continue using the existing explicit controls and review mechanisms.
@@ -676,6 +686,13 @@ Every usable rule must state its trigger, the specific behavior that should chan
 Candidates do not enter ordinary Context or become individual user tasks. The initial design archives candidates by default if they remain inactive 30 days after the last independent supporting evidence. This is a configurable logical deadline that remains to be implemented. If no later support arrives, the deadline runs from candidate creation. Retries, window revisions, duplicate events in the same operation chain, and changes to the extraction prompt do not reset it. Archival stops automatic analysis and task reminders. Only new independent evidence or an explicit human action may request reassessment. That request does not directly grant activation eligibility: counterevidence, revocation, and deletion state must still be checked. Archival does not delete original evidence, promise reclaimed physical storage, or change the evidence and expiration policies for Active Knowledge. For specific coverage and noise thresholds, see [Initial automatic extraction acceptance](product-validation.md#initial-automatic-extraction-acceptance).
 
 ### 7.3 Deep Retrospective
+
+The current development implementation finishes ordinary extraction jobs as
+`evaluated`. Only a supported recovery missing a specific contract or captured
+artifact remains `waiting_evidence`. Latest-task Branch Context retains source
+session and goal identity, and does not carry temporary constraints into unrelated
+sessions. Explicit episode continuation can request the latest retained snapshot;
+closed tasks do not provide automatic continuation context.
 
 Single-task findings from agent research and self-directed retries use the [agent experience learning contract](agent-experience-learning.md). They retain model-authored provenance and do not require a fabricated user correction. Research produces candidates; supported native recovery proof may qualify narrow guidance. This delivery slice precedes cross-Episode retrospective analysis.
 
@@ -850,7 +867,7 @@ Users continue to run:
 copilot
 ```
 
-No wrapper command or additional model API Key is required. Initial automatic extraction reuses the existing Copilot sign-in without authorization for each call. Installation or first enablement must explain that relevant excerpts will be sent to that service and consume model quota. Existing capture authorization must not be silently interpreted as authorization for new model calls; upgrades from older versions require explicit one-time authorization. The model has no tool execution permission, does not read credentials, and cannot approve persistent feedback, Scope changes, deletion, or Playbooks on the user's behalf. Disabling `correction_learning` prevents new extraction and submission of results already in flight. Separate switches control capture and retrieval of existing rules.
+No wrapper command or additional model API Key is required. Automatic extraction reuses the existing Copilot sign-in. The unreleased default starts background learning when installation, capture, worker, and correction learning are enabled, unless the user explicitly disables it. Installation explains that bounded, redacted excerpts are sent to Copilot and consume service quota. Missing legacy preferences use the default; an explicit disable survives restarts, upgrades, and capability changes. Published 0.14 required a separate acknowledgement. Repository hook permission remains separate. The model has no tool execution permission, does not read credentials, and cannot approve persistent feedback, Scope changes, deletion, or Playbooks on the user's behalf. Disabling learning or `correction_learning` prevents new extraction and submission of results already in flight. Separate switches control capture and retrieval of existing rules.
 
 ### 9.2 First use
 

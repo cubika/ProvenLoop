@@ -79,6 +79,7 @@ import {
   clearExperimentalSettingState,
   ensureExperimentalSetting,
   readCopilotAdapterState,
+  resolveAutomaticLearning,
   readInternalSessionIds,
   removeInternalSessionId,
   restoreExperimentalSetting,
@@ -1598,6 +1599,15 @@ implements AgentAdapter<CopilotEventMappingResult> {
               : "warn",
       });
     }
+    const learning = resolveAutomaticLearning(await this.#readState());
+    checks.push({
+      id: "learning.automatic",
+      status: learning.enabled || learning.mode === "disabled" ? "pass" : "warn",
+      message: learning.enabled
+        ? `Automatic learning is enabled (${learning.mode}); eligible captured work can be scheduled. This does not confirm provider availability or completed jobs.`
+        : learning.mode === "disabled" ? "Automatic learning was explicitly disabled. Run provenloop learning enable to resume."
+          : `Automatic learning is paused; missing prerequisites: ${learning.blockedBy.join(", ")}.`,
+    });
     checks.push(await this.#syntheticCaptureCheck());
     return {
       adapter: "copilot-cli",

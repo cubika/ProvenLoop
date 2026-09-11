@@ -93,7 +93,9 @@ export {
 export {
   createDefaultCopilotAdapterState,
   AUTOMATIC_LEARNING_DISCLOSURE,
+  resolveAutomaticLearning,
   type AutomaticLearningConsent,
+  type AutomaticLearningPreferences,
   readInternalSessionIds,
   readCopilotAdapterState,
   setPersistedCapability,

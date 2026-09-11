@@ -42,6 +42,7 @@ export {
   type WorkEpisodeBuilderOptions,
   type WorkEpisodeBuildResult,
 } from "./episode-builder.js";
+export { isInternalWorkSource } from "./work-source.js";
 export {
   KnowledgeAdmissionPolicy,
   refreshKnowledgeAdmissionDecision,
@@ -85,6 +86,9 @@ export {
 } from "./redaction.js";
 
 export * from "./automatic-learning.js";
+export * from "./learning-retention.js";
 export * from "./agent-learning-source.js";
 
 export * from "./shell-learning.js";
+export * from "./learning-source-use.js";
+export * from "./knowledge-duplicates.js";

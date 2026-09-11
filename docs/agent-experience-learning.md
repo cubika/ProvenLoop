@@ -2,6 +2,13 @@
 
 Status: implementation contract. Validation results are recorded separately.
 
+Development update (2026-09-10, schema 15): research proposals must pass a
+retention assessment with exact sources and lasting value. Eligible references
+can return original tool excerpts at the captured worktree and revision, labeled
+as references with `inferred` evidence. The model's interpretation is not
+delivered as verified guidance. Legacy candidates remain review-only. Known
+internal work is excluded by source metadata.
+
 ProvenLoop should retain useful findings from an agent's own research and repeated attempts, even when the user never states a correction. This first slice operates inside one captured task. Cross-task pattern discovery and proactive external research remain part of the later retrospective work.
 
 ## Sources and outcomes
@@ -23,7 +30,12 @@ Processing starts after a captured agent message and its turn completion or idle
 
 For self-directed recovery, the initial verifiers cover existing MCP invocation constraints and supported repository test-command substitutions. They require the native failed/retried operation identities, complete arguments, matching workspace and version, a causal recovery chain, and a summary after the selected successful result. No user intervention may be silently bridged into a self-directed recovery. Unrelated success, permission refusals, identical retries after an outage, multiple confounded changes, and missing evidence remain unqualified. The summary's explanation is not proof of causality.
 
-A receipt names the actual source role. Qualified guidance is rendered from the verified predicate, keeping example values and broader model claims out of operative advice. Research findings and unsupported recovery claims stay isolated candidates. They cannot enter ordinary Context or produce activation notifications. Existing counterevidence, scope checks, conflicts, deletion, revocation and review controls apply to both origins.
+A receipt names the actual source role. Qualified guidance is rendered from the
+verified predicate, keeping example values and broader model claims out of
+operative advice. Research that passes the development source assessment uses
+the separate reference mode. Unsupported recovery claims and unassessed research
+remain review-only. References do not produce verified-activation notifications.
+Counterevidence, scope, deletion, revocation, and review controls apply to all modes.
 
 ## Acceptance cases
 
